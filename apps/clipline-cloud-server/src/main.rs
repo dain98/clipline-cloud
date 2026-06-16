@@ -27,6 +27,8 @@ use tokio::{net::TcpListener, sync::watch};
 use tower_http::services::ServeDir;
 use tracing::{info, warn};
 
+const MIB: u64 = 1024 * 1024;
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Arc<Config>,
@@ -217,6 +219,7 @@ fn router(
 ) -> Router {
     let static_files = ServeDir::new(&config.static_dir);
     let max_body_bytes = usize::try_from(config.max_upload_size_bytes).unwrap_or(usize::MAX);
+    let max_upload_request_body_bytes = upload_request_body_limit(&config);
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -230,7 +233,7 @@ fn router(
         .merge(admin::routes())
         .merge(clips::routes())
         .merge(media::routes())
-        .merge(uploads::routes())
+        .merge(uploads::routes(max_upload_request_body_bytes))
         .fallback_service(static_files)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(middleware::from_fn_with_state(
@@ -355,26 +358,58 @@ fn insert_static_header(headers: &mut HeaderMap, name: HeaderName, value: &'stat
 }
 
 fn resolve_client_ip(config: &Config, remote_addr: SocketAddr, headers: &HeaderMap) -> String {
-    let remote_ip = remote_addr.ip();
-    if config.trusted_proxy_hops.contains(&remote_ip) {
-        if let Some(forwarded_ip) = first_forwarded_for_ip(headers) {
-            return forwarded_ip.to_string();
-        }
-    }
-    remote_ip.to_string()
+    resolve_client_ip_from_trusted(&config.trusted_proxy_hops, remote_addr, headers)
 }
 
-fn first_forwarded_for_ip(headers: &HeaderMap) -> Option<std::net::IpAddr> {
+fn resolve_client_ip_from_trusted(
+    trusted_proxy_hops: &[std::net::IpAddr],
+    remote_addr: SocketAddr,
+    headers: &HeaderMap,
+) -> String {
+    let remote_ip = remote_addr.ip();
+    let Some(mut chain) = forwarded_for_chain(headers) else {
+        return remote_ip.to_string();
+    };
+    chain.push(remote_ip);
+    while chain
+        .last()
+        .is_some_and(|ip| trusted_proxy_hops.contains(ip))
+    {
+        chain.pop();
+    }
+    chain.last().copied().unwrap_or(remote_ip).to_string()
+}
+
+fn forwarded_for_chain(headers: &HeaderMap) -> Option<Vec<std::net::IpAddr>> {
     let value = headers
         .get(HeaderName::from_static("x-forwarded-for"))?
         .to_str()
         .ok()?;
-    value
+    let chain = value
         .split(',')
-        .next()
-        .map(str::trim)?
-        .parse::<std::net::IpAddr>()
-        .ok()
+        .map(str::trim)
+        .map(str::parse::<std::net::IpAddr>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    (!chain.is_empty()).then_some(chain)
+}
+
+fn upload_request_body_limit(config: &Config) -> usize {
+    let derived_part_size = round_up_to_mib_saturating(
+        config
+            .max_upload_size_bytes
+            .div_ceil(10_000)
+            .max(config.upload_part_size_bytes),
+    )
+    .max(config.single_put_max_bytes);
+    usize::try_from(derived_part_size).unwrap_or(usize::MAX)
+}
+
+fn round_up_to_mib_saturating(value: u64) -> u64 {
+    value
+        .checked_add(MIB - 1)
+        .map(|value| (value / MIB) * MIB)
+        .unwrap_or(u64::MAX)
 }
 
 async fn shutdown_signal() {
@@ -384,4 +419,59 @@ async fn shutdown_signal() {
     }
 
     info!(event = "server.shutdown");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_with_xff(value: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static(value),
+        );
+        headers
+    }
+
+    #[test]
+    fn forwarded_for_uses_rightmost_untrusted_hop() {
+        let headers = headers_with_xff("198.51.100.9, 203.0.113.7");
+        let trusted = ["10.0.0.2".parse().unwrap()];
+        let remote_addr = "10.0.0.2:443".parse().unwrap();
+
+        assert_eq!(
+            resolve_client_ip_from_trusted(&trusted, remote_addr, &headers),
+            "203.0.113.7"
+        );
+    }
+
+    #[test]
+    fn forwarded_for_strips_trusted_trailing_proxy_hops() {
+        let headers = headers_with_xff("203.0.113.7, 10.0.0.1");
+        let trusted = ["10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()];
+        let remote_addr = "10.0.0.2:443".parse().unwrap();
+
+        assert_eq!(
+            resolve_client_ip_from_trusted(&trusted, remote_addr, &headers),
+            "203.0.113.7"
+        );
+    }
+
+    #[test]
+    fn untrusted_remote_peer_ignores_forwarded_for() {
+        let headers = headers_with_xff("203.0.113.7");
+        let trusted = ["10.0.0.2".parse().unwrap()];
+        let remote_addr = "198.51.100.9:443".parse().unwrap();
+
+        assert_eq!(
+            resolve_client_ip_from_trusted(&trusted, remote_addr, &headers),
+            "198.51.100.9"
+        );
+    }
+
+    #[test]
+    fn upload_request_body_limit_rounds_derived_part_size() {
+        assert_eq!(round_up_to_mib_saturating((64 * MIB) + 1), 65 * MIB);
+    }
 }

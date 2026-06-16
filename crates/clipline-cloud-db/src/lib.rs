@@ -328,6 +328,7 @@ pub(crate) use db_fetch_optional;
 mod tests {
     use super::*;
     use chrono::Duration as ChronoDuration;
+    use repositories::{ClipListParams, ClipSort};
     use serde_json::json;
     use sqlx::types::Json;
     use tempfile::TempDir;
@@ -340,6 +341,15 @@ mod tests {
             .await
             .expect("sqlite database");
         (temp_dir, database)
+    }
+
+    async fn postgres_test_database() -> Option<Database> {
+        let database_url = std::env::var("CLIPLINE_POSTGRES_TEST_URL").ok()?;
+        Some(
+            Database::connect_and_migrate(&database_url)
+                .await
+                .expect("postgres database"),
+        )
     }
 
     #[test]
@@ -544,6 +554,7 @@ mod tests {
         audit.actor_user_id = Some(user.id.clone());
         audit.target_type = Some("user".to_string());
         audit.target_id = Some(user.id.clone());
+        audit.ip_address = Some("127.0.0.1".to_string());
         audit.metadata_json = Some(Json(json!({ "username": "dain" })));
         repos
             .audit_log
@@ -588,6 +599,129 @@ mod tests {
             .expect("reset token")
             .used_at
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn sqlite_clip_query_escapes_like_wildcards_and_sorts_nulls_last() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("owner-{}", new_ulid()),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create user");
+
+        let mut literal_percent = NewClip::new(&user.id, "100% match", "local");
+        literal_percent.status = "ready".to_string();
+        literal_percent.recorded_at = Some(now_utc());
+        repos
+            .clips
+            .create(&literal_percent)
+            .await
+            .expect("percent clip");
+        let mut plain = NewClip::new(&user.id, "plain match", "local");
+        plain.status = "ready".to_string();
+        plain.recorded_at = None;
+        repos.clips.create(&plain).await.expect("plain clip");
+
+        let mut params = ClipListParams {
+            owner_user_id: user.id.clone(),
+            game: None,
+            visibility: None,
+            status: None,
+            from: None,
+            to: None,
+            query: Some("%".to_string()),
+            sort: ClipSort::RecordedAtDesc,
+            limit: 10,
+            offset: 0,
+        };
+        let clips = repos
+            .clips
+            .list_for_owner(&params)
+            .await
+            .expect("query clips");
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].title, "100% match");
+
+        params.query = None;
+        let clips = repos
+            .clips
+            .list_for_owner(&params)
+            .await
+            .expect("ordered clips");
+        assert!(clips[0].recorded_at.is_some());
+        assert!(clips[1].recorded_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn reset_password_token_mark_used_if_valid_is_single_use() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("owner-{}", new_ulid()),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create user");
+        let token = repos
+            .reset_password_tokens
+            .create(&NewResetPasswordToken::new(
+                &user.id,
+                format!("reset-token-{}", new_ulid()),
+                now_utc() + ChronoDuration::minutes(5),
+            ))
+            .await
+            .expect("create token");
+
+        assert!(repos
+            .reset_password_tokens
+            .mark_used_if_valid(&token.id, now_utc())
+            .await
+            .expect("first use"));
+        assert!(!repos
+            .reset_password_tokens
+            .mark_used_if_valid(&token.id, now_utc())
+            .await
+            .expect("second use"));
+    }
+
+    #[tokio::test]
+    async fn postgres_repositories_round_trip_text_ip_addresses() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("pg-ip-{}", new_ulid()),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create user");
+        let mut session = NewSession::new(
+            &user.id,
+            format!("session-token-{}", new_ulid()),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        session.ip_address = Some("203.0.113.7".to_string());
+        let session = repos.sessions.create(&session).await.expect("session");
+        assert_eq!(session.ip_address.as_deref(), Some("203.0.113.7"));
+
+        let mut audit = NewAuditLogEntry::new("postgres.ip_address.round_trip");
+        audit.actor_user_id = Some(user.id.clone());
+        audit.ip_address = Some("2001:db8::1".to_string());
+        let audit = repos.audit_log.create(&audit).await.expect("audit");
+        assert_eq!(audit.ip_address.as_deref(), Some("2001:db8::1"));
     }
 
     #[tokio::test]
@@ -682,6 +816,7 @@ mod tests {
 
         assert_eq!(claimed.id, job.id);
         assert_eq!(claimed.locked_by.as_deref(), Some("recovery-runner"));
+        assert_eq!(claimed.attempts, 1);
     }
 
     async fn futures_from_handles<T>(handles: Vec<tokio::task::JoinHandle<T>>) -> Vec<T> {

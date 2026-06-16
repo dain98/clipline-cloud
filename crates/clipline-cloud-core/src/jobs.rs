@@ -3,6 +3,7 @@ use std::time::Duration;
 use chrono::Duration as ChronoDuration;
 use clipline_cloud_db::{now_utc, Job, NewJob, Repositories};
 use clipline_cloud_storage::{ObjectKey, SharedStorageBackend, StorageError};
+use rand::{rngs::OsRng, Rng};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{sync::watch, time::sleep};
@@ -132,6 +133,24 @@ impl JobRunner {
             attempts = job.attempts,
             max_attempts = job.max_attempts,
         );
+        if job.attempts > job.max_attempts {
+            self.repositories
+                .jobs
+                .mark_dead(
+                    &job.id,
+                    job.attempts,
+                    "job lock expired after maximum attempts",
+                )
+                .await?;
+            warn!(
+                event = "jobs.dead",
+                job_id = %job.id,
+                kind = %job.kind,
+                attempts = job.attempts,
+                message = "job lock expired after maximum attempts",
+            );
+            return Ok(());
+        }
 
         let result = match job.kind.as_str() {
             VALIDATE_OBJECT_KIND => self.validate_object(&job).await,
@@ -147,7 +166,7 @@ impl JobRunner {
             }
             Err(error) => {
                 let error_message = error.to_string();
-                let attempts = job.attempts.saturating_add(1);
+                let attempts = job.attempts;
                 if attempts >= job.max_attempts {
                     self.repositories
                         .jobs
@@ -191,7 +210,11 @@ impl JobRunner {
         let base_ms = self.config.retry_base_delay.as_millis();
         let max_ms = self.config.retry_max_delay.as_millis();
         let delay_ms = base_ms.saturating_mul(2_u128.saturating_pow(exponent));
-        Duration::from_millis(delay_ms.min(max_ms).try_into().unwrap_or(u64::MAX))
+        let capped_ms = delay_ms.min(max_ms).try_into().unwrap_or(u64::MAX);
+        if capped_ms <= 1 {
+            return Duration::from_millis(capped_ms);
+        }
+        Duration::from_millis(OsRng.gen_range((capped_ms / 2)..=capped_ms))
     }
 
     async fn validate_object(&self, job: &Job) -> Result<(), JobRunnerError> {

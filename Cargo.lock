@@ -769,6 +769,7 @@ dependencies = [
  "chrono",
  "clipline-cloud-db",
  "clipline-cloud-storage",
+ "rand 0.8.6",
  "sha2 0.10.9",
  "tempfile",
  "thiserror",

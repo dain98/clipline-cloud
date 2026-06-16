@@ -1,6 +1,6 @@
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{header, HeaderMap},
     routing::{get, post, put},
     Json, Router,
@@ -32,13 +32,14 @@ const S3_MIN_PART_SIZE_BYTES: u64 = 5 * MIB;
 const MAX_MULTIPART_PARTS: u64 = 10_000;
 const PART_SHA256_HEADER: &str = "x-clipline-part-sha256";
 
-pub fn routes() -> Router<AppState> {
+pub fn routes(max_request_body_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/api/v1/uploads", post(create_upload))
         .route("/api/v1/uploads/{id}", get(get_upload).delete(abort_upload))
         .route("/api/v1/uploads/{id}/content", put(put_content))
         .route("/api/v1/uploads/{id}/parts/{part_number}", put(put_part))
         .route("/api/v1/uploads/{id}/complete", post(complete_upload))
+        .layer(DefaultBodyLimit::max(max_request_body_bytes))
 }
 
 async fn create_upload(

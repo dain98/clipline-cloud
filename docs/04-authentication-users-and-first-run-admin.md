@@ -42,7 +42,8 @@ SHA-256 hash persisted.
 ### Browser auth — cookie session (§9)
 
 - Username/password login → opaque session token, stored hashed in `sessions`, set in a cookie.
-- One `HttpOnly`, `Secure`, `SameSite=Lax` session cookie (no split SameSite policy).
+- One `HttpOnly`, `SameSite=Lax` session cookie (no split SameSite policy). The cookie is marked
+  `Secure` when `CLIPLINE_PUBLIC_URL` is HTTPS; HTTP mode is supported only for local/LAN testing.
 - A **CSRF token** is required on every state-changing browser request, **plus** strict
   `Origin`/`Referer` validation as defense in depth.
 - Sensitive admin actions (create/disable user, reset password) require **re-authentication**.
@@ -98,6 +99,7 @@ for diagnostics it belongs in an admin-only `server.storage_backend` field, not 
 POST   /api/v1/auth/login
 POST   /api/v1/auth/logout
 GET    /api/v1/auth/me
+POST   /api/v1/auth/reset-password
 POST   /api/v1/auth/device-token
 GET    /api/v1/auth/device-tokens
 DELETE /api/v1/auth/device-tokens/{id}
@@ -146,7 +148,8 @@ After an admin exists, bootstrap credentials are ignored. A later CLI adds
 - [x] Argon2id password hashing + verification (per-user salt)
 - [x] Opaque token generator (256-bit, base64url, `clp_ses_`/`clp_dev_` prefixes); store SHA-256 hash only, return raw once
 - [x] `GET /.well-known/clipline-cloud` discovery endpoint (no storage backend leaked)
-- [x] `POST /auth/login` → creates hashed session row, sets `HttpOnly; Secure; SameSite=Lax` cookie; updates `last_login_at`
+- [x] `POST /auth/login` → creates hashed session row, sets `HttpOnly; SameSite=Lax` cookie; updates `last_login_at`
+- [x] Cookie `Secure` flag follows `CLIPLINE_PUBLIC_URL` scheme so supported HTTP deployments can log in
 - [x] `POST /auth/logout`, `GET /auth/me`
 - [x] CSRF token issuance + verification (HMAC via `CLIPLINE_SESSION_SECRET`) on all state-changing browser requests
 - [x] Strict `Origin`/`Referer` validation as defense in depth
@@ -155,8 +158,8 @@ After an admin exists, bootstrap credentials are ignored. A later CLI adds
 - [x] First-run admin bootstrap: env password, `_FILE`, or generated-and-printed-once; ignored after an admin exists
 - [x] Users API (admin-only) + `POST /me/change-password` (self)
 - [x] Re-authentication required for sensitive admin actions (create/disable user, reset password)
-- [x] Reset-password tokens: short-lived, random, stored hashed
-- [x] Basic login rate limiting
+- [x] Reset-password tokens: short-lived, random, stored hashed; redeeming one changes the password and revokes existing sessions/device tokens
+- [x] Login rate limiting by username/source and source, with bounded in-memory buckets
 - [x] Audit-log writes for admin actions, password resets, token revocation
 
 ## Definition of done

@@ -15,7 +15,7 @@ CREATE TABLE sessions (
   user_id      TEXT NOT NULL REFERENCES users(id),
   token_hash   TEXT NOT NULL UNIQUE,
   user_agent   TEXT,
-  ip_address   INET,
+  ip_address   TEXT,
   created_at   TIMESTAMPTZ NOT NULL,
   last_used_at TIMESTAMPTZ,
   expires_at   TIMESTAMPTZ NOT NULL,
@@ -128,7 +128,7 @@ CREATE TABLE audit_log (
   action        TEXT NOT NULL,
   target_type   TEXT,
   target_id     TEXT,
-  ip_address    INET,
+  ip_address    TEXT,
   metadata_json JSONB,
   created_at    TIMESTAMPTZ NOT NULL
 );

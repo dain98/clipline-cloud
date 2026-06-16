@@ -277,6 +277,15 @@ impl SessionRepository {
         Ok(())
     }
 
+    pub async fn revoke_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            [now_utc(), user_id]
+        )?;
+        Ok(())
+    }
+
     pub async fn delete(&self, id: &str) -> DbResult<()> {
         db_execute!(&self.database, "DELETE FROM sessions WHERE id = ?", [id])?;
         Ok(())
@@ -369,6 +378,15 @@ impl DeviceTokenRepository {
             &self.database,
             "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND id = ?",
             [now_utc(), user_id, id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn revoke_all_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            [now_utc(), user_id]
         )?;
         Ok(())
     }
@@ -730,14 +748,14 @@ fn push_clip_optional_filters_sqlite(
         builder.push_bind(to);
     }
     if let Some(query) = &params.query {
-        let pattern = format!("%{}%", query.to_ascii_lowercase());
+        let pattern = escaped_like_pattern(query);
         builder.push(" AND (LOWER(title) LIKE ");
         builder.push_bind(pattern.clone());
-        builder.push(" OR LOWER(COALESCE(game_name, '')) LIKE ");
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
         builder.push_bind(pattern.clone());
-        builder.push(" OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
         builder.push_bind(pattern);
-        builder.push(")");
+        builder.push(" ESCAPE '\\')");
     }
 }
 
@@ -765,27 +783,40 @@ fn push_clip_optional_filters_postgres(
         builder.push_bind(to);
     }
     if let Some(query) = &params.query {
-        let pattern = format!("%{}%", query.to_ascii_lowercase());
+        let pattern = escaped_like_pattern(query);
         builder.push(" AND (LOWER(title) LIKE ");
         builder.push_bind(pattern.clone());
-        builder.push(" OR LOWER(COALESCE(game_name, '')) LIKE ");
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
         builder.push_bind(pattern.clone());
-        builder.push(" OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
         builder.push_bind(pattern);
-        builder.push(")");
+        builder.push(" ESCAPE '\\')");
     }
 }
 
 fn clip_order_by(sort: ClipSort) -> &'static str {
     match sort {
-        ClipSort::RecordedAtDesc => " ORDER BY recorded_at DESC, id DESC",
-        ClipSort::RecordedAtAsc => " ORDER BY recorded_at ASC, id ASC",
-        ClipSort::UploadedAtDesc => " ORDER BY uploaded_at DESC, id DESC",
-        ClipSort::UploadedAtAsc => " ORDER BY uploaded_at ASC, id ASC",
-        ClipSort::DurationDesc => " ORDER BY duration_ms DESC, id DESC",
-        ClipSort::DurationAsc => " ORDER BY duration_ms ASC, id ASC",
+        ClipSort::RecordedAtDesc => " ORDER BY recorded_at IS NULL ASC, recorded_at DESC, id DESC",
+        ClipSort::RecordedAtAsc => " ORDER BY recorded_at IS NULL ASC, recorded_at ASC, id ASC",
+        ClipSort::UploadedAtDesc => " ORDER BY uploaded_at IS NULL ASC, uploaded_at DESC, id DESC",
+        ClipSort::UploadedAtAsc => " ORDER BY uploaded_at IS NULL ASC, uploaded_at ASC, id ASC",
+        ClipSort::DurationDesc => " ORDER BY duration_ms IS NULL ASC, duration_ms DESC, id DESC",
+        ClipSort::DurationAsc => " ORDER BY duration_ms IS NULL ASC, duration_ms ASC, id ASC",
         ClipSort::TitleAsc => " ORDER BY title ASC, id ASC",
     }
+}
+
+fn escaped_like_pattern(query: &str) -> String {
+    let mut pattern = String::with_capacity(query.len() + 2);
+    pattern.push('%');
+    for ch in query.to_ascii_lowercase().chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(ch);
+    }
+    pattern.push('%');
+    pattern
 }
 
 #[derive(Clone)]
@@ -1159,26 +1190,55 @@ impl JobRepository {
         now: chrono::DateTime<chrono::Utc>,
         stale_before: chrono::DateTime<chrono::Utc>,
     ) -> DbResult<Option<Job>> {
-        Ok(db_fetch_optional!(
-            &self.database,
-            Job,
-            "UPDATE jobs
-             SET status = 'running', locked_by = ?, locked_at = ?, updated_at = ?
-             WHERE id = (
-               SELECT id FROM jobs
-               WHERE (status = 'pending' AND next_run_at <= ?)
-                  OR (status = 'running' AND locked_at < ?)
-               ORDER BY next_run_at ASC, id ASC
-               LIMIT 1
-             )
-             AND (
-               (status = 'pending' AND next_run_at <= ?)
-               OR (status = 'running' AND locked_at < ?)
-             )
-             RETURNING id, kind, status, target_type, target_id, attempts, max_attempts, next_run_at,
-                       locked_by, locked_at, last_error, created_at, updated_at",
-            [runner_id, now, now, now, stale_before, now, stale_before]
-        )?)
+        match &self.database {
+            Database::Sqlite(_) => Ok(db_fetch_optional!(
+                &self.database,
+                Job,
+                "UPDATE jobs
+                 SET status = 'running', attempts = attempts + 1, locked_by = ?, locked_at = ?, updated_at = ?
+                 WHERE id = (
+                   SELECT id FROM jobs
+                   WHERE (status = 'pending' AND next_run_at <= ?)
+                      OR (status = 'running' AND locked_at < ?)
+                   ORDER BY next_run_at ASC, id ASC
+                   LIMIT 1
+                 )
+                 AND (
+                   (status = 'pending' AND next_run_at <= ?)
+                   OR (status = 'running' AND locked_at < ?)
+                 )
+                 RETURNING id, kind, status, target_type, target_id, attempts, max_attempts, next_run_at,
+                           locked_by, locked_at, last_error, created_at, updated_at",
+                [runner_id, now, now, now, stale_before, now, stale_before]
+            )?),
+            Database::Postgres(pool) => Ok(sqlx::query_as::<_, Job>(
+                "UPDATE jobs
+                 SET status = 'running', attempts = attempts + 1, locked_by = $1, locked_at = $2, updated_at = $3
+                 WHERE id = (
+                   SELECT id FROM jobs
+                   WHERE (status = 'pending' AND next_run_at <= $4)
+                      OR (status = 'running' AND locked_at < $5)
+                   ORDER BY next_run_at ASC, id ASC
+                   LIMIT 1
+                   FOR UPDATE SKIP LOCKED
+                 )
+                 AND (
+                   (status = 'pending' AND next_run_at <= $6)
+                   OR (status = 'running' AND locked_at < $7)
+                 )
+                 RETURNING id, kind, status, target_type, target_id, attempts, max_attempts, next_run_at,
+                           locked_by, locked_at, last_error, created_at, updated_at",
+            )
+            .bind(runner_id)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(stale_before)
+            .bind(now)
+            .bind(stale_before)
+            .fetch_optional(pool)
+            .await?),
+        }
     }
 
     pub async fn set_status(
@@ -1381,5 +1441,18 @@ impl ResetPasswordTokenRepository {
             [now_utc(), id]
         )?;
         Ok(())
+    }
+
+    pub async fn mark_used_if_valid(
+        &self,
+        id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE reset_password_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
+            [now, id, now]
+        )?;
+        Ok(rows > 0)
     }
 }

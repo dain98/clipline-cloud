@@ -415,10 +415,19 @@ fn generate_public_share_id() -> String {
     let mut value = String::with_capacity(2 + PUBLIC_SHARE_ID_LEN);
     value.push_str("c_");
     for _ in 0..PUBLIC_SHARE_ID_LEN {
-        let index = (OsRng.next_u32() as usize) % BASE62.len();
-        value.push(BASE62[index] as char);
+        value.push(random_base62_char());
     }
     value
+}
+
+fn random_base62_char() -> char {
+    loop {
+        let mut byte = [0_u8; 1];
+        OsRng.fill_bytes(&mut byte);
+        if byte[0] < 248 {
+            return BASE62[(byte[0] % BASE62.len() as u8) as usize] as char;
+        }
+    }
 }
 
 fn public_url(state: &AppState, share_id: &str) -> Option<String> {
