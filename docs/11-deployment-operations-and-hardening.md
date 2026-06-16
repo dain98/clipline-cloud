@@ -214,7 +214,7 @@ Self-hosting diagnostics without a full observability stack.
   diagnostics, SQLite/local backup-restore, and DB/storage `/readyz` failure drills. CI now runs the
   harness in `CONFIG_ONLY=1` mode against all five Compose profiles.
 - 2026-06-16 — Ran the full local smoke path with `BUILD_IMAGE=0 RUN_PROFILES='default minio
-  postgres' deploy/compose/smoke.sh`. Fixed generated local secret permissions so the non-root app
-  user can read persisted secrets, verified the default profile backup/restore path, and verified
-  MinIO/Postgres storage/database dependency failures flip `/readyz` to not-ready. Real-domain Caddy
-  TLS and external-S3 production-bucket checks remain operator-resource gates.
+  postgres' deploy/compose/smoke.sh`. Fixed generated local secret ownership and permissions so the
+  non-root app user can read persisted secrets, verified the default profile backup/restore path,
+  and verified MinIO/Postgres storage/database dependency failures flip `/readyz` to not-ready.
+  Real-domain Caddy TLS and external-S3 production-bucket checks remain operator-resource gates.

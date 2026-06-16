@@ -27,19 +27,35 @@ die() {
 }
 
 cleanup() {
+  local rc="${1:-0}"
+
   if [ "$KEEP" = "1" ]; then
     log "KEEP=1 set; leaving smoke resources in place"
     return
   fi
 
-  for idx in "${!CLEANUP_PROJECTS[@]}"; do
-    cleanup_project "${CLEANUP_PROJECTS[$idx]}" "${CLEANUP_FILES[$idx]}"
-  done
+  if [ "$rc" = "0" ]; then
+    for idx in "${!CLEANUP_PROJECTS[@]}"; do
+      cleanup_project "${CLEANUP_PROJECTS[$idx]}" "${CLEANUP_FILES[$idx]}"
+    done
+  elif [ "${#CLEANUP_PROJECTS[@]}" -gt 0 ]; then
+    log "Smoke failed; leaving active Compose resources in place for inspection"
+  fi
 
   if [ -n "$tmp_dir" ]; then
     rm -rf "$tmp_dir"
   fi
 }
+
+on_exit() {
+  local rc=$?
+  cleanup "$rc"
+  exit "$rc"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require_docker() {
   command -v docker >/dev/null 2>&1 || die "docker is required"
@@ -320,9 +336,9 @@ run_profile() {
       compose "$project" "$file" stop postgres >/dev/null
       expect_not_ready "$project" "$file" database
       compose "$project" "$file" start postgres >/dev/null
-	  wait_healthy "$project" "$file" postgres
-	  wait_ready "$project" "$file"
-	  ;;
+      wait_healthy "$project" "$file" postgres
+      wait_ready "$project" "$file"
+      ;;
   esac
 
   if [ "$KEEP" != "1" ]; then
@@ -376,4 +392,3 @@ main() {
 }
 
 main "$@"
-cleanup
