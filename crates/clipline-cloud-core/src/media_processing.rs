@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{Output, Stdio},
     time::Duration,
 };
 
@@ -9,7 +9,12 @@ use bytes::Bytes;
 use clipline_cloud_storage::{MediaObjectKeys, ObjectKey, PutObjectMetadata, SharedStorageBackend};
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::{fs, process::Command, time};
+use tokio::{
+    fs,
+    io::{AsyncRead, AsyncReadExt},
+    process::Command,
+    time,
+};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DURATION_MS: i64 = 24 * 60 * 60 * 1000;
@@ -17,6 +22,8 @@ const MAX_DIMENSION: i64 = 16_384;
 const MAX_FPS: f64 = 1_000.0;
 const DEFAULT_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_PROCESS_LIMIT: u64 = 32;
+const MAX_MEDIA_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MEDIA_STDERR_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct MediaProcessingConfig {
@@ -203,7 +210,7 @@ async fn run_media_command(
     config: &MediaProcessingConfig,
     program: &str,
     args: Vec<OsString>,
-) -> Result<std::process::Output, MediaProcessingError> {
+) -> Result<Output, MediaProcessingError> {
     let mut command = Command::new(program);
     command
         .env_clear()
@@ -217,11 +224,50 @@ async fn run_media_command(
 
     harden_command(&mut command, config);
 
-    let output = time::timeout(config.timeout, command.output())
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("media command stdout was not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("media command stderr was not captured"))?;
+    let stdout_task = tokio::spawn(read_limited(stdout, MAX_MEDIA_STDOUT_BYTES));
+    let stderr_task = tokio::spawn(read_limited(stderr, MAX_MEDIA_STDERR_BYTES));
+
+    let status = match time::timeout(config.timeout, child.wait()).await {
+        Ok(result) => result?,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(MediaProcessingError::Timeout {
+                program: program.to_string(),
+            });
+        }
+    };
+    let stdout = stdout_task
         .await
-        .map_err(|_| MediaProcessingError::Timeout {
-            program: program.to_string(),
-        })??;
+        .map_err(|error| std::io::Error::other(error.to_string()))??;
+    let mut stderr = stderr_task
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))??;
+    if stderr.truncated {
+        stderr.bytes.extend_from_slice(b"\n[stderr truncated]");
+    }
+    let stdout_truncated = stdout.truncated;
+    let output = Output {
+        status,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+    };
+    if output.status.success() && stdout_truncated {
+        return Err(MediaProcessingError::Validation(format!(
+            "{program} stdout exceeded {MAX_MEDIA_STDOUT_BYTES} bytes"
+        )));
+    }
     if !output.status.success() {
         return Err(MediaProcessingError::ProcessFailed {
             program: program.to_string(),
@@ -229,6 +275,25 @@ async fn run_media_command(
         });
     }
     Ok(output)
+}
+
+struct CapturedStream {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+async fn read_limited<R>(reader: R, limit: usize) -> std::io::Result<CapturedStream>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = reader.take(limit.saturating_add(1) as u64);
+    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+    reader.read_to_end(&mut bytes).await?;
+    let truncated = bytes.len() > limit;
+    if truncated {
+        bytes.truncate(limit);
+    }
+    Ok(CapturedStream { bytes, truncated })
 }
 
 fn os(value: &str) -> OsString {
@@ -275,6 +340,14 @@ fn install_no_network_seccomp() -> std::io::Result<()> {
     use libc::{sock_filter, sock_fprog};
 
     const SYSCALL_NR_OFFSET: u32 = 0;
+    const ARCH_OFFSET: u32 = 4;
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    let audit_arch = seccomp_audit_arch().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "unsupported architecture for seccomp audit check",
+        )
+    })?;
 
     fn stmt(code: u16, k: u32) -> sock_filter {
         sock_filter {
@@ -300,10 +373,26 @@ fn install_no_network_seccomp() -> std::io::Result<()> {
         ]
     }
 
-    let mut filter = vec![stmt(
-        (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
-        SYSCALL_NR_OFFSET,
-    )];
+    let mut filter = vec![
+        stmt(
+            (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+            ARCH_OFFSET,
+        ),
+        sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 1,
+            jf: 0,
+            k: audit_arch,
+        },
+        stmt(
+            (libc::BPF_RET | libc::BPF_K) as u16,
+            SECCOMP_RET_KILL_PROCESS,
+        ),
+        stmt(
+            (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+            SYSCALL_NR_OFFSET,
+        ),
+    ];
     for pair in [
         jump_eq(libc::SYS_socket),
         jump_eq(libc::SYS_socketpair),
@@ -340,6 +429,39 @@ fn install_no_network_seccomp() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn seccomp_audit_arch() -> Option<u32> {
+    Some(0xC000_003E)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn seccomp_audit_arch() -> Option<u32> {
+    Some(0xC000_00B7)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+fn seccomp_audit_arch() -> Option<u32> {
+    Some(0x4000_0003)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+fn seccomp_audit_arch() -> Option<u32> {
+    Some(0x4000_0028)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "x86",
+        target_arch = "arm"
+    ))
+))]
+fn seccomp_audit_arch() -> Option<u32> {
+    None
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -603,5 +725,22 @@ mod tests {
         run_media_command(&config, "true", Vec::new())
             .await
             .expect("sandboxed true");
+    }
+
+    #[tokio::test]
+    async fn read_limited_reports_truncated_stream() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, reader) = tokio::io::duplex(16);
+        let writer_task = tokio::spawn(async move {
+            writer.write_all(b"abcdef").await.expect("write");
+            writer.shutdown().await.expect("shutdown");
+        });
+
+        let captured = read_limited(reader, 3).await.expect("capture");
+        writer_task.await.expect("writer task");
+
+        assert_eq!(captured.bytes, b"abc");
+        assert!(captured.truncated);
     }
 }

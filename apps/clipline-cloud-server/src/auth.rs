@@ -608,15 +608,19 @@ async fn update_user(
     let Some(existing) = state.repositories.users.get(&id).await? else {
         return Err(ApiError::not_found("user not found"));
     };
+    let was_disabled = existing.is_disabled;
     let role = request.role.unwrap_or(existing.role);
     validate_role(&role)?;
-    let is_disabled = request.is_disabled.unwrap_or(existing.is_disabled);
+    let is_disabled = request.is_disabled.unwrap_or(was_disabled);
 
     state
         .repositories
         .users
         .update_profile(&id, request.display_name.as_deref(), &role, is_disabled)
         .await?;
+    if is_disabled && !was_disabled {
+        revoke_user_auth(&state.repositories, &id).await?;
+    }
     audit_with_ip(
         &state.repositories,
         Some(client_ip.as_str()),
@@ -650,6 +654,7 @@ async fn disable_user(
     require_reauth(&auth.user, &request.reauth_password)?;
 
     state.repositories.users.set_disabled(&id, true).await?;
+    revoke_user_auth(&state.repositories, &id).await?;
     audit_with_ip(
         &state.repositories,
         Some(client_ip.as_str()),
@@ -661,6 +666,15 @@ async fn disable_user(
     )
     .await?;
     Ok(Json(json!({ "status": "ok" })))
+}
+
+async fn revoke_user_auth(repositories: &Repositories, user_id: &str) -> Result<(), ApiError> {
+    repositories.sessions.revoke_for_user(user_id).await?;
+    repositories
+        .device_tokens
+        .revoke_all_for_user(user_id)
+        .await?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

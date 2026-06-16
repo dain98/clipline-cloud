@@ -287,6 +287,15 @@ impl SessionRepository {
         Ok(())
     }
 
+    pub async fn revoke_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            [now_utc(), user_id]
+        )?;
+        Ok(())
+    }
+
     pub async fn delete(&self, id: &str) -> DbResult<()> {
         db_execute!(&self.database, "DELETE FROM sessions WHERE id = ?", [id])?;
         Ok(())
@@ -379,6 +388,15 @@ impl DeviceTokenRepository {
             &self.database,
             "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND id = ?",
             [now_utc(), user_id, id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn revoke_all_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            [now_utc(), user_id]
         )?;
         Ok(())
     }

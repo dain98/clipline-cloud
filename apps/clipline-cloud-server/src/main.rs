@@ -26,7 +26,7 @@ use clipline_cloud_db::{Database, Repositories};
 use clipline_cloud_storage::{LocalStorage, S3Storage, S3StorageConfig, SharedStorageBackend};
 use config::{Config, StorageConfig};
 use tokio::{net::TcpListener, sync::watch};
-use tower_http::services::ServeDir;
+use tower_http::{catch_panic::CatchPanicLayer, services::ServeDir};
 use tracing::{info, warn};
 
 #[derive(Clone)]
@@ -249,6 +249,7 @@ fn router(
             config.clone(),
             attach_client_ip,
         ))
+        .layer(CatchPanicLayer::new())
         .with_state(AppState {
             config,
             database,

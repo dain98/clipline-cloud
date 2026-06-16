@@ -691,6 +691,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_user_auth_records_can_be_revoked() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_user_auth_records_can_be_revoked(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_user_auth_records_can_be_revoked() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_user_auth_records_can_be_revoked(database).await;
+    }
+
+    async fn assert_user_auth_records_can_be_revoked(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let expires_at = now_utc() + ChronoDuration::hours(1);
+        let target_user = repos
+            .users
+            .create(&NewUser::new(
+                format!("target-{test_id}"),
+                "argon2id-hash",
+                "user",
+            ))
+            .await
+            .expect("target user");
+        let other_user = repos
+            .users
+            .create(&NewUser::new(
+                format!("other-{test_id}"),
+                "argon2id-hash",
+                "user",
+            ))
+            .await
+            .expect("other user");
+        let target_session = repos
+            .sessions
+            .create(&NewSession::new(
+                &target_user.id,
+                format!("target-session-{test_id}"),
+                expires_at,
+            ))
+            .await
+            .expect("target session");
+        let other_session = repos
+            .sessions
+            .create(&NewSession::new(
+                &other_user.id,
+                format!("other-session-{test_id}"),
+                expires_at,
+            ))
+            .await
+            .expect("other session");
+        let target_token = repos
+            .device_tokens
+            .create(&NewDeviceToken::new(
+                &target_user.id,
+                "Target Desktop",
+                format!("target-token-{test_id}"),
+            ))
+            .await
+            .expect("target device token");
+        let other_token = repos
+            .device_tokens
+            .create(&NewDeviceToken::new(
+                &other_user.id,
+                "Other Desktop",
+                format!("other-token-{test_id}"),
+            ))
+            .await
+            .expect("other device token");
+
+        repos
+            .sessions
+            .revoke_for_user(&target_user.id)
+            .await
+            .expect("revoke target sessions");
+        repos
+            .device_tokens
+            .revoke_all_for_user(&target_user.id)
+            .await
+            .expect("revoke target device tokens");
+
+        assert!(repos
+            .sessions
+            .get(&target_session.id)
+            .await
+            .expect("get target session")
+            .expect("target session")
+            .revoked_at
+            .is_some());
+        assert!(repos
+            .device_tokens
+            .get(&target_token.id)
+            .await
+            .expect("get target token")
+            .expect("target token")
+            .revoked_at
+            .is_some());
+        assert!(repos
+            .sessions
+            .get(&other_session.id)
+            .await
+            .expect("get other session")
+            .expect("other session")
+            .revoked_at
+            .is_none());
+        assert!(repos
+            .device_tokens
+            .get(&other_token.id)
+            .await
+            .expect("get other token")
+            .expect("other token")
+            .revoked_at
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn expired_upload_sessions_can_be_listed_and_aborted() {
         let (_temp_dir, database) = sqlite_test_database().await;
         assert_expired_upload_sessions_can_be_listed_and_aborted(database).await;

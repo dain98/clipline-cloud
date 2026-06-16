@@ -265,6 +265,16 @@ impl JobRunner {
                             let _ = self.repositories.clips.mark_failed(clip_id).await?;
                         }
                     }
+                    if self
+                        .enqueue_next_cleanup_sweep_for_kind(&job.kind, now_utc())
+                        .await?
+                    {
+                        info!(
+                            event = "jobs.cleanup_sweep_rearmed",
+                            job_id = %job.id,
+                            kind = %job.kind,
+                        );
+                    }
                     warn!(
                         event = "jobs.dead",
                         job_id = %job.id,
@@ -291,6 +301,32 @@ impl JobRunner {
         }
 
         Ok(())
+    }
+
+    async fn enqueue_next_cleanup_sweep_for_kind(
+        &self,
+        kind: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, JobRunnerError> {
+        match kind {
+            CLEANUP_SESSION_KIND => {
+                enqueue_cleanup_session_sweep(
+                    &self.repositories,
+                    now + chrono_duration(CLEANUP_SESSION_INTERVAL),
+                )
+                .await?;
+                Ok(true)
+            }
+            CLEANUP_CLIP_KIND => {
+                enqueue_cleanup_clip_sweep(
+                    &self.repositories,
+                    now + chrono_duration(CLEANUP_CLIP_INTERVAL),
+                )
+                .await?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn retry_delay(&self, attempts: i64) -> Duration {
@@ -500,11 +536,8 @@ impl JobRunner {
             self.cleanup_expired_upload_session(&session, now).await?;
         }
 
-        enqueue_cleanup_session_sweep(
-            &self.repositories,
-            now + chrono_duration(CLEANUP_SESSION_INTERVAL),
-        )
-        .await?;
+        self.enqueue_next_cleanup_sweep_for_kind(CLEANUP_SESSION_KIND, now)
+            .await?;
         Ok(())
     }
 
@@ -513,27 +546,33 @@ impl JobRunner {
         session: &UploadSession,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), JobRunnerError> {
-        let key = ObjectKey::parse(&session.storage_key)?;
-        if let Some(storage_upload_id) = session.storage_upload_id.as_deref() {
-            self.storage
-                .abort_multipart_upload(storage_upload_id, &key)
-                .await?;
-        } else if let Err(error) = self.storage.delete_object(&key).await {
-            if !matches!(error, StorageError::NotFound(_)) {
-                return Err(error.into());
-            }
-        }
-
-        self.repositories
-            .upload_parts
-            .delete_for_session(&session.id)
-            .await?;
         if self
             .repositories
             .upload_sessions
             .abort_if_expired(&session.id, now)
             .await?
         {
+            if let Some(storage_upload_id) = session.storage_upload_id.as_deref() {
+                let key = ObjectKey::parse(&session.storage_key)?;
+                if let Err(error) = self
+                    .storage
+                    .abort_multipart_upload(storage_upload_id, &key)
+                    .await
+                {
+                    if !matches!(error, StorageError::NotFound(_)) {
+                        warn!(
+                            event = "jobs.cleanup_session_abort_storage_failed",
+                            session_id = %session.id,
+                            storage_upload_id = %storage_upload_id,
+                            error = %error,
+                        );
+                    }
+                }
+            }
+            self.repositories
+                .upload_parts
+                .delete_for_session(&session.id)
+                .await?;
             self.repositories
                 .clips
                 .soft_delete(&session.clip_id)
@@ -555,11 +594,8 @@ impl JobRunner {
         self.delete_orphan_media_objects(now).await?;
         self.abort_orphan_multipart_uploads(now).await?;
 
-        enqueue_cleanup_clip_sweep(
-            &self.repositories,
-            now + chrono_duration(CLEANUP_CLIP_INTERVAL),
-        )
-        .await?;
+        self.enqueue_next_cleanup_sweep_for_kind(CLEANUP_CLIP_KIND, now)
+            .await?;
         Ok(())
     }
 
@@ -967,6 +1003,127 @@ mod tests {
             .into_iter()
             .find(|job| job.kind == CLEANUP_SESSION_KIND)
             .expect("next cleanup sweep");
+        assert_eq!(next_sweep.target_type, None);
+        assert_eq!(next_sweep.target_id, None);
+    }
+
+    #[tokio::test]
+    async fn cleanup_session_keeps_single_put_object_after_guarded_abort() {
+        let (temp_dir, repositories) = sqlite_repositories().await;
+        let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
+        storage.probe().await.expect("probe");
+        let user = repositories
+            .users
+            .create(&NewUser::new("admin", "hash", "admin"))
+            .await
+            .expect("user");
+        let keys = MediaObjectKeys::generate().expect("keys");
+        storage
+            .put_object(
+                &keys.source,
+                bytes::Bytes::from_static(b"finished body"),
+                PutObjectMetadata::new("video/mp4"),
+            )
+            .await
+            .expect("put object");
+
+        let mut clip = NewClip::new(&user.id, "expired single put", "local");
+        clip.storage_key = Some(keys.source.as_str().to_string());
+        let clip = repositories.clips.create(&clip).await.expect("clip");
+        let mut session = NewUploadSession::new(
+            &clip.id,
+            &user.id,
+            1024,
+            keys.source.as_str(),
+            now_utc() - chrono::Duration::minutes(1),
+        );
+        session.status = "uploading".to_string();
+        let session = repositories
+            .upload_sessions
+            .create(&session)
+            .await
+            .expect("session");
+        enqueue_cleanup_session_sweep(&repositories, now_utc())
+            .await
+            .expect("enqueue cleanup");
+
+        let runner = JobRunner::new(
+            repositories.clone(),
+            storage.clone(),
+            JobRunnerConfig {
+                runner_id: "test-runner".to_string(),
+                poll_interval: Duration::from_millis(10),
+                lock_timeout: Duration::from_secs(60),
+                retry_base_delay: Duration::from_millis(1),
+                retry_max_delay: Duration::from_millis(10),
+            },
+        );
+        assert!(runner.run_once().await.expect("run once"));
+
+        let session = repositories
+            .upload_sessions
+            .get(&session.id)
+            .await
+            .expect("get session")
+            .expect("session exists");
+        assert_eq!(session.status, "aborted");
+        let clip = repositories
+            .clips
+            .get(&clip.id)
+            .await
+            .expect("get clip")
+            .expect("clip exists");
+        assert_eq!(clip.status, "deleted");
+        assert!(storage
+            .object_exists(&keys.source)
+            .await
+            .expect("object is retained for orphan cleanup"));
+    }
+
+    #[tokio::test]
+    async fn dead_cleanup_sweep_rearms_next_global_sweep() {
+        assert_dead_cleanup_rearms(CLEANUP_SESSION_KIND, chrono::Duration::minutes(16)).await;
+        assert_dead_cleanup_rearms(CLEANUP_CLIP_KIND, chrono::Duration::minutes(31)).await;
+    }
+
+    async fn assert_dead_cleanup_rearms(kind: &'static str, due_after: chrono::Duration) {
+        let (temp_dir, repositories) = sqlite_repositories().await;
+        let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
+        storage.probe().await.expect("probe");
+        let mut job = NewJob::new(kind, now_utc());
+        job.target_type = Some("clip".to_string());
+        job.max_attempts = 1;
+        let job = repositories.jobs.create(&job).await.expect("job");
+        let runner = JobRunner::new(
+            repositories.clone(),
+            storage,
+            JobRunnerConfig {
+                runner_id: "test-runner".to_string(),
+                poll_interval: Duration::from_millis(10),
+                lock_timeout: Duration::from_secs(60),
+                retry_base_delay: Duration::from_millis(1),
+                retry_max_delay: Duration::from_millis(10),
+            },
+        );
+
+        assert!(runner.run_once().await.expect("run once"));
+
+        let dead_job = repositories
+            .jobs
+            .get(&job.id)
+            .await
+            .expect("get job")
+            .expect("job exists");
+        assert_eq!(dead_job.status, "dead");
+        let next_sweep = repositories
+            .jobs
+            .list_due(now_utc() + due_after, 10)
+            .await
+            .expect("due jobs")
+            .into_iter()
+            .find(|job| job.kind == kind)
+            .expect("next cleanup sweep");
+        assert_eq!(next_sweep.status, "pending");
         assert_eq!(next_sweep.target_type, None);
         assert_eq!(next_sweep.target_id, None);
     }
