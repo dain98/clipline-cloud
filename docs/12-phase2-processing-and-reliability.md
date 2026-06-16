@@ -1,7 +1,7 @@
 # 12 — Phase 2: Processing & Reliability Polish
 
 **Phase:** Phase 2 (post-v1)
-**Status:** ◐ In progress
+**Status:** ☑ Complete
 **Depends on:** Phase 1 complete (docs 01–11), especially doc 06 (job runner) and doc 02 (dual-backend repos)
 **Design sections:** §30 Phase 2, §13 (untrusted-media boundary), §7 (sweeps), §4.1/§30 (Postgres promotion)
 
@@ -74,7 +74,7 @@ backup docs (doc 11 already drafts them). Remember this is migration testing + S
 - [x] Media-decoding jobs run non-root, network-isolated, time-bounded; a malicious file cannot escape or hang the runner
 - [x] `ffprobe`-reported values that exceed sane bounds are rejected, not stored
 - [x] Expired sessions and orphaned parts/objects are reclaimed automatically; storage doesn't accumulate cruft
-- [ ] CI is green on both SQLite and Postgres; Postgres is documented as supported
+- [x] CI is green on both SQLite and Postgres; Postgres is documented as supported
 - [x] Login rate limiting demonstrably throttles brute-force attempts
 
 ## Progress log
@@ -116,3 +116,6 @@ backup docs (doc 11 already drafts them). Remember this is migration testing + S
   `/thumbnail` and `/poster` endpoints served generated JPEGs instead of placeholders. The smoke
   exposed MJPEG frame-thread initialization failures under sandbox limits; forcing single-threaded
   JPEG encoding fixed the runtime path.
+- 2026-06-16: Opened draft PR #4 for the Phase 2 branch and confirmed GitHub Actions CI passed for
+  Rust, web, and SQLite/Postgres database-backend jobs on both the branch push and PR runs. Phase 2
+  is complete.
