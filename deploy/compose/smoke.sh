@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SMOKE_ID="${SMOKE_ID:-$(date +%Y%m%d%H%M%S)-$$}"
 IMAGE="${CLIPLINE_IMAGE:-clipline-cloud:ops-smoke}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
-RUN_PROFILES="${RUN_PROFILES:-default minio postgres}"
+RUN_PROFILES="${RUN_PROFILES-default minio postgres}"
 RUN_CADDY="${RUN_CADDY:-0}"
 CONFIG_ONLY="${CONFIG_ONLY:-0}"
 KEEP="${KEEP:-0}"
@@ -103,6 +103,8 @@ compose() {
     CLIPLINE_DOMAIN="${CLIPLINE_DOMAIN:-}" \
     CLIPLINE_ACME_EMAIL="${CLIPLINE_ACME_EMAIL:-}" \
     CLIPLINE_PUBLIC_URL="${CLIPLINE_PUBLIC_URL:-}" \
+    CLIPLINE_CADDY_HTTP_PORT="${CLIPLINE_CADDY_HTTP_PORT:-}" \
+    CLIPLINE_CADDY_HTTPS_PORT="${CLIPLINE_CADDY_HTTPS_PORT:-}" \
     CLIPLINE_HTTP_PORT="${CLIPLINE_HTTP_PORT:-}" \
     MINIO_API_PORT="${MINIO_API_PORT:-}" \
     MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-}" \
@@ -298,6 +300,49 @@ smoke_backup_restore() {
   assert_admin_overview "$project" "$file" "$token"
 }
 
+smoke_postgres_backup_restore() {
+  local project="$1"
+  local file="$2"
+  local token="$3"
+  local volume="${project}_clipline_data"
+  local backup_dir="$tmp_dir/backup-$project"
+
+  log "Smoke-testing Postgres/local backup and restore"
+  mkdir -p "$backup_dir"
+  docker run --rm -v "$volume:/data" alpine:3.20 \
+    sh -c 'mkdir -p /data/smoke && printf restored > /data/smoke/postgres-marker.txt'
+  compose "$project" "$file" exec -T postgres \
+    psql -U clipline -d clipline -v ON_ERROR_STOP=1 \
+    -c "CREATE TABLE IF NOT EXISTS smoke_restore_marker (id text PRIMARY KEY);" \
+    -c "INSERT INTO smoke_restore_marker (id) VALUES ('restored') ON CONFLICT (id) DO NOTHING;"
+
+  compose "$project" "$file" stop clipline-cloud >/dev/null
+  compose "$project" "$file" exec -T postgres \
+    pg_dump -U clipline -d clipline -Fc > "$backup_dir/clipline.dump"
+  docker run --rm -v "$volume:/data" -v "$backup_dir:/backup" alpine:3.20 \
+    sh -c 'cd /data && tar czf /backup/clipline-media.tgz .'
+
+  compose "$project" "$file" exec -T postgres \
+    psql -U clipline -d clipline -v ON_ERROR_STOP=1 \
+    -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+  docker run --rm -v "$volume:/data" alpine:3.20 \
+    sh -c 'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true'
+
+  compose "$project" "$file" exec -T postgres \
+    pg_restore -U clipline -d clipline --clean --if-exists --exit-on-error < "$backup_dir/clipline.dump"
+  docker run --rm -v "$volume:/data" -v "$backup_dir:/backup" alpine:3.20 \
+    sh -c 'tar xzf /backup/clipline-media.tgz -C /data'
+  [ "$(compose "$project" "$file" exec -T postgres \
+    psql -U clipline -d clipline -tAc "SELECT count(*) FROM smoke_restore_marker WHERE id = 'restored'")" = "1" ] \
+    || die "restored Postgres marker was not present for $project"
+
+  compose "$project" "$file" start clipline-cloud >/dev/null
+  wait_ready "$project" "$file"
+  docker run --rm -v "$volume:/data" alpine:3.20 \
+    test -f /data/smoke/postgres-marker.txt
+  assert_admin_overview "$project" "$file" "$token"
+}
+
 run_profile() {
   local profile="$1"
   local file=""
@@ -332,6 +377,7 @@ run_profile() {
       wait_ready "$project" "$file"
       ;;
     postgres)
+      smoke_postgres_backup_restore "$project" "$file" "$token"
       log "Checking database readiness failure"
       compose "$project" "$file" stop postgres >/dev/null
       expect_not_ready "$project" "$file" database
@@ -350,20 +396,27 @@ run_caddy_profile() {
   local profile="caddy"
   local file=""
   local project=""
+  local http_port="${CLIPLINE_CADDY_HTTP_PORT:-8081}"
+  local https_port="${CLIPLINE_CADDY_HTTPS_PORT:-8443}"
+  local headers_file="$tmp_dir/caddy-headers.out"
+  local readyz_file="$tmp_dir/caddy-readyz.out"
 
   file="$(compose_file_for_profile "$profile")"
   project="clipline-smoke-caddy-$SMOKE_ID"
   register_cleanup "$project" "$file"
 
+  command -v curl >/dev/null 2>&1 || die "curl is required for Caddy smoke checks"
+
   log "Starting Caddy TLS profile on localhost"
   CLIPLINE_DOMAIN=localhost CLIPLINE_ACME_EMAIL=smoke@example.com \
+    CLIPLINE_CADDY_HTTP_PORT="$http_port" CLIPLINE_CADDY_HTTPS_PORT="$https_port" \
     compose "$project" "$file" up -d
   wait_healthy "$project" "$file" clipline-cloud
   wait_healthy "$project" "$file" caddy
 
-  CLIPLINE_DOMAIN=localhost CLIPLINE_ACME_EMAIL=smoke@example.com \
-    compose "$project" "$file" exec -T caddy sh -c \
-      'curl -k -fsS -D /tmp/headers.out https://localhost/readyz >/tmp/readyz.out && grep -qi "^strict-transport-security:" /tmp/headers.out && grep -qi "^x-content-type-options: nosniff" /tmp/headers.out'
+  curl -k -fsS -D "$headers_file" "https://localhost:${https_port}/readyz" > "$readyz_file"
+  grep -qi "^strict-transport-security:" "$headers_file"
+  grep -qi "^x-content-type-options: nosniff" "$headers_file"
 }
 
 main() {
@@ -385,7 +438,7 @@ main() {
   if [ "$RUN_CADDY" = "1" ]; then
     run_caddy_profile
   else
-    log "Skipping Caddy runtime smoke; set RUN_CADDY=1 to bind 80/443 and test localhost TLS"
+    log "Skipping Caddy runtime smoke; set RUN_CADDY=1 to test localhost TLS through Caddy"
   fi
 
   log "Deployment smoke checks passed"
