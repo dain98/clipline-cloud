@@ -1,0 +1,32 @@
+[package]
+name = "clipline-cloud-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argon2.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clipline-cloud-api-types = { path = "../../crates/clipline-cloud-api-types" }
+clipline-cloud-core = { path = "../../crates/clipline-cloud-core" }
+clipline-cloud-db = { path = "../../crates/clipline-cloud-db" }
+clipline-cloud-storage = { path = "../../crates/clipline-cloud-storage" }
+cookie.workspace = true
+hmac.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
