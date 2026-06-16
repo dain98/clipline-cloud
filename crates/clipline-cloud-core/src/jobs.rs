@@ -281,7 +281,11 @@ impl JobRunner {
                         .await?;
                     if job.kind == VALIDATE_OBJECT_KIND {
                         if let Some(clip_id) = job.target_id.as_deref() {
-                            let _ = self.repositories.clips.mark_failed(clip_id).await?;
+                            self.mark_clip_failed_with_upload_reason(
+                                clip_id,
+                                "uploaded object could not be validated after maximum attempts",
+                            )
+                            .await?;
                         }
                     }
                     if self
@@ -672,8 +676,37 @@ impl JobRunner {
         for clip in ready_clips {
             let source_key = clip_source_key(&clip)?;
             if !self.storage.object_exists(&source_key).await? {
-                self.repositories.clips.mark_failed(&clip.id).await?;
+                self.mark_clip_failed_with_upload_reason(
+                    &clip.id,
+                    "ready clip source object is missing",
+                )
+                .await?;
             }
+        }
+        Ok(())
+    }
+
+    async fn mark_clip_failed_with_upload_reason(
+        &self,
+        clip_id: &str,
+        reason: &str,
+    ) -> Result<(), JobRunnerError> {
+        if !self.repositories.clips.mark_failed(clip_id).await? {
+            warn!(
+                event = "jobs.clip_mark_failed_skipped",
+                clip_id = %clip_id,
+            );
+        }
+        if let Some(session) = self
+            .repositories
+            .upload_sessions
+            .get_by_clip_id(clip_id)
+            .await?
+        {
+            self.repositories
+                .upload_sessions
+                .fail(&session.id, reason)
+                .await?;
         }
         Ok(())
     }
@@ -883,6 +916,19 @@ mod tests {
             "objects/media/missing000000000000000000000000000000000000/source.mp4".to_string(),
         );
         let clip = repositories.clips.create(&clip).await.expect("clip");
+        let mut session = NewUploadSession::new(
+            &clip.id,
+            &user.id,
+            10,
+            clip.storage_key.as_deref().expect("storage key"),
+            now_utc() + chrono::Duration::hours(1),
+        );
+        session.status = "completed".to_string();
+        let session = repositories
+            .upload_sessions
+            .create(&session)
+            .await
+            .expect("upload session");
         let mut job = NewJob::new(VALIDATE_OBJECT_KIND, now_utc());
         job.target_type = Some("clip".to_string());
         job.target_id = Some(clip.id.clone());
@@ -918,6 +964,18 @@ mod tests {
             .expect("get clip")
             .expect("clip exists");
         assert_eq!(clip.status, "failed");
+        let session = repositories
+            .upload_sessions
+            .get(&session.id)
+            .await
+            .expect("get upload session")
+            .expect("upload session exists");
+        assert_eq!(session.status, "failed");
+        assert_eq!(
+            session.failure_reason.as_deref(),
+            Some("uploaded object could not be validated after maximum attempts")
+        );
+        assert!(session.failed_at.is_some());
     }
 
     #[tokio::test]
@@ -1209,6 +1267,19 @@ mod tests {
             .create(&missing_clip)
             .await
             .expect("missing clip");
+        let mut missing_session = NewUploadSession::new(
+            &missing_clip.id,
+            &user.id,
+            1024,
+            missing_keys.source.as_str(),
+            now_utc() + chrono::Duration::hours(1),
+        );
+        missing_session.status = "completed".to_string();
+        let missing_session = repositories
+            .upload_sessions
+            .create(&missing_session)
+            .await
+            .expect("missing upload session");
 
         let orphan_keys = MediaObjectKeys::generate().expect("orphan keys");
         let orphan_upload_id = storage
@@ -1275,6 +1346,17 @@ mod tests {
             .expect("get missing clip")
             .expect("missing clip still exists");
         assert_eq!(missing_clip.status, "failed");
+        let missing_session = repositories
+            .upload_sessions
+            .get(&missing_session.id)
+            .await
+            .expect("get missing upload session")
+            .expect("missing upload session");
+        assert_eq!(missing_session.status, "failed");
+        assert_eq!(
+            missing_session.failure_reason.as_deref(),
+            Some("ready clip source object is missing")
+        );
 
         let uploads = storage
             .list_multipart_uploads(MEDIA_OBJECT_PREFIX)

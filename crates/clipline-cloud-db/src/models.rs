@@ -296,9 +296,11 @@ pub struct UploadSession {
     pub storage_key: String,
     pub storage_upload_id: Option<String>,
     pub checksum_sha256: Option<String>,
+    pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -314,9 +316,11 @@ pub struct NewUploadSession {
     pub storage_key: String,
     pub storage_upload_id: Option<String>,
     pub checksum_sha256: Option<String>,
+    pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -340,9 +344,11 @@ impl NewUploadSession {
             storage_key: storage_key.into(),
             storage_upload_id: None,
             checksum_sha256: None,
+            failure_reason: None,
             created_at: now,
             updated_at: now,
             completed_at: None,
+            failed_at: None,
             expires_at,
         }
     }

@@ -511,7 +511,9 @@ impl ClipRepository {
         Ok(db_fetch_optional!(
             &self.database,
             Clip,
-            CLIP_SELECT_SQL.to_string() + " WHERE owner_user_id = ? AND client_clip_id = ?",
+            CLIP_SELECT_SQL.to_string()
+                + " WHERE owner_user_id = ? AND client_clip_id = ?
+                    AND deleted_at IS NULL AND status <> 'deleted'",
             [owner_user_id, client_clip_id]
         )?)
     }
@@ -998,9 +1000,9 @@ impl UploadSessionRepository {
             &self.database,
             "INSERT INTO upload_sessions (
                id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
-               storage_key, storage_upload_id, checksum_sha256, created_at, updated_at, completed_at, expires_at
+               storage_key, storage_upload_id, checksum_sha256, failure_reason, created_at, updated_at, completed_at, failed_at, expires_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.clip_id,
@@ -1012,9 +1014,11 @@ impl UploadSessionRepository {
                 &new.storage_key,
                 new.storage_upload_id.as_deref(),
                 new.checksum_sha256.as_deref(),
+                new.failure_reason.as_deref(),
                 new.created_at,
                 new.updated_at,
                 new.completed_at,
+                new.failed_at,
                 new.expires_at,
             ]
         )?;
@@ -1030,7 +1034,7 @@ impl UploadSessionRepository {
             &self.database,
             UploadSession,
             "SELECT id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
-                    storage_key, storage_upload_id, checksum_sha256, created_at, updated_at, completed_at, expires_at
+                    storage_key, storage_upload_id, checksum_sha256, failure_reason, created_at, updated_at, completed_at, failed_at, expires_at
              FROM upload_sessions WHERE id = ?",
             [id]
         )?)
@@ -1041,7 +1045,7 @@ impl UploadSessionRepository {
             &self.database,
             UploadSession,
             "SELECT id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
-                    storage_key, storage_upload_id, checksum_sha256, created_at, updated_at, completed_at, expires_at
+                    storage_key, storage_upload_id, checksum_sha256, failure_reason, created_at, updated_at, completed_at, failed_at, expires_at
              FROM upload_sessions WHERE clip_id = ?
              ORDER BY created_at DESC, id DESC LIMIT 1",
             [clip_id]
@@ -1073,7 +1077,7 @@ impl UploadSessionRepository {
             &self.database,
             UploadSession,
             "SELECT id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
-                    storage_key, storage_upload_id, checksum_sha256, created_at, updated_at, completed_at, expires_at
+                    storage_key, storage_upload_id, checksum_sha256, failure_reason, created_at, updated_at, completed_at, failed_at, expires_at
              FROM upload_sessions
              WHERE status IN ('created','uploading') AND expires_at <= ?
              ORDER BY expires_at ASC, id ASC LIMIT ?",
@@ -1114,7 +1118,9 @@ impl UploadSessionRepository {
         let now = now_utc();
         db_execute!(
             &self.database,
-            "UPDATE upload_sessions SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE upload_sessions
+             SET status = 'completed', completed_at = ?, failure_reason = NULL, failed_at = NULL, updated_at = ?
+             WHERE id = ?",
             [now, now, id]
         )?;
         Ok(())
@@ -1144,11 +1150,12 @@ impl UploadSessionRepository {
         Ok(rows > 0)
     }
 
-    pub async fn fail(&self, id: &str) -> DbResult<()> {
+    pub async fn fail(&self, id: &str, reason: &str) -> DbResult<()> {
+        let now = now_utc();
         db_execute!(
             &self.database,
-            "UPDATE upload_sessions SET status = 'failed', updated_at = ? WHERE id = ?",
-            [now_utc(), id]
+            "UPDATE upload_sessions SET status = 'failed', failure_reason = ?, failed_at = ?, updated_at = ? WHERE id = ?",
+            [reason, now, now, id]
         )?;
         Ok(())
     }
@@ -1158,7 +1165,7 @@ impl UploadSessionRepository {
             &self.database,
             UploadSession,
             "SELECT id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
-                    storage_key, storage_upload_id, checksum_sha256, created_at, updated_at, completed_at, expires_at
+                    storage_key, storage_upload_id, checksum_sha256, failure_reason, created_at, updated_at, completed_at, failed_at, expires_at
              FROM upload_sessions WHERE status = 'failed'
              ORDER BY updated_at DESC, id DESC LIMIT ?",
             [limit]

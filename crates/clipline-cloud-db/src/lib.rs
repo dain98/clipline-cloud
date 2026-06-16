@@ -152,6 +152,15 @@ impl Database {
     }
 }
 
+impl DbError {
+    pub fn is_unique_violation(&self) -> bool {
+        match self {
+            Self::Sqlx(sqlx::Error::Database(error)) => error.is_unique_violation(),
+            _ => false,
+        }
+    }
+}
+
 async fn connect_sqlite(database_url: &str) -> DbResult<Database> {
     create_sqlite_parent_dir(database_url)?;
 
@@ -895,6 +904,37 @@ mod tests {
                 .status,
             "aborted"
         );
+        repos
+            .upload_sessions
+            .fail(&active.id, "storage temporarily unavailable")
+            .await
+            .expect("fail active upload");
+        let failed = repos
+            .upload_sessions
+            .get(&active.id)
+            .await
+            .expect("get failed")
+            .expect("failed upload");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(
+            failed.failure_reason.as_deref(),
+            Some("storage temporarily unavailable")
+        );
+        assert!(failed.failed_at.is_some());
+        repos
+            .upload_sessions
+            .complete(&active.id)
+            .await
+            .expect("complete after failure");
+        let completed = repos
+            .upload_sessions
+            .get(&active.id)
+            .await
+            .expect("get completed")
+            .expect("completed");
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.failure_reason, None);
+        assert_eq!(completed.failed_at, None);
 
         let cleanup_kind = format!("cleanup_session_{test_id}");
         let global_job = repos
@@ -1090,6 +1130,31 @@ mod tests {
             .expect_err("duplicate client id should fail");
 
         assert!(matches!(err, DbError::Sqlx(sqlx::Error::Database(_))));
+        assert!(err.is_unique_violation());
+
+        let first = repos
+            .clips
+            .get_by_owner_client_clip_id(&user.id, first.client_clip_id.as_deref().unwrap())
+            .await
+            .expect("lookup first")
+            .expect("first clip");
+        repos
+            .clips
+            .soft_delete(&first.id)
+            .await
+            .expect("soft delete first clip");
+        assert!(repos
+            .clips
+            .get_by_owner_client_clip_id(&user.id, first.client_clip_id.as_deref().unwrap())
+            .await
+            .expect("lookup deleted")
+            .is_none());
+
+        repos
+            .clips
+            .create(&duplicate)
+            .await
+            .expect("duplicate client id is reusable after soft delete");
     }
 
     #[tokio::test]

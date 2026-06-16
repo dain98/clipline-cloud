@@ -127,6 +127,8 @@ pub struct UploadProgressResponse {
     pub missing_part_count: u16,
     pub next_part_number: Option<u16>,
     pub progress_basis_points: u16,
+    pub failure_reason: Option<String>,
+    pub recovery_action: Option<String>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub received_parts: Vec<u16>,
     pub missing_parts: Vec<u16>,

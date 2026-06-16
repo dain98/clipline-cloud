@@ -226,3 +226,10 @@ Self-hosting diagnostics without a full observability stack.
   `BUILD_IMAGE=0 RUN_PROFILES='' RUN_CADDY=1 deploy/compose/smoke.sh`. The smoke check uses
   localhost TLS on high ports and verifies HSTS plus `nosniff` headers; real-domain ACME remains the
   production gate.
+- 2026-06-16 — Started failure-mode hardening by persisting upload failure reasons/timestamps,
+  returning retryable `503` responses with `Retry-After` for transient storage write failures,
+  exposing failed-upload recovery actions in upload progress/admin diagnostics, and showing the
+  stored reason in the admin UI. Async validation failures and missing-source sweeps now persist
+  upload failure reasons too. Soft-deleted clips no longer reserve `client_clip_id`, and concurrent
+  idempotent retry races clean up orphaned multipart uploads before returning the existing session
+  or a retryable conflict.

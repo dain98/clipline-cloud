@@ -234,6 +234,8 @@ Migration is explicit and not automatic.
 - Processing failed: durable jobs retry, then appear in admin dead-job diagnostics.
 - Restart mid-upload or mid-processing: upload sessions and jobs are durable.
 - Disk full: storage write fails and the upload stays retryable or failed with diagnostics.
+- Permanent upload validation failure: the upload is marked failed with a stored reason, admin
+  diagnostics show the reason, and the user can delete the failed upload before retrying.
 - Misconfigured public URL: non-HTTPS URLs log a startup warning; HTTPS Caddy profile should not.
 - Metadata row without object: media returns a storage-not-found response and diagnostics stay visible.
 - Object without row: object is ignored by the API; restore/migration runbooks preserve DB as source of truth.
