@@ -22,12 +22,21 @@ docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.minio.yml up -d
 ```
 
+Both local-test profiles generate stable local secrets into a named `clipline_secrets` volume on
+first start. Removing that volume signs out browser sessions and invalidates outstanding CSRF
+tokens. The MinIO profile is for local S3 testing only: MinIO ports bind to `127.0.0.1`, credentials
+are generated into the local secrets volume, and operators should use `docker-compose.s3.yml` with a
+real private bucket for production object storage.
+
 The first boot creates the initial admin account. If no bootstrap password is configured, read the
 generated one-time password from logs:
 
 ```sh
 docker compose -f docker-compose.yml logs clipline-cloud
 ```
+
+Rotate the bootstrap admin password after first login, especially when using a fixed
+`admin_password.txt` secret.
 
 The Caddy, Postgres, and external-S3 profiles expect operator-provided files in
 `deploy/compose/secrets/`. That directory is ignored except for its `.gitignore`.
@@ -55,12 +64,22 @@ postgres://clipline:replace-with-postgres-password@postgres:5432/clipline
 Use `docker-compose.caddy.yml` for the single-host HTTPS path:
 
 ```sh
-CLIPLINE_DOMAIN=clips.example.com docker compose -f docker-compose.caddy.yml up -d
+CLIPLINE_DOMAIN=clips.example.com CLIPLINE_ACME_EMAIL=ops@example.com \
+  docker compose -f docker-compose.caddy.yml up -d
 ```
+
+Set `CLIPLINE_ACME_EMAIL` to a monitored address so ACME expiry and account notices reach an
+operator.
 
 The Caddy service uses a fixed internal IP (`172.30.0.2`) and the app sets
 `CLIPLINE_TRUSTED_PROXY_HOPS=172.30.0.2`. `X-Forwarded-For` is ignored unless the socket peer is one
-of the configured trusted proxy IPs.
+of the configured trusted proxy IPs. If you override the Compose subnet or Caddy static IP, update
+the Caddy `ipv4_address` and `CLIPLINE_TRUSTED_PROXY_HOPS` together or audit logs will record the
+proxy IP instead of the real client IP.
+
+For production, pin `CLIPLINE_IMAGE` to a released version tag instead of relying on `:latest`.
+Profiles that default to `http://localhost:8080` are local/LAN defaults; set `CLIPLINE_PUBLIC_URL` to
+an HTTPS URL behind Caddy before exposing S3 or MinIO-backed deployments to users.
 
 ## Operator Limits
 
@@ -78,6 +97,9 @@ Defaults:
 
 The server enforces the per-user storage quota when an upload session is created. The global warning
 threshold is surfaced in admin diagnostics and does not block uploads.
+
+Upload body limits are enforced by the app's configured maximum upload size and Axum body limit.
+Caddy's `reverse_proxy` does not add a separate request-body cap.
 
 ## Health And Diagnostics
 

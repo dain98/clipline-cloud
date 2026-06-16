@@ -38,8 +38,8 @@ Clipline emits MP4, v1 restricts uploads to MP4.
   sensitive admin actions; bearer tokens for desktop (doc 04).
 - Per-user authorization on every clip/upload/media endpoint (docs 05/07/08).
 - Random, non-sequential public share IDs (doc 08).
-- Login rate limiting; upload size limits; strict server-side content-type/extension handling; no
-  client-controlled paths.
+- Login rate limiting; upload size limits enforced by the app request/body limit (not by Caddy
+  `reverse_proxy`); strict server-side content-type/extension handling; no client-controlled paths.
 - Private S3 bucket by default (doc 03).
 - `X-Forwarded-For` is trusted **only** from the known proxy hop (deployment is always behind
   Caddy/Traefik/nginx); otherwise audit-log IPs are spoofable.
@@ -68,13 +68,16 @@ services:
       CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: "admin"
       # No password set -> a one-time admin password is generated and printed to
       # the logs on first start (doc 04). Read it with:  docker compose logs clipline-cloud
+      # Set CLIPLINE_SESSION_SECRET or CLIPLINE_SESSION_SECRET_FILE for stable sessions.
     volumes:
       - /mnt/media/clipline-cloud:/data
 ```
 
 The public URL points at `localhost` because the minimal example has no reverse proxy or TLS. The
 non-HTTPS public URL trips the §21 startup warning (expected for a local test); the production Caddy
-profile uses the real domain over HTTPS.
+profile uses the real domain over HTTPS. The shipped default Compose profile generates a persisted
+local session secret in a named volume so browser sessions and CSRF tokens survive container
+restarts.
 
 **Fixed admin password via Docker secrets (note the `secrets:` block):**
 
@@ -91,15 +94,22 @@ services:
       CLIPLINE_DATA_DIR: "/data"
       CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: "admin"
       CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD_FILE: "/run/secrets/admin_password"
+      CLIPLINE_SESSION_SECRET_FILE: "/run/secrets/session_secret"
     volumes:
       - /mnt/media/clipline-cloud:/data
     secrets:
       - admin_password
+      - session_secret
 
 secrets:
   admin_password:
     file: ./secrets/admin_password.txt
+  session_secret:
+    file: ./secrets/session_secret.txt
 ```
+
+After first login, rotate the bootstrap admin password through the app. For production, pin
+`CLIPLINE_IMAGE` to a release tag instead of using `:latest`.
 
 S3 mode adds the `CLIPLINE_S3_*` block and sets `CLIPLINE_STORAGE_BACKEND: s3`. Postgres mode swaps
 `CLIPLINE_DATABASE_URL` and adds a `postgres:16` service.
@@ -107,12 +117,18 @@ S3 mode adds the `CLIPLINE_S3_*` block and sets `CLIPLINE_STORAGE_BACKEND: s3`. 
 **Profiles shipped in the repo (`deploy/compose/`):**
 
 - `docker-compose.yml` — SQLite + local disk (the simplest path).
-- `docker-compose.caddy.yml` — adds Caddy + automatic HTTPS.
+- `docker-compose.caddy.yml` — adds Caddy + automatic HTTPS; set `CLIPLINE_ACME_EMAIL` to a
+  monitored address.
 - `docker-compose.postgres.yml` — Postgres instead of SQLite.
 - `docker-compose.s3.yml` — external S3-compatible storage.
-- `docker-compose.minio.yml` — bundled MinIO for local S3 testing.
+- `docker-compose.minio.yml` — bundled MinIO for local S3 testing; generates local credentials,
+  binds MinIO to `127.0.0.1`, and is not the production object-storage path.
 
 `_FILE` secret variants are supported everywhere and preferred over inline passwords.
+
+The Caddy profile pins Caddy to `172.30.0.2` and sets
+`CLIPLINE_TRUSTED_PROXY_HOPS=172.30.0.2`. If the subnet or static IP is overridden, update both
+values together or the server will ignore `X-Forwarded-For` and audit logs will show the proxy IP.
 
 ### Backup & restore (§25)
 
@@ -190,3 +206,6 @@ Self-hosting diagnostics without a full observability stack.
   reported `/readyz` OK, generated a first-run admin password, accepted admin login/device-token
   auth, returned admin diagnostics, and emitted secure headers. The MinIO profile also created an
   upload session and completed a single-PUT S3-backed upload.
+- 2026-06-16 — Tightened deployment review issues: default/MinIO local-test profiles now use
+  generated persisted local secrets, MinIO binds only to localhost, the Caddy profile wires an ACME
+  email, and docs clarify app-enforced body limits plus trusted-proxy IP coupling.
