@@ -218,3 +218,11 @@ Self-hosting diagnostics without a full observability stack.
   non-root app user can read persisted secrets, verified the default profile backup/restore path,
   and verified MinIO/Postgres storage/database dependency failures flip `/readyz` to not-ready.
   Real-domain Caddy TLS and external-S3 production-bucket checks remain operator-resource gates.
+- 2026-06-16 — Extended the smoke harness with a Postgres/local backup-restore drill: stop the app,
+  `pg_dump` the metadata DB, archive the media volume, intentionally drop the DB schema and clear
+  media, restore both artifacts, restart the app, and verify `/readyz`, admin diagnostics, restored
+  database data, and the restored media marker.
+- 2026-06-16 — Made Caddy host ports configurable and verified the Caddy profile locally with
+  `BUILD_IMAGE=0 RUN_PROFILES='' RUN_CADDY=1 deploy/compose/smoke.sh`. The smoke check uses
+  localhost TLS on high ports and verifies HSTS plus `nosniff` headers; real-domain ACME remains the
+  production gate.

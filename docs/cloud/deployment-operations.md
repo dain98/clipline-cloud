@@ -78,8 +78,8 @@ deploy/compose/smoke.sh
 
 By default it builds a local `clipline-cloud:ops-smoke` image, validates all five Compose files,
 starts the default, MinIO, and Postgres profiles with temporary secrets, checks `/readyz`, creates an
-admin device token, opens admin diagnostics, verifies SQLite/local backup and restore, and confirms
-that stopping MinIO/Postgres flips `/readyz` to storage/database not-ready.
+admin device token, opens admin diagnostics, verifies SQLite/local and Postgres/local backup and
+restore, and confirms that stopping MinIO/Postgres flips `/readyz` to storage/database not-ready.
 
 Useful variants:
 
@@ -87,11 +87,13 @@ Useful variants:
 CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
 BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:latest deploy/compose/smoke.sh
 RUN_PROFILES="default minio" deploy/compose/smoke.sh
-RUN_CADDY=1 deploy/compose/smoke.sh
+RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
 ```
 
-`RUN_CADDY=1` binds host ports 80/443 and checks localhost TLS plus secure headers through Caddy.
-Use the production HTTPS command below with a real DNS name for the ACME-backed deployment check.
+`RUN_CADDY=1` checks localhost TLS plus secure headers through Caddy on host ports `8081`/`8443` by
+default. Override `CLIPLINE_CADDY_HTTP_PORT` and `CLIPLINE_CADDY_HTTPS_PORT` when those ports are
+busy or when rehearsing production-style `80`/`443` bindings. Use the production HTTPS command below
+with a real DNS name for the ACME-backed deployment check.
 If a smoke check fails, the active Compose project is left in place for `docker compose logs` and
 manual inspection; remove it with `docker compose -p <project> -f <profile-file> down -v`.
 

@@ -51,9 +51,9 @@ services:
       CLIPLINE_DOMAIN: ${CLIPLINE_DOMAIN:-clips.example.com}
       CLIPLINE_ACME_EMAIL: ${CLIPLINE_ACME_EMAIL:-admin@example.com}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${CLIPLINE_CADDY_HTTP_PORT:-80}:80"
+      - "${CLIPLINE_CADDY_HTTPS_PORT:-443}:443"
+      - "${CLIPLINE_CADDY_HTTPS_PORT:-443}:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
