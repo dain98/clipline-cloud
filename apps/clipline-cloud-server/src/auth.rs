@@ -42,8 +42,11 @@ const SESSION_COOKIE: &str = "clipline_session";
 const CSRF_HEADER: &str = "x-csrf-token";
 const SESSION_TTL_DAYS: i64 = 30;
 const RESET_TOKEN_TTL_HOURS: i64 = 2;
-const LOGIN_LIMIT_WINDOW: Duration = Duration::from_secs(60);
-const LOGIN_LIMIT_MAX_FAILURES: u32 = 10;
+const LOGIN_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
+const LOGIN_USERNAME_MAX_FAILURES: u32 = 5;
+const LOGIN_SOURCE_MAX_FAILURES: u32 = 30;
+const LOGIN_LOCKOUT_BASE: Duration = Duration::from_secs(60);
+const LOGIN_LOCKOUT_MAX: Duration = Duration::from_secs(15 * 60);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -57,6 +60,7 @@ pub struct AuthRuntime {
 struct LoginBucket {
     failures: u32,
     reset_at: Instant,
+    blocked_until: Option<Instant>,
 }
 
 impl AuthRuntime {
@@ -95,39 +99,116 @@ impl AuthRuntime {
         csrf_signature(&self.csrf_secret, session_hash, nonce) == signature
     }
 
-    fn login_allowed(&self, username: &str) -> bool {
-        let key = username.to_ascii_lowercase();
+    fn login_allowed(&self, username: &str, source: &str) -> Result<(), Duration> {
         let mut buckets = self.login_limiter.lock().expect("login limiter lock");
-        let bucket = buckets.entry(key).or_insert_with(|| LoginBucket {
-            failures: 0,
-            reset_at: Instant::now() + LOGIN_LIMIT_WINDOW,
-        });
-        if Instant::now() >= bucket.reset_at {
-            bucket.failures = 0;
-            bucket.reset_at = Instant::now() + LOGIN_LIMIT_WINDOW;
+        let now = Instant::now();
+        prune_login_buckets(&mut buckets, now);
+        let username_retry = login_bucket_retry_after(
+            &mut buckets,
+            login_username_key(username),
+            now,
+            LOGIN_USERNAME_MAX_FAILURES,
+        );
+        let source_retry = login_bucket_retry_after(
+            &mut buckets,
+            login_source_key(source),
+            now,
+            LOGIN_SOURCE_MAX_FAILURES,
+        );
+        match (username_retry, source_retry) {
+            (None, None) => Ok(()),
+            (Some(left), None) | (None, Some(left)) => Err(left),
+            (Some(left), Some(right)) => Err(left.max(right)),
         }
-        bucket.failures < LOGIN_LIMIT_MAX_FAILURES
     }
 
-    fn record_login_failure(&self, username: &str) {
-        let key = username.to_ascii_lowercase();
+    fn record_login_failure(&self, username: &str, source: &str) {
         let mut buckets = self.login_limiter.lock().expect("login limiter lock");
-        let bucket = buckets.entry(key).or_insert_with(|| LoginBucket {
-            failures: 0,
-            reset_at: Instant::now() + LOGIN_LIMIT_WINDOW,
-        });
-        if Instant::now() >= bucket.reset_at {
-            bucket.failures = 0;
-            bucket.reset_at = Instant::now() + LOGIN_LIMIT_WINDOW;
-        }
-        bucket.failures += 1;
+        let now = Instant::now();
+        prune_login_buckets(&mut buckets, now);
+        record_login_bucket_failure(
+            &mut buckets,
+            login_username_key(username),
+            now,
+            LOGIN_USERNAME_MAX_FAILURES,
+        );
+        record_login_bucket_failure(
+            &mut buckets,
+            login_source_key(source),
+            now,
+            LOGIN_SOURCE_MAX_FAILURES,
+        );
     }
 
-    fn record_login_success(&self, username: &str) {
+    fn record_login_success(&self, username: &str, _source: &str) {
         self.login_limiter
             .lock()
             .expect("login limiter lock")
-            .remove(&username.to_ascii_lowercase());
+            .remove(&login_username_key(username));
+    }
+}
+
+fn login_username_key(username: &str) -> String {
+    format!("user:{}", username.trim().to_ascii_lowercase())
+}
+
+fn login_source_key(source: &str) -> String {
+    format!("source:{source}")
+}
+
+fn new_login_bucket(now: Instant) -> LoginBucket {
+    LoginBucket {
+        failures: 0,
+        reset_at: now + LOGIN_LIMIT_WINDOW,
+        blocked_until: None,
+    }
+}
+
+fn prune_login_buckets(buckets: &mut HashMap<String, LoginBucket>, now: Instant) {
+    buckets.retain(|_, bucket| {
+        bucket.reset_at > now || bucket.blocked_until.is_some_and(|blocked| blocked > now)
+    });
+}
+
+fn login_bucket_retry_after(
+    buckets: &mut HashMap<String, LoginBucket>,
+    key: String,
+    now: Instant,
+    _max_failures: u32,
+) -> Option<Duration> {
+    let bucket = buckets.get_mut(&key)?;
+    if now >= bucket.reset_at && bucket.blocked_until.map_or(true, |blocked| blocked <= now) {
+        bucket.failures = 0;
+        bucket.reset_at = now + LOGIN_LIMIT_WINDOW;
+        bucket.blocked_until = None;
+        return None;
+    }
+    bucket
+        .blocked_until
+        .and_then(|blocked| blocked.checked_duration_since(now))
+}
+
+fn record_login_bucket_failure(
+    buckets: &mut HashMap<String, LoginBucket>,
+    key: String,
+    now: Instant,
+    max_failures: u32,
+) {
+    let bucket = buckets.entry(key).or_insert_with(|| new_login_bucket(now));
+    if now >= bucket.reset_at && bucket.blocked_until.map_or(true, |blocked| blocked <= now) {
+        *bucket = new_login_bucket(now);
+    }
+    bucket.failures = bucket.failures.saturating_add(1);
+    if bucket.failures >= max_failures {
+        let overage = bucket.failures.saturating_sub(max_failures).min(8);
+        let multiplier = 2_u64.saturating_pow(overage);
+        let lockout = Duration::from_secs(
+            LOGIN_LOCKOUT_BASE
+                .as_secs()
+                .saturating_mul(multiplier)
+                .min(LOGIN_LOCKOUT_MAX.as_secs()),
+        );
+        bucket.blocked_until = Some(now + lockout);
     }
 }
 
@@ -232,8 +313,14 @@ async fn login(
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
-    if !state.auth.login_allowed(&request.username) {
-        return Err(ApiError::too_many_requests("too many login attempts"));
+    if let Err(retry_after) = state
+        .auth
+        .login_allowed(&request.username, client_ip.as_str())
+    {
+        return Err(ApiError::too_many_requests_after(
+            "too many login attempts",
+            retry_after,
+        ));
     }
 
     let Some(user) = state
@@ -242,15 +329,21 @@ async fn login(
         .get_by_username(&request.username)
         .await?
     else {
-        state.auth.record_login_failure(&request.username);
+        state
+            .auth
+            .record_login_failure(&request.username, client_ip.as_str());
         return Err(ApiError::unauthorized("invalid username or password"));
     };
     if user.is_disabled || !verify_password(&request.password, &user.password_hash)? {
-        state.auth.record_login_failure(&request.username);
+        state
+            .auth
+            .record_login_failure(&request.username, client_ip.as_str());
         return Err(ApiError::unauthorized("invalid username or password"));
     }
 
-    state.auth.record_login_success(&request.username);
+    state
+        .auth
+        .record_login_success(&request.username, client_ip.as_str());
 
     let raw_token = generate_prefixed_token("clp_ses_");
     let token_hash = hash_token(&raw_token);
@@ -319,13 +412,20 @@ async fn me(
 
 async fn create_device_token(
     State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
     Json(request): Json<CreateDeviceTokenRequest>,
 ) -> Result<Json<CreateDeviceTokenResponse>, ApiError> {
     if request.name.trim().is_empty() {
         return Err(ApiError::bad_request("device name is required"));
     }
-    if !state.auth.login_allowed(&request.username) {
-        return Err(ApiError::too_many_requests("too many login attempts"));
+    if let Err(retry_after) = state
+        .auth
+        .login_allowed(&request.username, client_ip.as_str())
+    {
+        return Err(ApiError::too_many_requests_after(
+            "too many login attempts",
+            retry_after,
+        ));
     }
 
     let Some(user) = state
@@ -334,15 +434,21 @@ async fn create_device_token(
         .get_by_username(&request.username)
         .await?
     else {
-        state.auth.record_login_failure(&request.username);
+        state
+            .auth
+            .record_login_failure(&request.username, client_ip.as_str());
         return Err(ApiError::unauthorized("invalid username or password"));
     };
     if user.is_disabled || !verify_password(&request.password, &user.password_hash)? {
-        state.auth.record_login_failure(&request.username);
+        state
+            .auth
+            .record_login_failure(&request.username, client_ip.as_str());
         return Err(ApiError::unauthorized("invalid username or password"));
     }
 
-    state.auth.record_login_success(&request.username);
+    state
+        .auth
+        .record_login_success(&request.username, client_ip.as_str());
 
     let raw_token = generate_prefixed_token("clp_dev_");
     let token_hash = hash_token(&raw_token);
@@ -939,6 +1045,7 @@ fn device_token_response(value: DeviceToken) -> DeviceTokenResponse {
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    retry_after: Option<Duration>,
 }
 
 impl ApiError {
@@ -946,6 +1053,7 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -953,6 +1061,7 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -960,6 +1069,7 @@ impl ApiError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -967,6 +1077,7 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -974,6 +1085,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -981,6 +1093,7 @@ impl ApiError {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -988,6 +1101,18 @@ impl ApiError {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: message.into(),
+            retry_after: None,
+        }
+    }
+
+    pub(crate) fn too_many_requests_after(
+        message: impl Into<String>,
+        retry_after: Duration,
+    ) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+            retry_after: Some(retry_after),
         }
     }
 
@@ -995,6 +1120,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
+            retry_after: None,
         }
     }
 }
@@ -1002,8 +1128,16 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.status;
+        let retry_after = self.retry_after;
         let body = Json(json!({ "error": self.message }));
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+        if let Some(retry_after) = retry_after {
+            let seconds = retry_after.as_secs().max(1).to_string();
+            if let Ok(value) = HeaderValue::from_str(&seconds) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 
@@ -1045,5 +1179,47 @@ mod tests {
 
         assert!(runtime.verify_csrf_token("session-a", &token));
         assert!(!runtime.verify_csrf_token("session-b", &token));
+    }
+
+    #[test]
+    fn login_limiter_blocks_repeated_failures_for_username() {
+        let runtime = AuthRuntime::new(Some("secret"));
+        for _ in 0..LOGIN_USERNAME_MAX_FAILURES {
+            assert!(runtime.login_allowed("Dain", "198.51.100.10").is_ok());
+            runtime.record_login_failure("Dain", "198.51.100.10");
+        }
+
+        let retry_after = runtime
+            .login_allowed("dain", "198.51.100.11")
+            .expect_err("username should be blocked");
+        assert!(retry_after >= Duration::from_secs(1));
+
+        runtime.record_login_success("dain", "198.51.100.11");
+        assert!(runtime.login_allowed("dain", "198.51.100.11").is_ok());
+    }
+
+    #[test]
+    fn login_limiter_blocks_username_spraying_from_source() {
+        let runtime = AuthRuntime::new(Some("secret"));
+        for index in 0..LOGIN_SOURCE_MAX_FAILURES {
+            let username = format!("user-{index}");
+            assert!(runtime.login_allowed(&username, "203.0.113.10").is_ok());
+            runtime.record_login_failure(&username, "203.0.113.10");
+        }
+
+        assert!(runtime.login_allowed("fresh-user", "203.0.113.10").is_err());
+        assert!(runtime.login_allowed("fresh-user", "203.0.113.11").is_ok());
+    }
+
+    #[test]
+    fn too_many_requests_sets_retry_after_header() {
+        let response =
+            ApiError::too_many_requests_after("slow down", Duration::from_secs(7)).into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER),
+            Some(&HeaderValue::from_static("7"))
+        );
     }
 }

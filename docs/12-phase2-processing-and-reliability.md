@@ -1,7 +1,7 @@
 # 12 — Phase 2: Processing & Reliability Polish
 
 **Phase:** Phase 2 (post-v1)
-**Status:** ☐ Not started
+**Status:** ◐ In progress
 **Depends on:** Phase 1 complete (docs 01–11), especially doc 06 (job runner) and doc 02 (dual-backend repos)
 **Design sections:** §30 Phase 2, §13 (untrusted-media boundary), §7 (sweeps), §4.1/§30 (Postgres promotion)
 
@@ -55,28 +55,64 @@ backup docs (doc 11 already drafts them). Remember this is migration testing + S
 
 ## Implementation checklist
 
-- [ ] Sandboxed media-processing harness: non-root, no network, wall-clock timeout, memory/process limits
-- [ ] `ffprobe` output validation against sane bounds before any value touches the DB or player
-- [ ] `thumbnail` job → `thumb_320.jpg`; `poster` job → `poster.jpg`; set `thumbnail_key`/`poster_key`
-- [ ] `probe_metadata` job backfills dimensions/duration/codecs (validated) on existing/incoming clips
-- [ ] Frontend + thumbnail endpoints (doc 08/09) swap placeholders for generated images
-- [ ] `cleanup_session` sweep: expire stale upload sessions (TTL from doc 11) and abort their storage multipart
-- [ ] `cleanup_clip` / orphaned-part sweep: remove orphaned temp parts and objects-without-rows / rows-without-objects
-- [ ] Sweeps scheduled as global (`target_type`/`target_id` NULL) jobs on the doc-06 runner
-- [ ] Richer upload progress in web UI and desktop app
-- [ ] Login rate limiting hardened beyond doc 04's basic version
-- [ ] CI runs migrations + repository tests on **both** SQLite and Postgres; green run promotes Postgres to "supported"
-- [ ] Per-backend backup docs finalized (doc 11)
+- [x] Sandboxed media-processing harness: non-root, no network, wall-clock timeout, memory/process limits
+- [x] `ffprobe` output validation against sane bounds before any value touches the DB or player
+- [x] `thumbnail` job → `thumb_320.jpg`; `poster` job → `poster.jpg`; set `thumbnail_key`/`poster_key`
+- [x] `probe_metadata` job backfills dimensions/duration/codecs (validated) on existing/incoming clips
+- [x] Frontend + thumbnail endpoints (doc 08/09) swap placeholders for generated images
+- [x] `cleanup_session` sweep: expire stale upload sessions (TTL from doc 11) and abort their storage multipart
+- [x] `cleanup_clip` / orphaned-part sweep: remove orphaned temp parts and objects-without-rows / rows-without-objects
+- [x] Sweeps scheduled as global (`target_type`/`target_id` NULL) jobs on the doc-06 runner
+- [x] Richer upload progress in web UI and desktop app
+- [x] Login rate limiting hardened beyond doc 04's basic version
+- [x] CI runs migrations + repository tests on **both** SQLite and Postgres; green run promotes Postgres to "supported"
+- [x] Per-backend backup docs finalized (doc 11)
 
 ## Definition of done
 
-- [ ] New uploads get real thumbnails/posters; the library no longer shows placeholders
-- [ ] Media-decoding jobs run non-root, network-isolated, time-bounded; a malicious file cannot escape or hang the runner
-- [ ] `ffprobe`-reported values that exceed sane bounds are rejected, not stored
-- [ ] Expired sessions and orphaned parts/objects are reclaimed automatically; storage doesn't accumulate cruft
+- [x] New uploads get real thumbnails/posters; the library no longer shows placeholders
+- [x] Media-decoding jobs run non-root, network-isolated, time-bounded; a malicious file cannot escape or hang the runner
+- [x] `ffprobe`-reported values that exceed sane bounds are rejected, not stored
+- [x] Expired sessions and orphaned parts/objects are reclaimed automatically; storage doesn't accumulate cruft
 - [ ] CI is green on both SQLite and Postgres; Postgres is documented as supported
-- [ ] Login rate limiting demonstrably throttles brute-force attempts
+- [x] Login rate limiting demonstrably throttles brute-force attempts
 
 ## Progress log
 
-- _(empty)_
+- 2026-06-16: Started Phase 2 with the media-processing slice. The durable job runner now fans out
+  `probe_metadata`, `thumbnail`, and `poster` jobs after object validation; decoding runs through a
+  hardened child-process harness with Linux seccomp socket denial, non-root UID/GID drop when
+  available, wall-clock timeout, and memory/process rlimits. Added validated `ffprobe` metadata
+  persistence, poster/thumbnail generation to the documented keys, stored-image serving with
+  placeholder fallback, and focused DB/storage/core/server tests. Host verification covered the
+  sandbox path and metadata validation; real thumbnail/poster decode still needs an environment with
+  `ffmpeg` available (the runtime Docker image installs it).
+- 2026-06-16: Added the `cleanup_session` global sweep. Server startup ensures one pending/running
+  global sweep exists; each successful run aborts expired active upload sessions, aborts/deletes
+  their storage state, clears upload parts, soft-deletes unfinished clips, and schedules the next
+  sweep. Added repository and core job tests for expired upload cleanup.
+- 2026-06-16: Hardened credential throttling beyond the Phase 1 username-only limiter. Login and
+  device-token creation now share username and source-IP buckets, exponential temporary lockouts,
+  stale bucket pruning, and `Retry-After` headers on 429 responses. Added unit tests for per-user
+  blocking, username-spraying from one source, and the retry header.
+- 2026-06-16: Added the `cleanup_clip` global sweep and storage enumeration support. The sweep
+  removes soft-deleted clip objects and rows, clears upload sessions attached to deleted clips,
+  marks ready clips failed if their source object disappears, deletes stale unreferenced media
+  objects, and aborts stale multipart uploads that no active upload session owns. Server startup now
+  ensures both cleanup sweeps are scheduled as global jobs.
+- 2026-06-16: Enriched upload-progress reporting. The upload progress API now reports total,
+  received, and missing part counts, the next missing part, session expiry, and basis-point progress;
+  the shared Rust client exposes the same data to desktop callbacks. The admin web failed-upload
+  view now renders exact byte progress with a compact progress meter.
+- 2026-06-16: Added the dual-backend CI gate and promoted Postgres support. The DB test suite now
+  runs against SQLite and, when `CLIPLINE_TEST_POSTGRES_URL` is set, isolated Postgres schemas that
+  exercise migrations, repository round-trips, partial indexes, expired-upload queries, and atomic
+  job claiming. Added `.github/workflows/ci.yml` with a Postgres 16 service, fixed the dialect issues
+  the real Postgres run exposed, and confirmed the per-backend backup/restore docs from doc 11 are
+  finalized.
+- 2026-06-16: Ran the Docker runtime media smoke with the current image. The smoke generated a small
+  MP4 inside the image, uploaded it through the bearer-token API path, waited for processing, and
+  confirmed the clip became ready with validated `ffprobe` metadata and that both owned
+  `/thumbnail` and `/poster` endpoints served generated JPEGs instead of placeholders. The smoke
+  exposed MJPEG frame-thread initialization failures under sandbox limits; forcing single-threaded
+  JPEG encoding fixed the runtime path.

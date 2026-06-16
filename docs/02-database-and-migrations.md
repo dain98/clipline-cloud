@@ -226,13 +226,13 @@ CREATE INDEX jobs_status_next_run_idx     ON jobs(status, next_run_at);
 - [x] All indexes created, including the partial `clips_owner_client_clip_id_ux`
 - [x] Repository layer for each table (typed CRUD used by later docs); transactions kept short
 - [x] `/readyz` DB-reachability probe implemented (replaces doc 01 stub)
-- [x] Repository tests run against SQLite (and are structured to also run against Postgres for the Phase-2 CI gate)
+- [x] Repository tests run against SQLite and Postgres (Postgres enabled by `CLIPLINE_TEST_POSTGRES_URL` for the Phase-2 CI gate)
 
 ## Definition of done
 
 - [x] Fresh boot on SQLite creates the full schema via migrations and serves `/readyz` = ok
 - [x] Migrations are reversible/forward-only as designed and re-running boot is a no-op
-- [x] Repository tests pass on SQLite; the same suite is wired to run on Postgres (green Postgres run is the doc-12 gate, not required here)
+- [x] Repository tests pass on SQLite; the same suite runs on Postgres in the doc-12 CI gate
 - [x] No SQL uses a dialect-specific construct without a portable mapping
 - [x] Partial unique index on `(owner_user_id, client_clip_id)` verified to allow multiple NULLs on both backends
 
@@ -247,3 +247,8 @@ CREATE INDEX jobs_status_next_run_idx     ON jobs(status, next_run_at);
   `(owner_user_id, client_clip_id)` uniqueness behavior, and a fresh SQLite server boot returning
   `/readyz` with `database: "ok"`. The local shell did not have `sqlite3`; schema table checks are
   covered by the DB crate tests.
+- 2026-06-16 — Promoted the repository tests to run against both SQLite and Postgres. The Postgres
+  path creates an isolated schema per test via `CLIPLINE_TEST_POSTGRES_URL`, exercises migrations,
+  partial indexes, repository round-trips, expired uploads, and atomic job claiming, and fixed the
+  dialect issues it exposed (`INET` insert casts and Postgres integer widths matching Rust `i64`
+  models).

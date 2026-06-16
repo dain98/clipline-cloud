@@ -45,7 +45,7 @@ that shows where the project stands.
 | 09 | [Web Frontend](09-web-frontend.md) | Phase 1 | ☑ Complete |
 | 10 | [Desktop App Integration](10-desktop-app-integration.md) | Phase 1 | ◐ In progress |
 | 11 | [Deployment, Operations & Hardening](11-deployment-operations-and-hardening.md) | Phase 1 | ◐ In progress |
-| 12 | [Phase 2 — Processing & Reliability](12-phase2-processing-and-reliability.md) | Phase 2 | ☐ Not started |
+| 12 | [Phase 2 — Processing & Reliability](12-phase2-processing-and-reliability.md) | Phase 2 | ◐ In progress |
 | 13 | [Phase 3 — Admin & Library Polish](13-phase3-admin-and-library-polish.md) | Phase 3 | ☐ Not started |
 | 14 | [Phase 4 — Optional Scale](14-phase4-optional-scale.md) | Phase 4 | ☐ Not started |
 

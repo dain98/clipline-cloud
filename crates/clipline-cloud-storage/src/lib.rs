@@ -104,6 +104,18 @@ impl MediaObjectKeys {
             media_token,
         })
     }
+
+    pub fn from_source_key(source_key: &ObjectKey) -> StorageResult<Self> {
+        let key = source_key.as_str();
+        let media_token = key
+            .strip_prefix("objects/media/")
+            .and_then(|value| value.strip_suffix("/source.mp4"))
+            .ok_or_else(|| StorageError::InvalidKey {
+                key: key.to_string(),
+                reason: "expected objects/media/<token>/source.mp4",
+            })?;
+        Self::from_media_token(media_token.to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +179,20 @@ pub struct StoredObject {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectSummary {
+    pub key: ObjectKey,
+    pub size_bytes: u64,
+    pub last_modified: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultipartUploadSummary {
+    pub upload_id: String,
+    pub key: ObjectKey,
+    pub initiated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartResult {
     pub part_number: u16,
     pub etag: String,
@@ -207,7 +233,12 @@ pub trait StorageBackend: Send + Sync {
     async fn head_object(&self, key: &ObjectKey) -> StorageResult<ObjectMetadata>;
     async fn delete_object(&self, key: &ObjectKey) -> StorageResult<()>;
     async fn object_exists(&self, key: &ObjectKey) -> StorageResult<bool>;
+    async fn list_objects(&self, prefix: &str) -> StorageResult<Vec<ObjectSummary>>;
     async fn create_multipart_upload(&self, key: &ObjectKey) -> StorageResult<String>;
+    async fn list_multipart_uploads(
+        &self,
+        prefix: &str,
+    ) -> StorageResult<Vec<MultipartUploadSummary>>;
     async fn upload_part(
         &self,
         upload_id: &str,
@@ -337,6 +368,19 @@ impl LocalStorage {
         let _ = fs::remove_dir_all(self.upload_dir(upload_id)?).await;
 
         Ok(metadata)
+    }
+
+    async fn read_upload_metadata(
+        &self,
+        upload_id: &str,
+    ) -> StorageResult<Option<LocalUploadMetadata>> {
+        match fs::read(self.upload_dir(upload_id)?.join("upload.json")).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|error| StorageError::InvalidPart(error.to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn write_sidecar(
@@ -506,11 +550,98 @@ impl StorageBackend for LocalStorage {
         }
     }
 
-    async fn create_multipart_upload(&self, _key: &ObjectKey) -> StorageResult<String> {
+    async fn list_objects(&self, prefix: &str) -> StorageResult<Vec<ObjectSummary>> {
+        validate_prefix(prefix)?;
+        let start = self.data_dir.join(prefix.trim_end_matches('/'));
+        let mut summaries = Vec::new();
+        let mut dirs = vec![start];
+        while let Some(dir) = dirs.pop() {
+            let mut entries = match fs::read_dir(&dir).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                let metadata = entry.metadata().await?;
+                if metadata.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if !metadata.is_file() {
+                    continue;
+                }
+                let Some(relative) = path.strip_prefix(&self.data_dir).ok() else {
+                    continue;
+                };
+                let key = path_to_object_key(relative)?;
+                if key.as_str().ends_with(".meta.json") || key.as_str().ends_with(".tmp") {
+                    continue;
+                }
+                summaries.push(ObjectSummary {
+                    key,
+                    size_bytes: metadata.len(),
+                    last_modified: metadata.modified().ok().map(DateTime::<Utc>::from),
+                });
+            }
+        }
+        summaries.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
+        Ok(summaries)
+    }
+
+    async fn create_multipart_upload(&self, key: &ObjectKey) -> StorageResult<String> {
         self.probe().await?;
         let upload_id = generate_upload_id();
-        fs::create_dir(self.upload_dir(&upload_id)?).await?;
+        let upload_dir = self.upload_dir(&upload_id)?;
+        fs::create_dir(&upload_dir).await?;
+        let metadata = LocalUploadMetadata {
+            key: key.as_str().to_string(),
+            created_at: Utc::now(),
+        };
+        let bytes = serde_json::to_vec(&metadata)
+            .map_err(|error| StorageError::InvalidPart(error.to_string()))?;
+        fs::write(upload_dir.join("upload.json"), bytes).await?;
         Ok(upload_id)
+    }
+
+    async fn list_multipart_uploads(
+        &self,
+        prefix: &str,
+    ) -> StorageResult<Vec<MultipartUploadSummary>> {
+        validate_prefix(prefix)?;
+        let mut summaries = Vec::new();
+        let mut entries = match fs::read_dir(&self.tmp_uploads_dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(summaries),
+            Err(error) => return Err(error.into()),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let metadata = entry.metadata().await?;
+            if !metadata.is_dir() {
+                continue;
+            }
+            let Some(upload_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            validate_upload_id(&upload_id)?;
+            let upload_metadata = self.read_upload_metadata(&upload_id).await?;
+            let key = upload_metadata
+                .as_ref()
+                .and_then(|value| ObjectKey::parse(value.key.clone()).ok())
+                .unwrap_or_else(|| ObjectKey::parse("objects/media/unknown/source.mp4").unwrap());
+            if !key.as_str().starts_with(prefix) {
+                continue;
+            }
+            summaries.push(MultipartUploadSummary {
+                upload_id,
+                key,
+                initiated_at: upload_metadata
+                    .map(|value| value.created_at)
+                    .or_else(|| metadata.modified().ok().map(DateTime::<Utc>::from)),
+            });
+        }
+        summaries.sort_by(|left, right| left.upload_id.cmp(&right.upload_id));
+        Ok(summaries)
     }
 
     async fn upload_part(
@@ -620,6 +751,23 @@ impl S3Storage {
         match &self.prefix {
             Some(prefix) => format!("{prefix}/{}", key.as_str()),
             None => key.as_str().to_string(),
+        }
+    }
+
+    fn physical_prefix(&self, prefix: &str) -> String {
+        match &self.prefix {
+            Some(storage_prefix) => format!("{storage_prefix}/{prefix}"),
+            None => prefix.to_string(),
+        }
+    }
+
+    fn logical_key(&self, physical_key: &str) -> Option<String> {
+        match &self.prefix {
+            Some(prefix) => physical_key
+                .strip_prefix(prefix)
+                .and_then(|value| value.strip_prefix('/'))
+                .map(ToOwned::to_owned),
+            None => Some(physical_key.to_string()),
         }
     }
 }
@@ -748,6 +896,47 @@ impl StorageBackend for S3Storage {
         }
     }
 
+    async fn list_objects(&self, prefix: &str) -> StorageResult<Vec<ObjectSummary>> {
+        validate_prefix(prefix)?;
+        let physical_prefix = self.physical_prefix(prefix);
+        let mut continuation_token = None;
+        let mut summaries = Vec::new();
+        loop {
+            let mut request = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&physical_prefix);
+            if let Some(token) = continuation_token.take() {
+                request = request.continuation_token(token);
+            }
+            let output = request.send().await.map_err(s3_error)?;
+            for object in output.contents() {
+                let Some(physical_key) = object.key() else {
+                    continue;
+                };
+                let Some(logical_key) = self.logical_key(physical_key) else {
+                    continue;
+                };
+                let key = ObjectKey::parse(logical_key)?;
+                summaries.push(ObjectSummary {
+                    key,
+                    size_bytes: object.size().unwrap_or(0).max(0) as u64,
+                    last_modified: object.last_modified().and_then(smithy_datetime_to_chrono),
+                });
+            }
+            if output.is_truncated().unwrap_or(false) {
+                continuation_token = output.next_continuation_token().map(ToOwned::to_owned);
+                if continuation_token.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(summaries)
+    }
+
     async fn create_multipart_upload(&self, key: &ObjectKey) -> StorageResult<String> {
         let output = self
             .client
@@ -763,6 +952,57 @@ impl StorageBackend for S3Storage {
             .upload_id()
             .map(ToOwned::to_owned)
             .ok_or_else(|| StorageError::S3("S3 did not return an upload id".to_string()))
+    }
+
+    async fn list_multipart_uploads(
+        &self,
+        prefix: &str,
+    ) -> StorageResult<Vec<MultipartUploadSummary>> {
+        validate_prefix(prefix)?;
+        let physical_prefix = self.physical_prefix(prefix);
+        let mut key_marker = None;
+        let mut upload_id_marker = None;
+        let mut summaries = Vec::new();
+        loop {
+            let mut request = self
+                .client
+                .list_multipart_uploads()
+                .bucket(&self.bucket)
+                .prefix(&physical_prefix);
+            if let Some(marker) = key_marker.take() {
+                request = request.key_marker(marker);
+            }
+            if let Some(marker) = upload_id_marker.take() {
+                request = request.upload_id_marker(marker);
+            }
+
+            let output = request.send().await.map_err(s3_error)?;
+            for upload in output.uploads() {
+                let (Some(upload_id), Some(physical_key)) = (upload.upload_id(), upload.key())
+                else {
+                    continue;
+                };
+                let Some(logical_key) = self.logical_key(physical_key) else {
+                    continue;
+                };
+                summaries.push(MultipartUploadSummary {
+                    upload_id: upload_id.to_string(),
+                    key: ObjectKey::parse(logical_key)?,
+                    initiated_at: upload.initiated().and_then(smithy_datetime_to_chrono),
+                });
+            }
+
+            if output.is_truncated().unwrap_or(false) {
+                key_marker = output.next_key_marker().map(ToOwned::to_owned);
+                upload_id_marker = output.next_upload_id_marker().map(ToOwned::to_owned);
+                if key_marker.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(summaries)
     }
 
     async fn upload_part(
@@ -827,15 +1067,19 @@ impl StorageBackend for S3Storage {
     }
 
     async fn abort_multipart_upload(&self, upload_id: &str, key: &ObjectKey) -> StorageResult<()> {
-        self.client
+        match self
+            .client
             .abort_multipart_upload()
             .bucket(&self.bucket)
             .key(self.physical_key(key))
             .upload_id(upload_id)
             .send()
             .await
-            .map_err(s3_error)?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            Err(error) if is_s3_not_found(&error) => Ok(()),
+            Err(error) => Err(s3_error(error)),
+        }
     }
 
     async fn create_read_url(&self, key: &ObjectKey, ttl: Duration) -> StorageResult<Option<Url>> {
@@ -864,6 +1108,12 @@ struct LocalMetadataSidecar {
     content_type: String,
     etag: Option<String>,
     checksum_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalUploadMetadata {
+    key: String,
+    created_at: DateTime<Utc>,
 }
 
 impl From<&ObjectMetadata> for LocalMetadataSidecar {
@@ -931,6 +1181,36 @@ fn validate_key(key: &str) -> StorageResult<()> {
     }
 
     Ok(())
+}
+
+fn validate_prefix(prefix: &str) -> StorageResult<()> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
+    validate_key(prefix.trim_end_matches('/'))
+}
+
+fn path_to_object_key(path: &Path) -> StorageResult<ObjectKey> {
+    let mut key = String::new();
+    for component in path.components() {
+        let Component::Normal(segment) = component else {
+            return Err(StorageError::InvalidKey {
+                key: path.display().to_string(),
+                reason: "object path contains non-normal components",
+            });
+        };
+        let Some(segment) = segment.to_str() else {
+            return Err(StorageError::InvalidKey {
+                key: path.display().to_string(),
+                reason: "object path is not valid UTF-8",
+            });
+        };
+        if !key.is_empty() {
+            key.push('/');
+        }
+        key.push_str(segment);
+    }
+    ObjectKey::parse(key)
 }
 
 fn validate_media_token(media_token: &str) -> StorageResult<()> {
@@ -1101,7 +1381,14 @@ fn s3_error(error: impl std::fmt::Display) -> StorageError {
 
 fn is_s3_not_found(error: &impl std::fmt::Display) -> bool {
     let text = error.to_string();
-    text.contains("NotFound") || text.contains("NoSuchKey") || text.contains("404")
+    text.contains("NotFound")
+        || text.contains("NoSuchKey")
+        || text.contains("NoSuchUpload")
+        || text.contains("404")
+}
+
+fn smithy_datetime_to_chrono(value: &aws_sdk_s3::primitives::DateTime) -> Option<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp(value.secs(), value.subsec_nanos())
 }
 
 #[cfg(test)]
@@ -1123,6 +1410,18 @@ mod tests {
         assert!(!keys.source.as_str().contains(user_id));
         assert!(!keys.source.as_str().contains(clip_id));
         assert!(keys.media_token.len() >= 43);
+    }
+
+    #[test]
+    fn media_keys_can_be_reconstructed_from_source_key() {
+        let keys = MediaObjectKeys::generate().expect("keys");
+        let reconstructed = MediaObjectKeys::from_source_key(&keys.source).expect("reconstructed");
+
+        assert_eq!(reconstructed, keys);
+        assert!(MediaObjectKeys::from_source_key(
+            &ObjectKey::parse("objects/other/source.mp4").unwrap()
+        )
+        .is_err());
     }
 
     #[test]
@@ -1179,6 +1478,55 @@ mod tests {
 
         storage.delete_object(&key).await.expect("delete");
         assert!(!storage.object_exists(&key).await.expect("not exists"));
+    }
+
+    #[tokio::test]
+    async fn local_lists_objects_and_multipart_uploads() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let storage = LocalStorage::new(temp_dir.path());
+        let keys = MediaObjectKeys::generate().expect("keys");
+        storage
+            .put_object(
+                &keys.source,
+                Bytes::from_static(b"source"),
+                PutObjectMetadata::new("video/mp4"),
+            )
+            .await
+            .expect("put source");
+        storage
+            .put_object(
+                &keys.thumbnail,
+                Bytes::from_static(b"thumbnail"),
+                PutObjectMetadata::new("image/jpeg"),
+            )
+            .await
+            .expect("put thumb");
+        let upload_id = storage
+            .create_multipart_upload(&keys.poster)
+            .await
+            .expect("create multipart");
+
+        let objects = storage
+            .list_objects("objects/media/")
+            .await
+            .expect("list objects");
+        assert_eq!(
+            objects
+                .iter()
+                .map(|object| object.key.as_str())
+                .collect::<Vec<_>>(),
+            vec![keys.source.as_str(), keys.thumbnail.as_str()]
+        );
+        assert!(objects.iter().all(|object| object.last_modified.is_some()));
+
+        let uploads = storage
+            .list_multipart_uploads("objects/media/")
+            .await
+            .expect("list uploads");
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].upload_id, upload_id);
+        assert_eq!(uploads[0].key, keys.poster);
+        assert!(uploads[0].initiated_at.is_some());
     }
 
     #[tokio::test]

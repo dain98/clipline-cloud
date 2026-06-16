@@ -19,7 +19,9 @@ use axum::{
     Json, Router,
 };
 use clipline_cloud_api_types::{HealthResponse, ReadinessResponse};
-use clipline_cloud_core::jobs::{JobRunner, JobRunnerConfig};
+use clipline_cloud_core::jobs::{
+    ensure_cleanup_clip_sweep, ensure_cleanup_session_sweep, JobRunner, JobRunnerConfig,
+};
 use clipline_cloud_db::{Database, Repositories};
 use clipline_cloud_storage::{LocalStorage, S3Storage, S3StorageConfig, SharedStorageBackend};
 use config::{Config, StorageConfig};
@@ -101,6 +103,12 @@ async fn run(config: Config) -> anyhow::Result<()> {
     info!(event = "server.listening", bind_addr = %local_addr);
 
     let (job_shutdown_tx, job_shutdown_rx) = watch::channel(false);
+    ensure_cleanup_session_sweep(&repositories)
+        .await
+        .context("failed to schedule cleanup session sweep")?;
+    ensure_cleanup_clip_sweep(&repositories)
+        .await
+        .context("failed to schedule cleanup clip sweep")?;
     let job_runner = JobRunner::new(
         repositories,
         storage,

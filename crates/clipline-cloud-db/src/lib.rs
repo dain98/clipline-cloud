@@ -136,7 +136,9 @@ impl Database {
             }
             Self::Postgres(pool) => {
                 let rows = sqlx::query(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name",
+                    "SELECT table_name FROM information_schema.tables
+                     WHERE table_schema = current_schema() AND table_name NOT LIKE '_sqlx_%'
+                     ORDER BY table_name",
                 )
                 .fetch_all(pool)
                 .await?;
@@ -330,6 +332,7 @@ mod tests {
     use chrono::Duration as ChronoDuration;
     use serde_json::json;
     use sqlx::types::Json;
+    use std::env;
     use tempfile::TempDir;
 
     async fn sqlite_test_database() -> (TempDir, Database) {
@@ -342,18 +345,48 @@ mod tests {
         (temp_dir, database)
     }
 
-    #[test]
-    fn postgres_placeholder_conversion_is_sequential() {
-        assert_eq!(
-            postgres_placeholders("SELECT * FROM users WHERE id = ? AND username = ?"),
-            "SELECT * FROM users WHERE id = $1 AND username = $2"
-        );
+    async fn postgres_test_database() -> Option<Database> {
+        let database_url = match env::var("CLIPLINE_TEST_POSTGRES_URL") {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => return None,
+        };
+        let schema = format!("clipline_test_{}", new_ulid().to_ascii_lowercase());
+        let create_schema_sql = format!(r#"CREATE SCHEMA "{schema}""#);
+        let search_path_sql = format!(r#"SET search_path TO "{schema}""#);
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("connect postgres test database");
+
+        sqlx::query(&create_schema_sql)
+            .execute(&admin_pool)
+            .await
+            .expect("create postgres test schema");
+        admin_pool.close().await;
+
+        let pool = PgPoolOptions::new()
+            .max_connections(10)
+            .after_connect(move |connection, _metadata| {
+                let search_path_sql = search_path_sql.clone();
+                Box::pin(async move {
+                    connection.execute(search_path_sql.as_str()).await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .expect("connect postgres schema database");
+        let database = Database::Postgres(pool);
+        database
+            .run_migrations()
+            .await
+            .expect("postgres migrations");
+
+        Some(database)
     }
 
-    #[tokio::test]
-    async fn sqlite_migration_creates_expected_tables_and_is_idempotent() {
-        let (_temp_dir, database) = sqlite_test_database().await;
-
+    async fn assert_migrations_are_idempotent(database: &Database) {
         database
             .run_migrations()
             .await
@@ -379,16 +412,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn postgres_placeholder_conversion_is_sequential() {
+        assert_eq!(
+            postgres_placeholders("SELECT * FROM users WHERE id = ? AND username = ?"),
+            "SELECT * FROM users WHERE id = $1 AND username = $2"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_migration_creates_expected_tables_and_is_idempotent() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_migrations_are_idempotent(&database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_migration_creates_expected_tables_and_is_idempotent() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_migrations_are_idempotent(&database).await;
+    }
+
     #[tokio::test]
     async fn sqlite_repositories_round_trip_all_tables() {
         let (_temp_dir, database) = sqlite_test_database().await;
+        assert_repositories_round_trip_all_tables(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_repositories_round_trip_all_tables() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_repositories_round_trip_all_tables(database).await;
+    }
+
+    async fn assert_repositories_round_trip_all_tables(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
         let repos = Repositories::new(database);
         let expires_at = now_utc() + ChronoDuration::hours(1);
+        let username = format!("dain-{test_id}");
+        let session_token_hash = format!("session-token-hash-{test_id}");
+        let device_token_hash = format!("device-token-hash-{test_id}");
+        let client_clip_id = format!("local-clip-{test_id}");
+        let storage_key = format!("objects/media/{test_id}/original.mp4");
+        let poster_key = format!("objects/media/{test_id}/poster.jpg");
+        let thumbnail_key = format!("objects/media/{test_id}/thumb_320.jpg");
+        let public_share_id = format!("c_{test_id}");
+        let reset_token_hash = format!("reset-token-hash-{test_id}");
 
-        let mut new_user = NewUser::new("dain", "argon2id-hash", "admin");
+        let mut new_user = NewUser::new(&username, "argon2id-hash", "admin");
         new_user.display_name = Some("Dain".to_string());
         let user = repos.users.create(&new_user).await.expect("create user");
-        assert_eq!(user.username, "dain");
+        assert_eq!(user.username, username);
 
         repos
             .users
@@ -397,14 +474,14 @@ mod tests {
             .expect("last login");
         assert!(repos
             .users
-            .get_by_username("dain")
+            .get_by_username(&username)
             .await
             .expect("get user")
             .expect("user")
             .last_login_at
             .is_some());
 
-        let mut new_session = NewSession::new(&user.id, "session-token-hash", expires_at);
+        let mut new_session = NewSession::new(&user.id, &session_token_hash, expires_at);
         new_session.user_agent = Some("test-agent".to_string());
         new_session.ip_address = Some("127.0.0.1".to_string());
         let session = repos
@@ -424,7 +501,7 @@ mod tests {
             .expect("revoke session");
         assert!(repos
             .sessions
-            .get_by_token_hash("session-token-hash")
+            .get_by_token_hash(&session_token_hash)
             .await
             .expect("get session")
             .expect("session")
@@ -436,7 +513,7 @@ mod tests {
             .create(&NewDeviceToken::new(
                 &user.id,
                 "Dain's Desktop",
-                "device-token-hash",
+                &device_token_hash,
             ))
             .await
             .expect("create device token");
@@ -447,18 +524,47 @@ mod tests {
             .expect("touch device token");
         assert!(repos
             .device_tokens
-            .get_by_token_hash("device-token-hash")
+            .get_by_token_hash(&device_token_hash)
             .await
             .expect("get device token")
             .is_some());
 
         let mut new_clip = NewClip::new(&user.id, "First Clip", "local");
-        new_clip.client_clip_id = Some("local-clip-1".to_string());
-        new_clip.storage_key = Some("objects/media/random-token/original.mp4".to_string());
+        new_clip.client_clip_id = Some(client_clip_id);
+        new_clip.storage_key = Some(storage_key.clone());
         let clip = repos.clips.create(&new_clip).await.expect("create clip");
         repos
             .clips
-            .set_visibility(&clip.id, "public", Some("c_1234567890123456789012"))
+            .update_probe_metadata(
+                &clip.id,
+                Some(12_345),
+                Some(1920),
+                Some(1080),
+                Some(59.94),
+                Some("h264"),
+                Some("aac"),
+            )
+            .await
+            .expect("update probe metadata");
+        repos
+            .clips
+            .set_media_artifact_keys(&clip.id, Some(&poster_key), Some(&thumbnail_key))
+            .await
+            .expect("set artifact keys");
+        let clip = repos
+            .clips
+            .get(&clip.id)
+            .await
+            .expect("get clip")
+            .expect("clip");
+        assert_eq!(clip.duration_ms, Some(12_345));
+        assert_eq!(clip.width, Some(1920));
+        assert_eq!(clip.height, Some(1080));
+        assert_eq!(clip.video_codec.as_deref(), Some("h264"));
+        assert_eq!(clip.thumbnail_key.as_deref(), Some(thumbnail_key.as_str()));
+        repos
+            .clips
+            .set_visibility(&clip.id, "public", Some(&public_share_id))
             .await
             .expect("set visibility");
         repos
@@ -490,7 +596,7 @@ mod tests {
                 &clip.id,
                 &user.id,
                 1024,
-                "objects/media/random-token/original.mp4",
+                &storage_key,
                 expires_at,
             ))
             .await
@@ -525,15 +631,12 @@ mod tests {
             .create(&NewJob::new("validate_object", now_utc()))
             .await
             .expect("create job");
-        assert_eq!(
-            repos
-                .jobs
-                .list_due(now_utc() + ChronoDuration::minutes(1), 10)
-                .await
-                .expect("due jobs")
-                .len(),
-            1
-        );
+        let due_jobs = repos
+            .jobs
+            .list_due(now_utc() + ChronoDuration::minutes(1), 1000)
+            .await
+            .expect("due jobs");
+        assert!(due_jobs.iter().any(|due_job| due_job.id == job.id));
         repos
             .jobs
             .set_status(&job.id, "succeeded", None)
@@ -544,34 +647,31 @@ mod tests {
         audit.actor_user_id = Some(user.id.clone());
         audit.target_type = Some("user".to_string());
         audit.target_id = Some(user.id.clone());
-        audit.metadata_json = Some(Json(json!({ "username": "dain" })));
-        repos
+        audit.metadata_json = Some(Json(json!({ "username": username })));
+        let audit = repos
             .audit_log
             .create(&audit)
             .await
             .expect("create audit entry");
-        assert_eq!(
-            repos
-                .audit_log
-                .list_recent(5)
-                .await
-                .expect("audit entries")
-                .len(),
-            1
-        );
+        let audit_entries = repos
+            .audit_log
+            .list_recent(1000)
+            .await
+            .expect("audit entries");
+        assert!(audit_entries.iter().any(|entry| entry.id == audit.id));
 
         let reset_token = repos
             .reset_password_tokens
             .create(&NewResetPasswordToken::new(
                 &user.id,
-                "reset-token-hash",
+                &reset_token_hash,
                 expires_at,
             ))
             .await
             .expect("create reset token");
         assert!(repos
             .reset_password_tokens
-            .get_by_token_hash("reset-token-hash")
+            .get_by_token_hash(&reset_token_hash)
             .await
             .expect("get reset token")
             .is_some());
@@ -591,13 +691,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_upload_sessions_can_be_listed_and_aborted() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_expired_upload_sessions_can_be_listed_and_aborted(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_expired_upload_sessions_can_be_listed_and_aborted() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_expired_upload_sessions_can_be_listed_and_aborted(database).await;
+    }
+
+    async fn assert_expired_upload_sessions_can_be_listed_and_aborted(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(format!("uploader-{test_id}"), "hash", "user"))
+            .await
+            .expect("user");
+        let clip = repos
+            .clips
+            .create(&NewClip::new(&user.id, "Expired Upload", "local"))
+            .await
+            .expect("clip");
+        let now = now_utc();
+        let mut expired = NewUploadSession::new(
+            &clip.id,
+            &user.id,
+            1024,
+            format!("objects/media/{test_id}/source.mp4"),
+            now - ChronoDuration::minutes(1),
+        );
+        expired.status = "uploading".to_string();
+        let expired = repos
+            .upload_sessions
+            .create(&expired)
+            .await
+            .expect("expired session");
+        let active = repos
+            .upload_sessions
+            .create(&NewUploadSession::new(
+                &clip.id,
+                &user.id,
+                1024,
+                format!("objects/media/{test_id}/source-2.mp4"),
+                now + ChronoDuration::minutes(1),
+            ))
+            .await
+            .expect("active session");
+
+        let expired_sessions = repos
+            .upload_sessions
+            .list_expired_active(now, 10)
+            .await
+            .expect("expired sessions");
+        assert_eq!(
+            expired_sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![expired.id.as_str()]
+        );
+        assert!(repos
+            .upload_sessions
+            .abort_if_expired(&expired.id, now)
+            .await
+            .expect("abort expired"));
+        assert!(!repos
+            .upload_sessions
+            .abort_if_expired(&active.id, now)
+            .await
+            .expect("do not abort active"));
+        assert_eq!(
+            repos
+                .upload_sessions
+                .get(&expired.id)
+                .await
+                .expect("get expired")
+                .expect("expired")
+                .status,
+            "aborted"
+        );
+
+        let cleanup_kind = format!("cleanup_session_{test_id}");
+        let global_job = repos
+            .jobs
+            .create(&NewJob::new(&cleanup_kind, now))
+            .await
+            .expect("global job");
+        assert_eq!(
+            repos
+                .jobs
+                .count_active_global_kind(&cleanup_kind)
+                .await
+                .expect("count globals"),
+            1
+        );
+        repos
+            .jobs
+            .set_status(&global_job.id, "succeeded", None)
+            .await
+            .expect("finish global job");
+    }
+
+    #[tokio::test]
     async fn partial_client_clip_id_index_allows_nulls_and_rejects_duplicate_keys() {
         let (_temp_dir, database) = sqlite_test_database().await;
+        assert_partial_client_clip_id_index_allows_nulls_and_rejects_duplicate_keys(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_partial_client_clip_id_index_allows_nulls_and_rejects_duplicate_keys() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_partial_client_clip_id_index_allows_nulls_and_rejects_duplicate_keys(database).await;
+    }
+
+    async fn assert_partial_client_clip_id_index_allows_nulls_and_rejects_duplicate_keys(
+        database: Database,
+    ) {
+        let test_id = new_ulid().to_ascii_lowercase();
         let repos = Repositories::new(database);
 
         let user = repos
             .users
-            .create(&NewUser::new("owner", "hash", "user"))
+            .create(&NewUser::new(format!("owner-{test_id}"), "hash", "user"))
             .await
             .expect("create user");
 
@@ -613,11 +835,11 @@ mod tests {
             .expect("second null client id");
 
         let mut first = NewClip::new(&user.id, "duplicate key 1", "local");
-        first.client_clip_id = Some("client-clip-id".to_string());
+        first.client_clip_id = Some(format!("client-clip-id-{test_id}"));
         repos.clips.create(&first).await.expect("first client id");
 
         let mut duplicate = NewClip::new(&user.id, "duplicate key 2", "local");
-        duplicate.client_clip_id = Some("client-clip-id".to_string());
+        duplicate.client_clip_id = first.client_clip_id.clone();
         let err = repos
             .clips
             .create(&duplicate)
@@ -630,6 +852,18 @@ mod tests {
     #[tokio::test]
     async fn job_claim_is_atomic_under_contention() {
         let (_temp_dir, database) = sqlite_test_database().await;
+        assert_job_claim_is_atomic_under_contention(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_job_claim_is_atomic_under_contention() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_job_claim_is_atomic_under_contention(database).await;
+    }
+
+    async fn assert_job_claim_is_atomic_under_contention(database: Database) {
         let repos = Repositories::new(database);
         let job = repos
             .jobs
@@ -662,6 +896,18 @@ mod tests {
     #[tokio::test]
     async fn stale_running_job_can_be_claimed_after_lock_timeout() {
         let (_temp_dir, database) = sqlite_test_database().await;
+        assert_stale_running_job_can_be_claimed_after_lock_timeout(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_stale_running_job_can_be_claimed_after_lock_timeout() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_stale_running_job_can_be_claimed_after_lock_timeout(database).await;
+    }
+
+    async fn assert_stale_running_job_can_be_claimed_after_lock_timeout(database: Database) {
         let repos = Repositories::new(database);
         let mut job = NewJob::new("validate_object", now_utc() + ChronoDuration::hours(1));
         job.status = "running".to_string();

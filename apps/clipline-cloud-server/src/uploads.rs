@@ -549,20 +549,53 @@ async fn progress_response(
         .map(|part| u16::try_from(part.part_number).unwrap_or_default())
         .filter(|part_number| *part_number != 0)
         .collect::<Vec<_>>();
-    let missing_parts = if upload_mode(session) == UploadMode::Chunked {
+    let mode = upload_mode(session);
+    let missing_parts = if mode == UploadMode::Chunked {
         missing_parts(session, &parts)?
     } else {
         Vec::new()
     };
+    let file_size_bytes = expected_size(session)?;
+    let received_size_bytes = u64::try_from(session.received_size_bytes).unwrap_or_default();
+    let total_parts = if mode == UploadMode::Chunked {
+        part_count(session)?
+    } else {
+        1
+    };
+    let received_part_count = if mode == UploadMode::Chunked {
+        saturating_u16_len(received_parts.len())
+    } else if received_size_bytes > 0 || session.status == "completed" {
+        1
+    } else {
+        0
+    };
+    let missing_part_count = if mode == UploadMode::Chunked {
+        saturating_u16_len(missing_parts.len())
+    } else if session.status == "completed" {
+        0
+    } else {
+        1
+    };
+    let next_part_number = missing_parts.first().copied();
 
     Ok(UploadProgressResponse {
         upload_id: session.id.clone(),
         clip_id: session.clip_id.clone(),
-        mode: upload_mode(session).as_str().to_string(),
+        mode: mode.as_str().to_string(),
         status: session.status.clone(),
-        file_size_bytes: expected_size(session)?,
+        file_size_bytes,
         part_size_bytes: part_size(session)?,
-        received_size_bytes: u64::try_from(session.received_size_bytes).unwrap_or_default(),
+        received_size_bytes,
+        total_parts,
+        received_part_count,
+        missing_part_count,
+        next_part_number,
+        progress_basis_points: progress_basis_points(
+            session.status.as_str(),
+            received_size_bytes,
+            file_size_bytes,
+        ),
+        expires_at: session.expires_at,
         received_parts,
         missing_parts,
     })
@@ -777,6 +810,24 @@ fn upload_mode(session: &UploadSession) -> UploadMode {
     }
 }
 
+fn saturating_u16_len(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
+}
+
+fn progress_basis_points(status: &str, received_size_bytes: u64, file_size_bytes: u64) -> u16 {
+    if status == "completed" {
+        return 10_000;
+    }
+    if file_size_bytes == 0 {
+        return 0;
+    }
+    let value = (u128::from(received_size_bytes).saturating_mul(10_000))
+        .checked_div(u128::from(file_size_bytes))
+        .unwrap_or_default()
+        .min(10_000);
+    value as u16
+}
+
 async fn finalize_upload_db(state: &AppState, session: &UploadSession) -> Result<(), ApiError> {
     state
         .repositories
@@ -960,5 +1011,13 @@ mod tests {
         ];
 
         assert_eq!(missing_parts(&session, &parts).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn progress_basis_points_are_clamped_and_completed_is_full() {
+        assert_eq!(progress_basis_points("uploading", 25, 100), 2_500);
+        assert_eq!(progress_basis_points("uploading", 150, 100), 10_000);
+        assert_eq!(progress_basis_points("created", 0, 0), 0);
+        assert_eq!(progress_basis_points("completed", 0, 100), 10_000);
     }
 }
