@@ -256,8 +256,8 @@ function renderShell({ active, title, subtitle, body }) {
 
 function navLink(href, key, active, iconSvg, label) {
   return `
-    <a class="nav-link ${active === key ? "active" : ""}" href="${href}" data-route>
-      ${iconSvg}<span>${label}</span>
+    <a class="nav-link ${active === key ? "active" : ""}" href="${escapeAttr(href)}" data-route>
+      ${iconSvg}<span>${escapeHtml(label)}</span>
     </a>
   `;
 }
@@ -609,6 +609,8 @@ async function renderPublicShare(shareId) {
   `;
   try {
     const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
+    const mediaUrl = safeMediaUrl(clip.media_url);
+    const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
     app.innerHTML = `
       <main class="public-shell">
         <section class="public-panel" aria-labelledby="public-title">
@@ -618,7 +620,7 @@ async function renderPublicShare(shareId) {
             <p>${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
           </div>
           <div class="video-frame">
-            <video controls preload="metadata" poster="${escapeAttr(clip.thumbnail_url)}" src="${escapeAttr(clip.media_url)}"></video>
+            <video controls preload="metadata" ${thumbnailUrl ? `poster="${escapeAttr(thumbnailUrl)}"` : ""} ${mediaUrl ? `src="${escapeAttr(mediaUrl)}"` : ""}></video>
           </div>
           <div class="panel">
             <dl class="data-list">
@@ -694,7 +696,7 @@ function adminView(tab, data) {
 }
 
 function adminTab(href, key, active, iconSvg, label) {
-  return `<a class="tab ${key === active ? "active" : ""}" href="${href}" data-route>${iconSvg} ${label}</a>`;
+  return `<a class="tab ${key === active ? "active" : ""}" href="${escapeAttr(href)}" data-route>${iconSvg} ${escapeHtml(label)}</a>`;
 }
 
 function adminOverviewView(overview) {
@@ -1026,4 +1028,17 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
+}
+
+function safeMediaUrl(value) {
+  if (!value) {
+    return "";
+  }
+  const raw = String(value);
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    return ["http:", "https:"].includes(parsed.protocol) ? raw : "";
+  } catch (_) {
+    return "";
+  }
 }

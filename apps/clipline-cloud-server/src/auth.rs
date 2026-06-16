@@ -47,6 +47,9 @@ const LOGIN_USERNAME_MAX_FAILURES: u32 = 5;
 const LOGIN_SOURCE_MAX_FAILURES: u32 = 30;
 const LOGIN_LOCKOUT_BASE: Duration = Duration::from_secs(60);
 const LOGIN_LOCKOUT_MAX: Duration = Duration::from_secs(15 * 60);
+const LOGIN_LIMIT_MAX_BUCKETS: usize = 4096;
+const MIN_PASSWORD_LEN: usize = 8;
+const MAX_PASSWORD_LEN: usize = 1024;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -96,7 +99,10 @@ impl AuthRuntime {
         let Some((nonce, signature)) = token.split_once('.') else {
             return false;
         };
-        csrf_signature(&self.csrf_secret, session_hash, nonce) == signature
+        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature) else {
+            return false;
+        };
+        verify_csrf_signature(&self.csrf_secret, session_hash, nonce, &signature)
     }
 
     fn login_allowed(&self, username: &str, source: &str) -> Result<(), Duration> {
@@ -168,6 +174,16 @@ fn prune_login_buckets(buckets: &mut HashMap<String, LoginBucket>, now: Instant)
     buckets.retain(|_, bucket| {
         bucket.reset_at > now || bucket.blocked_until.is_some_and(|blocked| blocked > now)
     });
+    while buckets.len() >= LOGIN_LIMIT_MAX_BUCKETS {
+        let Some(oldest_key) = buckets
+            .iter()
+            .min_by_key(|(_, bucket)| bucket.reset_at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        buckets.remove(&oldest_key);
+    }
 }
 
 fn login_bucket_retry_after(
@@ -263,6 +279,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/me", get(me))
+        .route("/api/v1/auth/reset-password", post(redeem_reset_password))
         .route("/api/v1/auth/device-token", post(create_device_token))
         .route("/api/v1/auth/device-tokens", get(list_device_tokens))
         .route(
@@ -313,10 +330,8 @@ async fn login(
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
-    if let Err(retry_after) = state
-        .auth
-        .login_allowed(&request.username, client_ip.as_str())
-    {
+    let login_source = client_ip.as_str();
+    if let Err(retry_after) = state.auth.login_allowed(&request.username, login_source) {
         return Err(ApiError::too_many_requests_after(
             "too many login attempts",
             retry_after,
@@ -331,19 +346,19 @@ async fn login(
     else {
         state
             .auth
-            .record_login_failure(&request.username, client_ip.as_str());
+            .record_login_failure(&request.username, login_source);
         return Err(ApiError::unauthorized("invalid username or password"));
     };
     if user.is_disabled || !verify_password(&request.password, &user.password_hash)? {
         state
             .auth
-            .record_login_failure(&request.username, client_ip.as_str());
+            .record_login_failure(&request.username, login_source);
         return Err(ApiError::unauthorized("invalid username or password"));
     }
 
     state
         .auth
-        .record_login_success(&request.username, client_ip.as_str());
+        .record_login_success(&request.username, login_source);
 
     let raw_token = generate_prefixed_token("clp_ses_");
     let token_hash = hash_token(&raw_token);
@@ -365,8 +380,12 @@ async fn login(
     let mut response = body.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_str(&session_cookie(&raw_token, Some(session.expires_at)))
-            .expect("valid cookie"),
+        HeaderValue::from_str(&session_cookie(
+            &raw_token,
+            Some(session.expires_at),
+            should_secure_cookie(&state.config),
+        ))
+        .expect("valid cookie"),
     );
     Ok(response)
 }
@@ -386,9 +405,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
     let mut response = Json(json!({ "status": "ok" })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_static(
-            "clipline_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
-        ),
+        HeaderValue::from_str(&clear_session_cookie(should_secure_cookie(&state.config)))
+            .expect("valid cookie"),
     );
     Ok(response)
 }
@@ -418,10 +436,8 @@ async fn create_device_token(
     if request.name.trim().is_empty() {
         return Err(ApiError::bad_request("device name is required"));
     }
-    if let Err(retry_after) = state
-        .auth
-        .login_allowed(&request.username, client_ip.as_str())
-    {
+    let login_source = client_ip.as_str();
+    if let Err(retry_after) = state.auth.login_allowed(&request.username, login_source) {
         return Err(ApiError::too_many_requests_after(
             "too many login attempts",
             retry_after,
@@ -436,19 +452,19 @@ async fn create_device_token(
     else {
         state
             .auth
-            .record_login_failure(&request.username, client_ip.as_str());
+            .record_login_failure(&request.username, login_source);
         return Err(ApiError::unauthorized("invalid username or password"));
     };
     if user.is_disabled || !verify_password(&request.password, &user.password_hash)? {
         state
             .auth
-            .record_login_failure(&request.username, client_ip.as_str());
+            .record_login_failure(&request.username, login_source);
         return Err(ApiError::unauthorized("invalid username or password"));
     }
 
     state
         .auth
-        .record_login_success(&request.username, client_ip.as_str());
+        .record_login_success(&request.username, login_source);
 
     let raw_token = generate_prefixed_token("clp_dev_");
     let token_hash = hash_token(&raw_token);
@@ -548,11 +564,10 @@ async fn create_user(
 
     let role = request.role.unwrap_or_else(|| "user".to_string());
     validate_role(&role)?;
-    if request.username.trim().is_empty() || request.password.len() < 8 {
-        return Err(ApiError::bad_request(
-            "username and an 8+ character password are required",
-        ));
+    if request.username.trim().is_empty() {
+        return Err(ApiError::bad_request("username is required"));
     }
+    validate_new_password(&request.password)?;
 
     let mut new_user = NewUser::new(
         request.username.trim(),
@@ -737,6 +752,71 @@ struct ChangePasswordRequest {
     new_password: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RedeemResetPasswordRequest {
+    reset_token: String,
+    new_password: String,
+}
+
+async fn redeem_reset_password(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    Json(request): Json<RedeemResetPasswordRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    validate_new_password(&request.new_password)?;
+    let token_hash = hash_token(&request.reset_token);
+    let Some(token) = state
+        .repositories
+        .reset_password_tokens
+        .get_by_token_hash(&token_hash)
+        .await?
+    else {
+        return Err(ApiError::unauthorized("reset token is invalid or expired"));
+    };
+    if token.used_at.is_some() || token.expires_at <= now_utc() {
+        return Err(ApiError::unauthorized("reset token is invalid or expired"));
+    }
+    let Some(user) = state.repositories.users.get(&token.user_id).await? else {
+        return Err(ApiError::unauthorized("reset token is invalid or expired"));
+    };
+    if !state
+        .repositories
+        .reset_password_tokens
+        .mark_used_if_valid(&token.id, now_utc())
+        .await?
+    {
+        return Err(ApiError::unauthorized("reset token is invalid or expired"));
+    }
+
+    state
+        .repositories
+        .users
+        .update_password_hash(&user.id, &hash_password(&request.new_password)?)
+        .await?;
+    state
+        .repositories
+        .sessions
+        .revoke_for_user(&user.id)
+        .await?;
+    state
+        .repositories
+        .device_tokens
+        .revoke_all_for_user(&user.id)
+        .await?;
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        None,
+        "user.password_reset_redeemed",
+        Some("user"),
+        Some(&user.id),
+        None,
+    )
+    .await?;
+
+    Ok(Json(json!({ "status": "ok" })))
+}
+
 async fn change_password(
     State(state): State<AppState>,
     Extension(client_ip): Extension<ClientIp>,
@@ -748,11 +828,7 @@ async fn change_password(
     if !verify_password(&request.current_password, &auth.user.password_hash)? {
         return Err(ApiError::forbidden("current password is incorrect"));
     }
-    if request.new_password.len() < 8 {
-        return Err(ApiError::bad_request(
-            "new password must be at least 8 characters",
-        ));
-    }
+    validate_new_password(&request.new_password)?;
 
     state
         .repositories
@@ -900,6 +976,20 @@ fn require_reauth(user: &User, password: &str) -> Result<(), ApiError> {
     }
 }
 
+fn validate_new_password(password: &str) -> Result<(), ApiError> {
+    if password.len() < MIN_PASSWORD_LEN {
+        return Err(ApiError::bad_request(format!(
+            "new password must be at least {MIN_PASSWORD_LEN} characters"
+        )));
+    }
+    if password.len() > MAX_PASSWORD_LEN {
+        return Err(ApiError::bad_request(format!(
+            "new password must be at most {MAX_PASSWORD_LEN} bytes"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) async fn audit_with_ip(
     repositories: &Repositories,
     ip_address: Option<&str>,
@@ -958,6 +1048,9 @@ fn hash_password(password: &str) -> Result<String, ApiError> {
 }
 
 fn verify_password(password: &str, password_hash: &str) -> Result<bool, ApiError> {
+    if password.len() > MAX_PASSWORD_LEN {
+        return Ok(false);
+    }
     let parsed =
         PasswordHash::new(password_hash).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(Argon2::default()
@@ -988,18 +1081,30 @@ fn hash_token(token: &str) -> String {
 }
 
 fn csrf_signature(secret: &[u8], session_hash: &str, nonce: &str) -> String {
+    URL_SAFE_NO_PAD.encode(csrf_signature_bytes(secret, session_hash, nonce))
+}
+
+fn csrf_signature_bytes(secret: &[u8], session_hash: &str, nonce: &str) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(session_hash.as_bytes());
     mac.update(b".");
     mac.update(nonce.as_bytes());
-    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    mac.finalize().into_bytes().to_vec()
 }
 
-fn session_cookie(raw_token: &str, expires_at: Option<DateTime<Utc>>) -> String {
+fn verify_csrf_signature(secret: &[u8], session_hash: &str, nonce: &str, signature: &[u8]) -> bool {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(session_hash.as_bytes());
+    mac.update(b".");
+    mac.update(nonce.as_bytes());
+    mac.verify_slice(signature).is_ok()
+}
+
+fn session_cookie(raw_token: &str, expires_at: Option<DateTime<Utc>>, secure: bool) -> String {
     let mut cookie = Cookie::build((SESSION_COOKIE, raw_token.to_string()))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .secure(secure)
         .same_site(SameSite::Lax)
         .build();
     if let Some(expires_at) = expires_at {
@@ -1008,6 +1113,18 @@ fn session_cookie(raw_token: &str, expires_at: Option<DateTime<Utc>>) -> String 
         );
     }
     cookie.to_string()
+}
+
+fn clear_session_cookie(secure: bool) -> String {
+    let mut cookie = format!("{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn should_secure_cookie(config: &Config) -> bool {
+    config.public_url.scheme() == "https"
 }
 
 fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
@@ -1193,6 +1310,38 @@ mod tests {
 
         assert!(runtime.verify_csrf_token("session-a", &token));
         assert!(!runtime.verify_csrf_token("session-b", &token));
+    }
+
+    #[test]
+    fn csrf_token_rejects_tampered_signature() {
+        let runtime = AuthRuntime::new(Some("secret"));
+        let token = runtime.csrf_token("session-a");
+        let (nonce, signature) = token.split_once('.').expect("token parts");
+        let mut signature = signature.as_bytes().to_vec();
+        let last = signature.last_mut().expect("signature byte");
+        *last = if *last == b'A' { b'B' } else { b'A' };
+        let tampered = format!("{nonce}.{}", String::from_utf8(signature).expect("utf8"));
+
+        assert!(!runtime.verify_csrf_token("session-a", &tampered));
+    }
+
+    #[test]
+    fn session_cookie_secure_flag_tracks_public_url_scheme() {
+        let secure_cookie = session_cookie(
+            "clp_ses_token",
+            Some(now_utc() + ChronoDuration::hours(1)),
+            true,
+        );
+        let insecure_cookie = session_cookie(
+            "clp_ses_token",
+            Some(now_utc() + ChronoDuration::hours(1)),
+            false,
+        );
+
+        assert!(secure_cookie.contains("Secure"));
+        assert!(!insecure_cookie.contains("Secure"));
+        assert!(clear_session_cookie(true).contains("Secure"));
+        assert!(!clear_session_cookie(false).contains("Secure"));
     }
 
     #[test]

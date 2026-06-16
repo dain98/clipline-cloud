@@ -1,9 +1,27 @@
 name: clipline-cloud
 
 services:
+  clipline-secrets:
+    image: alpine:3.20
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        umask 077
+        if [ ! -s /secrets/session_secret ]; then
+          head -c 32 /dev/urandom | base64 > /secrets/session_secret
+        fi
+    volumes:
+      - clipline_secrets:/secrets
+
   clipline-cloud:
     image: ${CLIPLINE_IMAGE:-ghcr.io/dain98/clipline-cloud:latest}
     restart: unless-stopped
+    depends_on:
+      clipline-secrets:
+        condition: service_completed_successfully
     ports:
       - "${CLIPLINE_HTTP_PORT:-8080}:8080"
     environment:
@@ -12,6 +30,7 @@ services:
       CLIPLINE_STORAGE_BACKEND: local
       CLIPLINE_DATA_DIR: /data
       CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: ${CLIPLINE_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      CLIPLINE_SESSION_SECRET_FILE: /run/clipline-secrets/session_secret
       CLIPLINE_MAX_UPLOAD_SIZE_BYTES: ${CLIPLINE_MAX_UPLOAD_SIZE_BYTES:-5368709120}
       CLIPLINE_UPLOAD_PART_SIZE_BYTES: ${CLIPLINE_UPLOAD_PART_SIZE_BYTES:-8388608}
       CLIPLINE_SINGLE_PUT_MAX_BYTES: ${CLIPLINE_SINGLE_PUT_MAX_BYTES:-67108864}
@@ -22,6 +41,7 @@ services:
       CLIPLINE_LOG_LEVEL: ${CLIPLINE_LOG_LEVEL:-info}
     volumes:
       - clipline_data:/data
+      - clipline_secrets:/run/clipline-secrets:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
       interval: 30s
@@ -31,3 +51,4 @@ services:
 
 volumes:
   clipline_data:
+  clipline_secrets:

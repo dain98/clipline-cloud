@@ -1,3 +1,7 @@
+{
+	email {$CLIPLINE_ACME_EMAIL}
+}
+
 {$CLIPLINE_DOMAIN:clips.example.com} {
 	encode zstd gzip
 	reverse_proxy clipline-cloud:8080

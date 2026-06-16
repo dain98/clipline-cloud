@@ -12,6 +12,7 @@ bytes.workspace = true
 clipline-cloud-db = { path = "../clipline-cloud-db" }
 clipline-cloud-storage = { path = "../clipline-cloud-storage" }
 libc.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
