@@ -1,0 +1,71 @@
+name: clipline-cloud-minio
+
+services:
+  clipline-cloud:
+    image: ${CLIPLINE_IMAGE:-ghcr.io/dain98/clipline-cloud:latest}
+    restart: unless-stopped
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${CLIPLINE_HTTP_PORT:-8080}:8080"
+    environment:
+      CLIPLINE_PUBLIC_URL: ${CLIPLINE_PUBLIC_URL:-http://localhost:8080}
+      CLIPLINE_DATABASE_URL: sqlite:///data/clipline.db
+      CLIPLINE_STORAGE_BACKEND: s3
+      CLIPLINE_DATA_DIR: /data
+      CLIPLINE_S3_ENDPOINT: http://minio:9000
+      CLIPLINE_S3_BUCKET: clipline
+      CLIPLINE_S3_REGION: us-east-1
+      CLIPLINE_S3_ACCESS_KEY_ID: clipline-dev
+      CLIPLINE_S3_SECRET_ACCESS_KEY: clipline-dev-password
+      CLIPLINE_S3_FORCE_PATH_STYLE: "true"
+      CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: ${CLIPLINE_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      CLIPLINE_MAX_UPLOAD_SIZE_BYTES: ${CLIPLINE_MAX_UPLOAD_SIZE_BYTES:-5368709120}
+      CLIPLINE_UPLOAD_PART_SIZE_BYTES: ${CLIPLINE_UPLOAD_PART_SIZE_BYTES:-8388608}
+      CLIPLINE_SINGLE_PUT_MAX_BYTES: ${CLIPLINE_SINGLE_PUT_MAX_BYTES:-67108864}
+      CLIPLINE_UPLOAD_SESSION_TTL_SECONDS: ${CLIPLINE_UPLOAD_SESSION_TTL_SECONDS:-86400}
+      CLIPLINE_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER: ${CLIPLINE_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER:-16}
+      CLIPLINE_PUBLIC_MEDIA_MODE: ${CLIPLINE_PUBLIC_MEDIA_MODE:-presigned}
+      CLIPLINE_PUBLIC_READ_URL_TTL_SECONDS: ${CLIPLINE_PUBLIC_READ_URL_TTL_SECONDS:-300}
+      CLIPLINE_LOG_LEVEL: ${CLIPLINE_LOG_LEVEL:-info}
+    volumes:
+      - clipline_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: clipline-dev
+      MINIO_ROOT_PASSWORD: clipline-dev-password
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 clipline-dev clipline-dev-password; do
+          sleep 2
+        done
+        mc mb --ignore-existing local/clipline
+        mc anonymous set none local/clipline
+    restart: "no"
+
+volumes:
+  clipline_data:
+  minio_data:
