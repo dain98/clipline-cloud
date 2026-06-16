@@ -214,7 +214,7 @@ impl SessionRepository {
             }
             Database::Postgres(_) => {
                 "INSERT INTO sessions (id, user_id, token_hash, user_agent, ip_address, created_at, last_used_at, expires_at, revoked_at)
-                 VALUES (?, ?, ?, ?, ?::inet, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             }
         };
 
@@ -1520,7 +1520,7 @@ impl AuditLogRepository {
             }
             Database::Postgres(_) => {
                 "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?::inet, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             }
         };
 
