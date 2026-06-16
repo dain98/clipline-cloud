@@ -1,0 +1,1018 @@
+const app = document.querySelector("#app");
+
+const state = {
+  user: null,
+  csrfToken: null,
+  flash: null,
+  libraryQuery: {
+    sort: "uploaded_at_desc",
+    game: "",
+    visibility: "",
+    status: "",
+    q: "",
+    from: "",
+    to: "",
+  },
+  adminResetToken: null,
+};
+
+const icons = {
+  alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 8h4"/><path d="M3 16h4"/><path d="M17 8h4"/><path d="M17 16h4"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
+  library: '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.7L21 8"/><path d="M21 3v5h-5"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.7 8.8a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V5l8-3 8 3v8Z"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+};
+
+window.addEventListener("popstate", route);
+document.addEventListener("click", onDocumentClick);
+
+route();
+
+async function route() {
+  const current = currentRoute();
+  if (current.name === "public") {
+    await renderPublicShare(current.shareId);
+    return;
+  }
+
+  if (current.name === "login") {
+    if (state.user) {
+      navigate("/");
+      return;
+    }
+    renderLogin();
+    return;
+  }
+
+  if (!state.user) {
+    const authenticated = await refreshSession();
+    if (!authenticated) {
+      navigate("/login");
+      return;
+    }
+  }
+
+  if (current.name === "clip") {
+    await renderClipDetail(current.clipId);
+  } else if (current.name === "admin") {
+    if (state.user.role !== "admin") {
+      flash("Admin access is required.", "error");
+      navigate("/");
+      return;
+    }
+    await renderAdmin(current.tab);
+  } else {
+    await renderLibrary();
+  }
+}
+
+function currentRoute() {
+  const path = window.location.pathname;
+  if (path.startsWith("/c/")) {
+    return { name: "public", shareId: decodeURIComponent(path.slice(3)) };
+  }
+  if (path.startsWith("/clip/")) {
+    return { name: "clip", clipId: decodeURIComponent(path.slice(6)) };
+  }
+  if (path === "/admin") {
+    return {
+      name: "admin",
+      tab: new URLSearchParams(window.location.search).get("tab") || "overview",
+    };
+  }
+  if (path === "/login") {
+    return { name: "login" };
+  }
+  return { name: "library" };
+}
+
+function navigate(path) {
+  window.history.pushState({}, "", path);
+  route();
+}
+
+function onDocumentClick(event) {
+  const routeLink = event.target.closest("[data-route]");
+  if (routeLink) {
+    event.preventDefault();
+    navigate(routeLink.getAttribute("href"));
+    return;
+  }
+
+  const copyButton = event.target.closest("[data-copy]");
+  if (copyButton) {
+    event.preventDefault();
+    copyText(copyButton.dataset.copy);
+  }
+}
+
+async function refreshSession() {
+  try {
+    const data = await api("/api/v1/auth/me");
+    state.user = data.user;
+    state.csrfToken = data.csrf_token;
+    return true;
+  } catch (error) {
+    state.user = null;
+    state.csrfToken = null;
+    return false;
+  }
+}
+
+async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = new Headers(options.headers || {});
+  headers.set("Accept", "application/json");
+
+  let body = options.body;
+  if (body && typeof body !== "string") {
+    headers.set("Content-Type", "application/json");
+    body = JSON.stringify(body);
+  }
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && state.csrfToken) {
+    headers.set("X-CSRF-Token", state.csrfToken);
+  }
+
+  const response = await fetch(path, {
+    ...options,
+    body,
+    credentials: "same-origin",
+    headers,
+    method,
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+  if (!response.ok) {
+    const message = typeof data === "object" && data && data.error ? data.error : response.statusText;
+    throw new Error(message || "Request failed");
+  }
+  return data;
+}
+
+function renderLogin(error = "") {
+  app.innerHTML = `
+    <main class="login-shell">
+      <section class="login-panel" aria-labelledby="login-title">
+        <div class="brand-mark" aria-hidden="true">CL</div>
+        <h1 id="login-title">Clipline Cloud</h1>
+        <p>Sign in with an account created by this instance's admin.</p>
+        ${error ? `<div class="error-box">${escapeHtml(error)}</div>` : ""}
+        <form id="login-form" class="section" autocomplete="on">
+          <label class="field">
+            <span>Username</span>
+            <input name="username" autocomplete="username" required>
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button class="btn-primary" type="submit">${icon("lock")} Sign in</button>
+        </form>
+      </section>
+    </main>
+  `;
+  document.querySelector("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const data = await api("/api/v1/auth/login", {
+        method: "POST",
+        body: {
+          username: String(form.get("username") || ""),
+          password: String(form.get("password") || ""),
+        },
+      });
+      state.user = data.user;
+      state.csrfToken = data.csrf_token;
+      navigate("/");
+    } catch (loginError) {
+      renderLogin(loginError.message);
+    }
+  });
+}
+
+function renderShell({ active, title, subtitle, body }) {
+  const adminLink =
+    state.user?.role === "admin"
+      ? navLink("/admin", "admin", active, icon("shield"), "Admin")
+      : "";
+  app.innerHTML = `
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <div class="brand-mark" aria-hidden="true">CL</div>
+          <div>
+            <strong>Clipline Cloud</strong>
+            <span>Self-hosted clips</span>
+          </div>
+        </div>
+        <nav class="nav-stack" aria-label="Primary">
+          ${navLink("/", "library", active, icon("library"), "Library")}
+          ${adminLink}
+        </nav>
+        <div class="sidebar-footer">
+          <div class="user-chip">
+            ${escapeHtml(state.user?.username || "")}
+            <span>${escapeHtml(state.user?.role || "")}</span>
+          </div>
+          <button id="logout-button" class="btn-ghost" title="Sign out" aria-label="Sign out">
+            ${icon("logOut")} Sign out
+          </button>
+        </div>
+      </aside>
+      <main class="main-pane">
+        <header class="topbar">
+          <div>
+            <h1>${escapeHtml(title)}</h1>
+            <p>${escapeHtml(subtitle || "")}</p>
+          </div>
+        </header>
+        <div class="content">
+          ${renderFlash()}
+          ${body}
+        </div>
+      </main>
+    </div>
+  `;
+  document.querySelector("#logout-button").addEventListener("click", logout);
+}
+
+function navLink(href, key, active, iconSvg, label) {
+  return `
+    <a class="nav-link ${active === key ? "active" : ""}" href="${href}" data-route>
+      ${iconSvg}<span>${label}</span>
+    </a>
+  `;
+}
+
+async function logout() {
+  try {
+    await api("/api/v1/auth/logout", { method: "POST", body: {} });
+  } catch (_) {
+    // The local session is cleared either way.
+  }
+  state.user = null;
+  state.csrfToken = null;
+  navigate("/login");
+}
+
+async function renderLibrary() {
+  renderShell({
+    active: "library",
+    title: "Library",
+    subtitle: "Your ready clips, filters, and sharing controls.",
+    body: `<div class="empty-state">Loading clips...</div>`,
+  });
+
+  try {
+    const data = await api(`/api/v1/clips?${libraryParams().toString()}`);
+    renderShell({
+      active: "library",
+      title: "Library",
+      subtitle: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"} in this view.`,
+      body: libraryView(data.clips),
+    });
+    bindLibraryEvents();
+  } catch (error) {
+    renderShell({
+      active: "library",
+      title: "Library",
+      subtitle: "Your ready clips, filters, and sharing controls.",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function libraryParams() {
+  const params = new URLSearchParams();
+  params.set("sort", state.libraryQuery.sort);
+  params.set("page_size", "100");
+  for (const key of ["game", "visibility", "status", "q"]) {
+    if (state.libraryQuery[key]) {
+      params.set(key, state.libraryQuery[key]);
+    }
+  }
+  if (state.libraryQuery.from) {
+    params.set("from", `${state.libraryQuery.from}T00:00:00Z`);
+  }
+  if (state.libraryQuery.to) {
+    params.set("to", `${state.libraryQuery.to}T23:59:59Z`);
+  }
+  return params;
+}
+
+function libraryView(clips) {
+  return `
+    <section class="section">
+      <form id="library-filter-form" class="panel toolbar">
+        ${field("Search", "q", "search", state.libraryQuery.q, "Title or game")}
+        ${selectField("Sort", "sort", state.libraryQuery.sort, [
+          ["uploaded_at_desc", "Uploaded newest"],
+          ["uploaded_at_asc", "Uploaded oldest"],
+          ["recorded_at_desc", "Recorded newest"],
+          ["recorded_at_asc", "Recorded oldest"],
+          ["duration_desc", "Duration longest"],
+          ["duration_asc", "Duration shortest"],
+          ["title_asc", "Title A-Z"],
+        ])}
+        ${field("Game", "game", "text", state.libraryQuery.game, "Name or ID")}
+        ${selectField("Visibility", "visibility", state.libraryQuery.visibility, [
+          ["", "Any"],
+          ["private", "Private"],
+          ["public", "Public"],
+          ["unlisted", "Unlisted"],
+        ])}
+        ${selectField("Status", "status", state.libraryQuery.status, [
+          ["", "Ready"],
+          ["created", "Created"],
+          ["uploading", "Uploading"],
+          ["processing", "Processing"],
+          ["ready", "Ready"],
+          ["failed", "Failed"],
+        ])}
+        <button class="btn-primary" type="submit">${icon("search")} Apply</button>
+      </form>
+      ${
+        clips.length
+          ? `<div class="clip-grid">${clips.map(clipRow).join("")}</div>`
+          : `<div class="empty-state">No clips match this view.</div>`
+      }
+    </section>
+  `;
+}
+
+function clipRow(clip) {
+  const isPublic = clip.visibility === "public" || clip.visibility === "unlisted";
+  const toggleLabel = isPublic ? "Make private" : "Publish";
+  const toggleIcon = isPublic ? icon("lock") : icon("globe");
+  const publicUrl = clip.public_url || "";
+  return `
+    <article class="clip-row">
+      <img class="thumb" src="/api/v1/clips/${encodeURIComponent(clip.id)}/thumbnail" alt="">
+      <div>
+        <a class="clip-title" href="/clip/${encodeURIComponent(clip.id)}" data-route>${escapeHtml(clip.title)}</a>
+        <div class="meta-line">
+          <span>${escapeHtml(clip.game_name || clip.game_id || "No game")}</span>
+          <span>${formatDuration(clip.duration_ms)}</span>
+          <span>${formatBytes(clip.file_size_bytes)}</span>
+        </div>
+      </div>
+      <div>
+        ${visibilityBadge(clip.visibility)}
+        <div class="meta-line"><span>${escapeHtml(clip.status)}</span></div>
+      </div>
+      <div class="meta-line">
+        <span>Recorded ${formatDate(clip.recorded_at)}</span>
+        <span>Uploaded ${formatDate(clip.uploaded_at)}</span>
+      </div>
+      <div class="actions">
+        <a class="btn-secondary" href="/clip/${encodeURIComponent(clip.id)}" data-route>${icon("film")} View</a>
+        <button class="btn-secondary icon-btn" title="Copy public link" aria-label="Copy public link" ${publicUrl ? `data-copy="${escapeAttr(publicUrl)}"` : "disabled"}>${icon("copy")}</button>
+        <button class="btn-secondary" data-clip-action="toggle" data-clip-id="${escapeAttr(clip.id)}" data-next-visibility="${isPublic ? "private" : "public"}">${toggleIcon} ${toggleLabel}</button>
+        <button class="btn-danger icon-btn" title="Delete clip" aria-label="Delete clip" data-clip-action="delete" data-clip-id="${escapeAttr(clip.id)}">${icon("trash")}</button>
+      </div>
+    </article>
+  `;
+}
+
+function bindLibraryEvents() {
+  document.querySelector("#library-filter-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    for (const key of Object.keys(state.libraryQuery)) {
+      state.libraryQuery[key] = String(form.get(key) || "");
+    }
+    renderLibrary();
+  });
+  document.querySelectorAll("[data-clip-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.clipId;
+      const action = button.dataset.clipAction;
+      try {
+        if (action === "toggle") {
+          await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
+            method: "POST",
+            body: { visibility: button.dataset.nextVisibility },
+          });
+          flash(button.dataset.nextVisibility === "private" ? "Public access removed." : "Public link created.");
+        } else if (action === "delete" && window.confirm("Delete this clip?")) {
+          await api(`/api/v1/clips/${encodeURIComponent(id)}`, { method: "DELETE", body: {} });
+          flash("Clip deleted.");
+        }
+        renderLibrary();
+      } catch (error) {
+        flash(error.message, "error");
+        renderLibrary();
+      }
+    });
+  });
+}
+
+async function renderClipDetail(id) {
+  renderShell({
+    active: "library",
+    title: "Clip detail",
+    subtitle: "Playback, metadata, markers, and visibility.",
+    body: `<div class="empty-state">Loading clip...</div>`,
+  });
+
+  try {
+    const clip = await api(`/api/v1/clips/${encodeURIComponent(id)}`);
+    renderShell({
+      active: "library",
+      title: clip.title,
+      subtitle: clip.game_name || clip.game_id || "No game metadata",
+      body: clipDetailView(clip),
+    });
+    bindClipDetailEvents(clip);
+  } catch (error) {
+    renderShell({
+      active: "library",
+      title: "Clip detail",
+      subtitle: "Playback, metadata, markers, and visibility.",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function clipDetailView(clip) {
+  return `
+    <section class="detail-layout">
+      <div class="section">
+        <div class="video-frame">
+          <video controls preload="metadata" src="/api/v1/clips/${encodeURIComponent(clip.id)}/media"></video>
+        </div>
+        <div class="panel">
+          <div class="section-header">
+            <h2>Markers</h2>
+            <span class="muted">${clip.markers.length} marker${clip.markers.length === 1 ? "" : "s"}</span>
+          </div>
+          ${markerTimeline(clip)}
+          ${
+            clip.markers.length
+              ? `<ul class="marker-list">${clip.markers.map(markerItem).join("")}</ul>`
+              : `<p class="muted">No markers on this clip.</p>`
+          }
+        </div>
+        <form id="clip-edit-form" class="panel section">
+          <h2>Metadata</h2>
+          ${field("Title", "title", "text", clip.title, "Clip title")}
+          ${field("Game name", "game_name", "text", clip.game_name || "", "Optional")}
+          ${field("Game ID", "game_id", "text", clip.game_id || "", "Optional")}
+          ${field("Duration ms", "duration_ms", "number", clip.duration_ms ?? "", "Optional")}
+          <button class="btn-primary" type="submit">${icon("save")} Save metadata</button>
+        </form>
+      </div>
+      <aside class="section">
+        <div class="panel section">
+          <div class="section-header">
+            <h2>Visibility</h2>
+            ${visibilityBadge(clip.visibility)}
+          </div>
+          ${selectField("Visibility", "detail_visibility", clip.visibility, [
+            ["private", "Private"],
+            ["public", "Public"],
+            ["unlisted", "Unlisted"],
+          ])}
+          <button id="clip-visibility-button" class="btn-secondary">${icon("refresh")} Apply visibility</button>
+          ${
+            clip.public_url
+              ? `<div class="share-line">
+                  <input readonly value="${escapeAttr(clip.public_url)}" aria-label="Public URL">
+                  <button class="btn-secondary" data-copy="${escapeAttr(clip.public_url)}">${icon("copy")} Copy</button>
+                </div>`
+              : `<p class="muted">No public URL is active.</p>`
+          }
+        </div>
+        <div class="panel">
+          <h2>Details</h2>
+          <dl class="data-list">
+            ${dataRow("Recorded", formatDate(clip.recorded_at))}
+            ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
+            ${dataRow("Duration", formatDuration(clip.duration_ms))}
+            ${dataRow("Size", formatBytes(clip.file_size_bytes))}
+            ${dataRow("Dimensions", clip.width && clip.height ? `${clip.width} x ${clip.height}` : "Unknown")}
+            ${dataRow("FPS", clip.fps ?? "Unknown")}
+            ${dataRow("Container", clip.container || "Unknown")}
+            ${dataRow("Video codec", clip.video_codec || "Unknown")}
+            ${dataRow("Audio codec", clip.audio_codec || "Unknown")}
+            ${dataRow("Checksum", clip.checksum_sha256 || "Unknown", true)}
+          </dl>
+        </div>
+        <div class="panel section">
+          <h2>Danger zone</h2>
+          <button id="clip-delete-button" class="btn-danger">${icon("trash")} Delete clip</button>
+        </div>
+      </aside>
+    </section>
+  `;
+}
+
+function bindClipDetailEvents(clip) {
+  document.querySelector("#clip-edit-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, {
+        method: "PATCH",
+        body: {
+          title: String(form.get("title") || ""),
+          game_name: nullableString(form.get("game_name")),
+          game_id: nullableString(form.get("game_id")),
+          duration_ms: nullableNumber(form.get("duration_ms")),
+        },
+      });
+      flash("Clip metadata saved.");
+      renderClipDetail(clip.id);
+    } catch (error) {
+      flash(error.message, "error");
+      renderClipDetail(clip.id);
+    }
+  });
+
+  document.querySelector("#clip-visibility-button").addEventListener("click", async () => {
+    const visibility = document.querySelector("[name='detail_visibility']").value;
+    try {
+      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}/visibility`, {
+        method: "POST",
+        body: { visibility },
+      });
+      flash(visibility === "private" ? "Public access removed." : "Visibility updated.");
+      renderClipDetail(clip.id);
+    } catch (error) {
+      flash(error.message, "error");
+      renderClipDetail(clip.id);
+    }
+  });
+
+  document.querySelector("#clip-delete-button").addEventListener("click", async () => {
+    if (!window.confirm("Delete this clip?")) {
+      return;
+    }
+    try {
+      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, { method: "DELETE", body: {} });
+      flash("Clip deleted.");
+      navigate("/");
+    } catch (error) {
+      flash(error.message, "error");
+      renderClipDetail(clip.id);
+    }
+  });
+}
+
+function markerTimeline(clip) {
+  if (!clip.duration_ms || !clip.markers.length) {
+    return "";
+  }
+  const ticks = clip.markers
+    .map((marker) => {
+      const left = Math.max(0, Math.min(100, (marker.timestamp_ms / clip.duration_ms) * 100));
+      return `<span class="tick" style="left:${left}%" title="${escapeAttr(marker.label || marker.kind)}"></span>`;
+    })
+    .join("");
+  return `<div class="timeline" aria-hidden="true">${ticks}</div>`;
+}
+
+function markerItem(marker) {
+  return `
+    <li>
+      <strong>${escapeHtml(marker.label || marker.kind)}</strong>
+      <span class="muted">${formatDuration(marker.timestamp_ms)} ${escapeHtml(marker.kind)}</span>
+    </li>
+  `;
+}
+
+async function renderPublicShare(shareId) {
+  app.innerHTML = `
+    <main class="public-shell">
+      <section class="public-panel">
+        <div class="empty-state">Loading public clip...</div>
+      </section>
+    </main>
+  `;
+  try {
+    const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
+    app.innerHTML = `
+      <main class="public-shell">
+        <section class="public-panel" aria-labelledby="public-title">
+          <div>
+            <div class="brand-mark" aria-hidden="true">CL</div>
+            <h1 id="public-title">${escapeHtml(clip.title)}</h1>
+            <p>${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
+          </div>
+          <div class="video-frame">
+            <video controls preload="metadata" poster="${escapeAttr(clip.thumbnail_url)}" src="${escapeAttr(clip.media_url)}"></video>
+          </div>
+          <div class="panel">
+            <dl class="data-list">
+              ${dataRow("Recorded", formatDate(clip.recorded_at))}
+              ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
+              ${dataRow("Duration", formatDuration(clip.duration_ms))}
+            </dl>
+          </div>
+          <div class="public-copy">${escapeHtml(clip.copy_notice)}</div>
+        </section>
+      </main>
+    `;
+  } catch (_) {
+    app.innerHTML = `
+      <main class="public-shell">
+        <section class="public-panel">
+          <div class="brand-mark" aria-hidden="true">CL</div>
+          <h1>Clip unavailable</h1>
+          <p>This public link is no longer active.</p>
+        </section>
+      </main>
+    `;
+  }
+}
+
+async function renderAdmin(tab) {
+  renderShell({
+    active: "admin",
+    title: "Admin",
+    subtitle: "Accounts, instance summary, and processing diagnostics.",
+    body: `<div class="empty-state">Loading admin data...</div>`,
+  });
+
+  try {
+    const [overview, users, failedUploads, deadJobs, recentErrors] = await Promise.all([
+      api("/api/v1/admin/overview"),
+      api("/api/v1/users"),
+      api("/api/v1/admin/uploads/failed?limit=50"),
+      api("/api/v1/admin/jobs/dead?limit=50"),
+      api("/api/v1/admin/jobs/recent-errors?limit=50"),
+    ]);
+    renderShell({
+      active: "admin",
+      title: "Admin",
+      subtitle: "Accounts, instance summary, and processing diagnostics.",
+      body: adminView(tab, { overview, users, failedUploads, deadJobs, recentErrors }),
+    });
+    bindAdminEvents();
+  } catch (error) {
+    renderShell({
+      active: "admin",
+      title: "Admin",
+      subtitle: "Accounts, instance summary, and processing diagnostics.",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function adminView(tab, data) {
+  const active = ["overview", "users", "jobs"].includes(tab) ? tab : "overview";
+  return `
+    <section class="section">
+      <div class="tabs" role="tablist" aria-label="Admin views">
+        ${adminTab("/admin?tab=overview", "overview", active, icon("server"), "Overview")}
+        ${adminTab("/admin?tab=users", "users", active, icon("users"), "Users")}
+        ${adminTab("/admin?tab=jobs", "jobs", active, icon("alert"), "Jobs")}
+      </div>
+      ${active === "users" ? adminUsersView(data.users) : ""}
+      ${active === "jobs" ? adminJobsView(data.failedUploads, data.deadJobs, data.recentErrors) : ""}
+      ${active === "overview" ? adminOverviewView(data.overview) : ""}
+    </section>
+  `;
+}
+
+function adminTab(href, key, active, iconSvg, label) {
+  return `<a class="tab ${key === active ? "active" : ""}" href="${href}" data-route>${iconSvg} ${label}</a>`;
+}
+
+function adminOverviewView(overview) {
+  return `
+    <div class="panel">
+      <h2>Server summary</h2>
+      <dl class="data-list">
+        ${dataRow("Server version", overview.server_version)}
+        ${dataRow("API version", overview.api_version)}
+        ${dataRow("Public URL", overview.public_url)}
+        ${dataRow("Database", overview.database_backend)}
+        ${dataRow("Storage", `${overview.storage_backend} - ${overview.storage_summary}`)}
+        ${dataRow("Max upload", formatBytes(overview.max_upload_size_bytes))}
+        ${dataRow("Part size", formatBytes(overview.upload_part_size_bytes))}
+        ${dataRow("Single PUT max", formatBytes(overview.single_put_max_bytes))}
+        ${dataRow("Upload TTL", `${overview.upload_session_ttl_seconds}s`)}
+        ${dataRow("Public media", `${overview.public_media_mode}, ${overview.public_read_url_ttl_seconds}s TTL`)}
+      </dl>
+    </div>
+  `;
+}
+
+function adminUsersView(users) {
+  return `
+    <div class="admin-grid">
+      <form id="create-user-form" class="panel section">
+        <h2>Create user</h2>
+        ${field("Username", "username", "text", "", "Required")}
+        ${field("Display name", "display_name", "text", "", "Optional")}
+        ${field("Password", "password", "password", "", "At least 8 characters")}
+        ${selectField("Role", "role", "user", [
+          ["user", "User"],
+          ["admin", "Admin"],
+        ])}
+        ${field("Your password", "reauth_password", "password", "", "Required")}
+        <button class="btn-primary" type="submit">${icon("plus")} Create user</button>
+      </form>
+      <div class="panel">
+        <div class="section-header">
+          <h2>Users</h2>
+          <span class="muted">${users.length} total</span>
+        </div>
+        ${state.adminResetToken ? `<div class="notice mono">${escapeHtml(state.adminResetToken)}</div>` : ""}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead>
+            <tbody>${users.map(userRow).join("")}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function userRow(user) {
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(user.username)}</strong>
+        <div class="muted">${escapeHtml(user.display_name || user.id)}</div>
+      </td>
+      <td>${escapeHtml(user.role)}</td>
+      <td>${user.is_disabled ? `<span class="badge badge-warn">Disabled</span>` : `<span class="badge badge-public">Active</span>`}</td>
+      <td>${formatDate(user.last_login_at)}</td>
+      <td>
+        <div class="actions">
+          <button class="btn-secondary" data-user-action="reset" data-user-id="${escapeAttr(user.id)}">${icon("clipboard")} Reset</button>
+          <button class="btn-danger" data-user-action="disable" data-user-id="${escapeAttr(user.id)}" ${user.is_disabled ? "disabled" : ""}>${icon("x")} Disable</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function adminJobsView(failedUploads, deadJobs, recentErrors) {
+  return `
+    <div class="section">
+      <div class="panel">
+        <div class="section-header">
+          <h2>Failed uploads</h2>
+          <span class="muted">${failedUploads.length}</span>
+        </div>
+        ${failedUploads.length ? `<div class="job-list">${failedUploads.map(uploadItem).join("")}</div>` : `<p class="muted">No failed uploads.</p>`}
+      </div>
+      <div class="panel">
+        <div class="section-header">
+          <h2>Dead jobs</h2>
+          <span class="muted">${deadJobs.length}</span>
+        </div>
+        ${deadJobs.length ? `<div class="job-list">${deadJobs.map(jobItem).join("")}</div>` : `<p class="muted">No dead jobs.</p>`}
+      </div>
+      <div class="panel">
+        <div class="section-header">
+          <h2>Recent job errors</h2>
+          <span class="muted">${recentErrors.length}</span>
+        </div>
+        ${recentErrors.length ? `<div class="job-list">${recentErrors.map(jobItem).join("")}</div>` : `<p class="muted">No recent job errors.</p>`}
+      </div>
+    </div>
+  `;
+}
+
+function uploadItem(upload) {
+  return `
+    <div class="job-item">
+      <strong class="mono">${escapeHtml(upload.id)}</strong>
+      <span class="muted">clip ${escapeHtml(upload.clip_id)} - ${formatBytes(upload.received_size_bytes)} of ${formatBytes(upload.expected_size_bytes)} - updated ${formatDate(upload.updated_at)}</span>
+    </div>
+  `;
+}
+
+function jobItem(job) {
+  return `
+    <div class="job-item">
+      <strong>${escapeHtml(job.kind)} <span class="mono">${escapeHtml(job.id)}</span></strong>
+      <span class="muted">${escapeHtml(job.status)} - attempts ${job.attempts}/${job.max_attempts} - target ${escapeHtml(job.target_type || "")}:${escapeHtml(job.target_id || "")}</span>
+      ${job.last_error ? `<span class="error-box">${escapeHtml(job.last_error)}</span>` : ""}
+    </div>
+  `;
+}
+
+function bindAdminEvents() {
+  const createForm = document.querySelector("#create-user-form");
+  if (createForm) {
+    createForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      try {
+        await api("/api/v1/users", {
+          method: "POST",
+          body: {
+            username: String(form.get("username") || ""),
+            display_name: nullableString(form.get("display_name")),
+            password: String(form.get("password") || ""),
+            role: String(form.get("role") || "user"),
+            reauth_password: String(form.get("reauth_password") || ""),
+          },
+        });
+        flash("User created.");
+        navigate("/admin?tab=users");
+      } catch (error) {
+        flash(error.message, "error");
+        renderAdmin("users");
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-user-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.userId;
+      const action = button.dataset.userAction;
+      const reauth = window.prompt(`Confirm your password to ${action} this user.`);
+      if (!reauth) {
+        return;
+      }
+      try {
+        if (action === "disable") {
+          await api(`/api/v1/users/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+            body: { reauth_password: reauth },
+          });
+          flash("User disabled.");
+        } else if (action === "reset") {
+          const data = await api(`/api/v1/users/${encodeURIComponent(id)}/reset-password`, {
+            method: "POST",
+            body: { reauth_password: reauth },
+          });
+          state.adminResetToken = `Reset token: ${data.reset_token} (expires ${formatDate(data.expires_at)})`;
+          flash("Reset token created.");
+        }
+        renderAdmin("users");
+      } catch (error) {
+        flash(error.message, "error");
+        renderAdmin("users");
+      }
+    });
+  });
+}
+
+function field(label, name, type, value, placeholder) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder || "")}">
+    </label>
+  `;
+}
+
+function selectField(label, name, value, options) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <select name="${escapeAttr(name)}">
+        ${options
+          .map(([optionValue, optionLabel]) => `<option value="${escapeAttr(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`)
+          .join("")}
+      </select>
+    </label>
+  `;
+}
+
+function dataRow(label, value, mono = false) {
+  return `
+    <div>
+      <dt>${escapeHtml(label)}</dt>
+      <dd class="${mono ? "mono" : ""}">${escapeHtml(value ?? "Unknown")}</dd>
+    </div>
+  `;
+}
+
+function visibilityBadge(visibility) {
+  const key = visibility || "private";
+  const className = key === "public" ? "badge-public" : key === "unlisted" ? "badge-unlisted" : "badge-private";
+  const iconName = key === "private" ? "lock" : "globe";
+  return `<span class="badge ${className}">${icon(iconName)} ${escapeHtml(key)}</span>`;
+}
+
+function renderFlash() {
+  if (!state.flash) {
+    return "";
+  }
+  const current = state.flash;
+  state.flash = null;
+  const className = current.type === "error" ? "error-box" : "notice";
+  return `<div class="${className}">${escapeHtml(current.message)}</div>`;
+}
+
+function flash(message, type = "notice") {
+  state.flash = { message, type };
+}
+
+async function copyText(value) {
+  if (!value) {
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = value;
+      document.body.append(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+    flash("Copied to clipboard.");
+  } catch (_) {
+    flash("Copy failed. Select and copy the URL manually.", "error");
+  }
+  route();
+}
+
+function nullableString(value) {
+  const text = String(value || "").trim();
+  return text ? text : null;
+}
+
+function nullableNumber(value) {
+  const text = String(value || "").trim();
+  return text ? Number(text) : null;
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Unknown";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function formatDuration(value) {
+  if (value == null) {
+    return "Unknown";
+  }
+  const totalSeconds = Math.max(0, Math.round(Number(value) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatBytes(value) {
+  if (value == null) {
+    return "Unknown";
+  }
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) {
+    return "Unknown";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function icon(name) {
+  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.alert}</svg>`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
