@@ -285,6 +285,14 @@ async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ReadinessRes
     };
     let ready = database_status == "ok" && storage_status == "ok";
 
+    readiness_response(database_status, storage_status, ready)
+}
+
+fn readiness_response(
+    database_status: &'static str,
+    storage_status: &'static str,
+    ready: bool,
+) -> (StatusCode, Json<ReadinessResponse>) {
     (
         if ready {
             StatusCode::OK
@@ -482,5 +490,26 @@ mod tests {
     #[test]
     fn upload_request_body_limit_rounds_derived_part_size() {
         assert_eq!(round_up_to_mib_saturating((64 * MIB) + 1), 65 * MIB);
+    }
+
+    #[test]
+    fn readiness_response_reports_not_ready_when_a_dependency_fails() {
+        let (status, Json(body)) = readiness_response("ok", "ok", true);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.status, "ok");
+        assert_eq!(body.database, "ok");
+        assert_eq!(body.storage, "ok");
+
+        let (status, Json(body)) = readiness_response("error", "ok", false);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.status, "not_ready");
+        assert_eq!(body.database, "error");
+        assert_eq!(body.storage, "ok");
+
+        let (status, Json(body)) = readiness_response("ok", "error", false);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.status, "not_ready");
+        assert_eq!(body.database, "ok");
+        assert_eq!(body.storage, "error");
     }
 }

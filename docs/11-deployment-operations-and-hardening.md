@@ -166,7 +166,7 @@ Self-hosting diagnostics without a full observability stack.
 ## Implementation checklist
 
 - [ ] All five Compose profiles authored in `deploy/compose/` and verified to start
-- [ ] Minimal profile runs **as copied** (generated admin password printed; non-HTTPS warning shown)
+- [x] Minimal profile runs **as copied** (generated admin password printed; non-HTTPS warning shown)
 - [ ] Caddy profile terminates TLS with the real domain over HTTPS
 - [x] `_FILE` secret variants honored across all profiles
 - [x] Operator-tunable limits implemented with the documented defaults (5 GiB / 24h / 8 MiB / 64 MiB / mp4 / private)
@@ -209,3 +209,12 @@ Self-hosting diagnostics without a full observability stack.
 - 2026-06-16 — Tightened deployment review issues: default/MinIO local-test profiles now use
   generated persisted local secrets, MinIO binds only to localhost, the Caddy profile wires an ACME
   email, and docs clarify app-enforced body limits plus trusted-proxy IP coupling.
+- 2026-06-16 — Added `deploy/compose/smoke.sh` as the repeatable Docker smoke harness for Compose
+  config validation, generated temporary secrets, default/MinIO/Postgres startup checks, admin
+  diagnostics, SQLite/local backup-restore, and DB/storage `/readyz` failure drills. CI now runs the
+  harness in `CONFIG_ONLY=1` mode against all five Compose profiles.
+- 2026-06-16 — Ran the full local smoke path with `BUILD_IMAGE=0 RUN_PROFILES='default minio
+  postgres' deploy/compose/smoke.sh`. Fixed generated local secret permissions so the non-root app
+  user can read persisted secrets, verified the default profile backup/restore path, and verified
+  MinIO/Postgres storage/database dependency failures flip `/readyz` to not-ready. Real-domain Caddy
+  TLS and external-S3 production-bucket checks remain operator-resource gates.

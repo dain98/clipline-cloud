@@ -57,13 +57,13 @@ services:
 
 secrets:
   database_url:
-    file: ./secrets/database_url.txt
+    file: ${CLIPLINE_COMPOSE_DATABASE_URL_FILE:-./secrets/database_url.txt}
   postgres_password:
-    file: ./secrets/postgres_password.txt
+    file: ${CLIPLINE_COMPOSE_POSTGRES_PASSWORD_FILE:-./secrets/postgres_password.txt}
   admin_password:
-    file: ./secrets/admin_password.txt
+    file: ${CLIPLINE_COMPOSE_ADMIN_PASSWORD_FILE:-./secrets/admin_password.txt}
   session_secret:
-    file: ./secrets/session_secret.txt
+    file: ${CLIPLINE_COMPOSE_SESSION_SECRET_FILE:-./secrets/session_secret.txt}
 
 volumes:
   clipline_data:

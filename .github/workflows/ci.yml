@@ -31,6 +31,15 @@ jobs:
       - name: Build web app
         run: npm run build --prefix apps/clipline-cloud-web
 
+  compose-config:
+    name: Compose Configs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate Compose profiles
+        run: CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
+
   database-backends:
     name: Database Backends
     runs-on: ubuntu-latest

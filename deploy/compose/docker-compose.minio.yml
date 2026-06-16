@@ -27,6 +27,7 @@ services:
         if [ ! -s /secrets/s3_secret_access_key ]; then
           random_secret > /secrets/s3_secret_access_key
         fi
+        chmod 0444 /secrets/session_secret /secrets/s3_access_key_id /secrets/s3_secret_access_key
     volumes:
       - clipline_secrets:/secrets
 
