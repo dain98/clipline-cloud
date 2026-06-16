@@ -1,0 +1,121 @@
+name: clipline-cloud-minio
+
+services:
+  clipline-secrets:
+    image: alpine:3.20
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        umask 077
+        random_secret() {
+          head -c 32 /dev/urandom | base64
+        }
+        random_access_key() {
+          printf 'clipline'
+          head -c 16 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20
+          printf '\n'
+        }
+        if [ ! -s /secrets/session_secret ]; then
+          random_secret > /secrets/session_secret
+        fi
+        if [ ! -s /secrets/s3_access_key_id ]; then
+          random_access_key > /secrets/s3_access_key_id
+        fi
+        if [ ! -s /secrets/s3_secret_access_key ]; then
+          random_secret > /secrets/s3_secret_access_key
+        fi
+    volumes:
+      - clipline_secrets:/secrets
+
+  clipline-cloud:
+    image: ${CLIPLINE_IMAGE:-ghcr.io/dain98/clipline-cloud:latest}
+    restart: unless-stopped
+    depends_on:
+      clipline-secrets:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${CLIPLINE_HTTP_PORT:-8080}:8080"
+    environment:
+      CLIPLINE_PUBLIC_URL: ${CLIPLINE_PUBLIC_URL:-http://localhost:8080}
+      CLIPLINE_DATABASE_URL: sqlite:///data/clipline.db
+      CLIPLINE_STORAGE_BACKEND: s3
+      CLIPLINE_DATA_DIR: /data
+      CLIPLINE_S3_ENDPOINT: http://minio:9000
+      CLIPLINE_S3_BUCKET: clipline
+      CLIPLINE_S3_REGION: us-east-1
+      CLIPLINE_S3_ACCESS_KEY_ID_FILE: /run/clipline-secrets/s3_access_key_id
+      CLIPLINE_S3_SECRET_ACCESS_KEY_FILE: /run/clipline-secrets/s3_secret_access_key
+      CLIPLINE_S3_FORCE_PATH_STYLE: "true"
+      CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: ${CLIPLINE_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      CLIPLINE_SESSION_SECRET_FILE: /run/clipline-secrets/session_secret
+      CLIPLINE_MAX_UPLOAD_SIZE_BYTES: ${CLIPLINE_MAX_UPLOAD_SIZE_BYTES:-5368709120}
+      CLIPLINE_UPLOAD_PART_SIZE_BYTES: ${CLIPLINE_UPLOAD_PART_SIZE_BYTES:-8388608}
+      CLIPLINE_SINGLE_PUT_MAX_BYTES: ${CLIPLINE_SINGLE_PUT_MAX_BYTES:-67108864}
+      CLIPLINE_UPLOAD_SESSION_TTL_SECONDS: ${CLIPLINE_UPLOAD_SESSION_TTL_SECONDS:-86400}
+      CLIPLINE_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER: ${CLIPLINE_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER:-16}
+      CLIPLINE_PUBLIC_MEDIA_MODE: ${CLIPLINE_PUBLIC_MEDIA_MODE:-presigned}
+      CLIPLINE_PUBLIC_READ_URL_TTL_SECONDS: ${CLIPLINE_PUBLIC_READ_URL_TTL_SECONDS:-300}
+      CLIPLINE_LOG_LEVEL: ${CLIPLINE_LOG_LEVEL:-info}
+    volumes:
+      - clipline_data:/data
+      - clipline_secrets:/run/clipline-secrets:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    depends_on:
+      clipline-secrets:
+        condition: service_completed_successfully
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        read -r MINIO_ROOT_USER < /run/clipline-secrets/s3_access_key_id
+        read -r MINIO_ROOT_PASSWORD < /run/clipline-secrets/s3_secret_access_key
+        export MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+        exec minio server /data --console-address :9001
+    # Local S3 test only; bind MinIO to localhost instead of all host interfaces.
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+      - clipline_secrets:/run/clipline-secrets:ro
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      clipline-secrets:
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ACCESS_KEY="$$(cat /run/clipline-secrets/s3_access_key_id)"
+        SECRET_KEY="$$(cat /run/clipline-secrets/s3_secret_access_key)"
+        until mc alias set local http://minio:9000 "$${ACCESS_KEY}" "$${SECRET_KEY}"; do
+          sleep 2
+        done
+        mc mb --ignore-existing local/clipline
+        mc anonymous set none local/clipline
+    restart: "no"
+    volumes:
+      - clipline_secrets:/run/clipline-secrets:ro
+
+volumes:
+  clipline_data:
+  clipline_secrets:
+  minio_data:
