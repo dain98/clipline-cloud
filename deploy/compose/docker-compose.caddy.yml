@@ -64,9 +64,9 @@ services:
 
 secrets:
   admin_password:
-    file: ./secrets/admin_password.txt
+    file: ${CLIPLINE_COMPOSE_ADMIN_PASSWORD_FILE:-./secrets/admin_password.txt}
   session_secret:
-    file: ./secrets/session_secret.txt
+    file: ${CLIPLINE_COMPOSE_SESSION_SECRET_FILE:-./secrets/session_secret.txt}
 
 volumes:
   clipline_data:

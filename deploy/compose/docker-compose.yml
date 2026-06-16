@@ -13,6 +13,8 @@ services:
         if [ ! -s /secrets/session_secret ]; then
           head -c 32 /dev/urandom | base64 > /secrets/session_secret
         fi
+        chown 10001:10001 /secrets/session_secret
+        chmod 0400 /secrets/session_secret
     volumes:
       - clipline_secrets:/secrets
 

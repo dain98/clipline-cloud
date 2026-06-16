@@ -52,12 +52,48 @@ s3_access_key_id.txt
 s3_secret_access_key.txt
 ```
 
+For automated verification, the Compose secret file paths can be overridden without touching the
+ignored `secrets/` directory:
+
+```sh
+CLIPLINE_COMPOSE_ADMIN_PASSWORD_FILE=/tmp/admin_password.txt \
+CLIPLINE_COMPOSE_SESSION_SECRET_FILE=/tmp/session_secret.txt \
+docker compose -f docker-compose.caddy.yml config
+```
+
 For the Postgres profile, `database_url.txt` should contain a full DSN matching the Postgres
 password, for example:
 
 ```text
 postgres://clipline:replace-with-postgres-password@postgres:5432/clipline
 ```
+
+## Smoke Verification
+
+The repository includes a Docker-only smoke runner for repeatable operations checks:
+
+```sh
+deploy/compose/smoke.sh
+```
+
+By default it builds a local `clipline-cloud:ops-smoke` image, validates all five Compose files,
+starts the default, MinIO, and Postgres profiles with temporary secrets, checks `/readyz`, creates an
+admin device token, opens admin diagnostics, verifies SQLite/local backup and restore, and confirms
+that stopping MinIO/Postgres flips `/readyz` to storage/database not-ready.
+
+Useful variants:
+
+```sh
+CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
+BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:latest deploy/compose/smoke.sh
+RUN_PROFILES="default minio" deploy/compose/smoke.sh
+RUN_CADDY=1 deploy/compose/smoke.sh
+```
+
+`RUN_CADDY=1` binds host ports 80/443 and checks localhost TLS plus secure headers through Caddy.
+Use the production HTTPS command below with a real DNS name for the ACME-backed deployment check.
+If a smoke check fails, the active Compose project is left in place for `docker compose logs` and
+manual inspection; remove it with `docker compose -p <project> -f <profile-file> down -v`.
 
 ## Production HTTPS
 
