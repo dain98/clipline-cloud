@@ -207,10 +207,20 @@ impl SessionRepository {
     }
 
     pub async fn create(&self, new: &NewSession) -> DbResult<Session> {
+        let insert_sql = match &self.database {
+            Database::Sqlite(_) => {
+                "INSERT INTO sessions (id, user_id, token_hash, user_agent, ip_address, created_at, last_used_at, expires_at, revoked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            }
+            Database::Postgres(_) => {
+                "INSERT INTO sessions (id, user_id, token_hash, user_agent, ip_address, created_at, last_used_at, expires_at, revoked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            }
+        };
+
         db_execute!(
             &self.database,
-            "INSERT INTO sessions (id, user_id, token_hash, user_agent, ip_address, created_at, last_used_at, expires_at, revoked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            insert_sql,
             [
                 &new.id,
                 &new.user_id,
@@ -542,6 +552,45 @@ impl ClipRepository {
         }
     }
 
+    pub async fn list_ready_with_storage_key(&self, limit: i64) -> DbResult<Vec<Clip>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            Clip,
+            CLIP_SELECT_SQL.to_string()
+                + " WHERE status = 'ready' AND deleted_at IS NULL AND storage_key IS NOT NULL
+                    ORDER BY updated_at ASC, id ASC LIMIT ?",
+            [limit]
+        )?)
+    }
+
+    pub async fn list_deleted(&self, limit: i64) -> DbResult<Vec<Clip>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            Clip,
+            CLIP_SELECT_SQL.to_string()
+                + " WHERE status = 'deleted' OR deleted_at IS NOT NULL
+                    ORDER BY COALESCE(deleted_at, updated_at) ASC, id ASC LIMIT ?",
+            [limit]
+        )?)
+    }
+
+    pub async fn list_active_storage_references(&self) -> DbResult<Vec<String>> {
+        let rows = db_fetch_all!(
+            &self.database,
+            (String,),
+            "SELECT storage_key FROM clips
+             WHERE deleted_at IS NULL AND status <> 'deleted' AND storage_key IS NOT NULL
+             UNION
+             SELECT poster_key FROM clips
+             WHERE deleted_at IS NULL AND status <> 'deleted' AND poster_key IS NOT NULL
+             UNION
+             SELECT thumbnail_key FROM clips
+             WHERE deleted_at IS NULL AND status <> 'deleted' AND thumbnail_key IS NOT NULL",
+            []
+        )?;
+        Ok(rows.into_iter().map(|row| row.0).collect())
+    }
+
     pub async fn count_non_deleted(&self) -> DbResult<i64> {
         Ok(db_fetch_optional!(
             &self.database,
@@ -665,6 +714,60 @@ impl ClipRepository {
                 now_utc(),
                 id
             ]
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_probe_metadata(
+        &self,
+        id: &str,
+        duration_ms: Option<i64>,
+        width: Option<i64>,
+        height: Option<i64>,
+        fps: Option<f64>,
+        video_codec: Option<&str>,
+        audio_codec: Option<&str>,
+    ) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE clips
+             SET duration_ms = COALESCE(?, duration_ms),
+                 width = COALESCE(?, width),
+                 height = COALESCE(?, height),
+                 fps = COALESCE(?, fps),
+                 video_codec = COALESCE(?, video_codec),
+                 audio_codec = COALESCE(?, audio_codec),
+                 updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL AND status <> 'deleted'",
+            [
+                duration_ms,
+                width,
+                height,
+                fps,
+                video_codec,
+                audio_codec,
+                now_utc(),
+                id,
+            ]
+        )?;
+        Ok(())
+    }
+
+    pub async fn set_media_artifact_keys(
+        &self,
+        id: &str,
+        poster_key: Option<&str>,
+        thumbnail_key: Option<&str>,
+    ) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE clips
+             SET poster_key = COALESCE(?, poster_key),
+                 thumbnail_key = COALESCE(?, thumbnail_key),
+                 updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL AND status <> 'deleted'",
+            [poster_key, thumbnail_key, now_utc(), id]
         )?;
         Ok(())
     }
@@ -961,6 +1064,34 @@ impl UploadSessionRepository {
         .unwrap_or_default())
     }
 
+    pub async fn list_expired_active(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> DbResult<Vec<UploadSession>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            UploadSession,
+            "SELECT id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
+                    storage_key, storage_upload_id, checksum_sha256, created_at, updated_at, completed_at, expires_at
+             FROM upload_sessions
+             WHERE status IN ('created','uploading') AND expires_at <= ?
+             ORDER BY expires_at ASC, id ASC LIMIT ?",
+            [now, limit]
+        )?)
+    }
+
+    pub async fn list_active_storage_upload_ids(&self) -> DbResult<Vec<String>> {
+        let rows = db_fetch_all!(
+            &self.database,
+            (String,),
+            "SELECT storage_upload_id FROM upload_sessions
+             WHERE status IN ('created','uploading') AND storage_upload_id IS NOT NULL",
+            []
+        )?;
+        Ok(rows.into_iter().map(|row| row.0).collect())
+    }
+
     pub async fn update_received_size(&self, id: &str, received_size_bytes: i64) -> DbResult<()> {
         db_execute!(
             &self.database,
@@ -998,6 +1129,21 @@ impl UploadSessionRepository {
         Ok(())
     }
 
+    pub async fn abort_if_expired(
+        &self,
+        id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE upload_sessions
+             SET status = 'aborted', updated_at = ?
+             WHERE id = ? AND status IN ('created','uploading') AND expires_at <= ?",
+            [now, id, now]
+        )?;
+        Ok(rows > 0)
+    }
+
     pub async fn fail(&self, id: &str) -> DbResult<()> {
         db_execute!(
             &self.database,
@@ -1024,6 +1170,23 @@ impl UploadSessionRepository {
             &self.database,
             "DELETE FROM upload_sessions WHERE id = ?",
             [id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_for_clip(&self, clip_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM upload_parts
+             WHERE upload_session_id IN (
+               SELECT id FROM upload_sessions WHERE clip_id = ?
+             )",
+            [clip_id]
+        )?;
+        db_execute!(
+            &self.database,
+            "DELETE FROM upload_sessions WHERE clip_id = ?",
+            [clip_id]
         )?;
         Ok(())
     }
@@ -1320,6 +1483,19 @@ impl JobRepository {
         )?)
     }
 
+    pub async fn count_active_global_kind(&self, kind: &str) -> DbResult<i64> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            (i64,),
+            "SELECT COUNT(*) FROM jobs
+             WHERE kind = ? AND status IN ('pending','running')
+               AND target_type IS NULL AND target_id IS NULL",
+            [kind]
+        )?
+        .map(|row| row.0)
+        .unwrap_or_default())
+    }
+
     pub async fn delete(&self, id: &str) -> DbResult<()> {
         db_execute!(&self.database, "DELETE FROM jobs WHERE id = ?", [id])?;
         Ok(())
@@ -1337,10 +1513,20 @@ impl AuditLogRepository {
     }
 
     pub async fn create(&self, new: &NewAuditLogEntry) -> DbResult<AuditLogEntry> {
+        let insert_sql = match &self.database {
+            Database::Sqlite(_) => {
+                "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            }
+            Database::Postgres(_) => {
+                "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            }
+        };
+
         db_execute!(
             &self.database,
-            "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            insert_sql,
             [
                 &new.id,
                 new.actor_user_id.as_deref(),

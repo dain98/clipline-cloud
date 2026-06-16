@@ -529,6 +529,28 @@ video {
   grid-template-columns: 9rem minmax(0, 1fr);
 }
 
+.job-title-line {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.progress-meter {
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  height: 0.5rem;
+  overflow: hidden;
+}
+
+.progress-meter span {
+  background: var(--warning);
+  display: block;
+  height: 100%;
+}
+
 .data-list dt {
   color: var(--muted);
   font-weight: 700;

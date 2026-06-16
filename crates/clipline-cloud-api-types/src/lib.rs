@@ -122,8 +122,20 @@ pub struct UploadProgressResponse {
     pub file_size_bytes: u64,
     pub part_size_bytes: u64,
     pub received_size_bytes: u64,
+    pub total_parts: u16,
+    pub received_part_count: u16,
+    pub missing_part_count: u16,
+    pub next_part_number: Option<u16>,
+    pub progress_basis_points: u16,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
     pub received_parts: Vec<u16>,
     pub missing_parts: Vec<u16>,
+}
+
+impl UploadProgressResponse {
+    pub fn progress_percent(&self) -> f32 {
+        f32::from(self.progress_basis_points) / 100.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

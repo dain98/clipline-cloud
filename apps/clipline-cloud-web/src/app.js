@@ -800,9 +800,16 @@ function adminJobsView(failedUploads, deadJobs, recentErrors) {
 }
 
 function uploadItem(upload) {
+  const progress = Math.max(0, Math.min(10000, Number(upload.progress_basis_points || 0)));
   return `
     <div class="job-item">
-      <strong class="mono">${escapeHtml(upload.id)}</strong>
+      <div class="job-title-line">
+        <strong class="mono">${escapeHtml(upload.id)}</strong>
+        <span class="badge badge-warn">${formatProgress(progress)}</span>
+      </div>
+      <div class="progress-meter" aria-label="Upload progress">
+        <span style="width:${progress / 100}%"></span>
+      </div>
       <span class="muted">clip ${escapeHtml(upload.clip_id)} - ${formatBytes(upload.received_size_bytes)} of ${formatBytes(upload.expected_size_bytes)} - updated ${formatDate(upload.updated_at)}</span>
     </div>
   `;
@@ -1000,6 +1007,10 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatProgress(basisPoints) {
+  return `${(basisPoints / 100).toFixed(basisPoints % 100 === 0 ? 0 : 1)}%`;
 }
 
 function icon(name) {

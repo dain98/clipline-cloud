@@ -87,8 +87,15 @@ async fn get_owned_thumbnail(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
-    ensure_owned_ready_clip(&state, &auth.user.id, &id).await?;
-    Ok(placeholder_response(&headers))
+    let clip = ensure_owned_ready_clip(&state, &auth.user.id, &id).await?;
+    serve_clip_image_or_placeholder(
+        &state,
+        &headers,
+        &clip,
+        clip.thumbnail_key.as_deref(),
+        CacheScope::Owner,
+    )
+    .await
 }
 
 async fn get_owned_poster(
@@ -97,8 +104,15 @@ async fn get_owned_poster(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
-    ensure_owned_ready_clip(&state, &auth.user.id, &id).await?;
-    Ok(placeholder_response(&headers))
+    let clip = ensure_owned_ready_clip(&state, &auth.user.id, &id).await?;
+    serve_clip_image_or_placeholder(
+        &state,
+        &headers,
+        &clip,
+        clip.poster_key.as_deref(),
+        CacheScope::Owner,
+    )
+    .await
 }
 
 async fn get_public_clip(
@@ -153,8 +167,15 @@ async fn get_public_thumbnail(
     headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    load_public_clip(&state, &share_id).await?;
-    Ok(placeholder_response(&headers))
+    let clip = load_public_clip(&state, &share_id).await?;
+    serve_clip_image_or_placeholder(
+        &state,
+        &headers,
+        &clip,
+        clip.thumbnail_key.as_deref(),
+        CacheScope::Public,
+    )
+    .await
 }
 
 async fn ensure_owned_ready_clip(
@@ -214,6 +235,39 @@ async fn serve_clip_media(
         Err(error) => return Err(storage_error(error)),
     };
     Ok(media_response(object, scope))
+}
+
+async fn serve_clip_image_or_placeholder(
+    state: &AppState,
+    headers: &HeaderMap,
+    clip: &Clip,
+    storage_key: Option<&str>,
+    scope: CacheScope,
+) -> Result<Response, ApiError> {
+    let Some(storage_key) = storage_key else {
+        return Ok(placeholder_response(headers));
+    };
+    let key = match ObjectKey::parse(storage_key) {
+        Ok(key) => key,
+        Err(error) => {
+            warn!(event = "media.invalid_artifact_key", clip_id = %clip.id, error = %error);
+            return Ok(placeholder_response(headers));
+        }
+    };
+    let metadata = match state.storage.head_object(&key).await {
+        Ok(metadata) => metadata,
+        Err(StorageError::NotFound(_)) => return Ok(placeholder_response(headers)),
+        Err(error) => return Err(storage_error(error)),
+    };
+    if etag_matches(headers, metadata.etag.as_deref()) {
+        return Ok(not_modified_response(&metadata, scope));
+    }
+
+    match state.storage.get_object(&key, None).await {
+        Ok(object) => Ok(media_response(object, scope)),
+        Err(StorageError::NotFound(_)) => Ok(placeholder_response(headers)),
+        Err(error) => Err(storage_error(error)),
+    }
 }
 
 fn clip_source_key(clip: &Clip) -> Result<ObjectKey, ApiError> {

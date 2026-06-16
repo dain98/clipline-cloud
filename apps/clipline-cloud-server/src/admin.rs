@@ -81,6 +81,7 @@ struct UploadSessionResponse {
     expected_size_bytes: i64,
     received_size_bytes: i64,
     part_size_bytes: Option<i64>,
+    progress_basis_points: u16,
     checksum_sha256: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -264,6 +265,11 @@ impl From<Job> for JobResponse {
 
 impl From<UploadSession> for UploadSessionResponse {
     fn from(value: UploadSession) -> Self {
+        let progress_basis_points = admin_progress_basis_points(
+            value.status.as_str(),
+            value.received_size_bytes,
+            value.expected_size_bytes,
+        );
         Self {
             id: value.id,
             clip_id: value.clip_id,
@@ -272,6 +278,7 @@ impl From<UploadSession> for UploadSessionResponse {
             expected_size_bytes: value.expected_size_bytes,
             received_size_bytes: value.received_size_bytes,
             part_size_bytes: value.part_size_bytes,
+            progress_basis_points,
             checksum_sha256: value.checksum_sha256,
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -279,6 +286,25 @@ impl From<UploadSession> for UploadSessionResponse {
             expires_at: value.expires_at,
         }
     }
+}
+
+fn admin_progress_basis_points(
+    status: &str,
+    received_size_bytes: i64,
+    expected_size_bytes: i64,
+) -> u16 {
+    if status == "completed" {
+        return 10_000;
+    }
+    if expected_size_bytes <= 0 || received_size_bytes <= 0 {
+        return 0;
+    }
+    let value = (received_size_bytes as u128)
+        .saturating_mul(10_000)
+        .checked_div(expected_size_bytes as u128)
+        .unwrap_or_default()
+        .min(10_000);
+    value as u16
 }
 
 impl From<AuditLogEntry> for AuditLogEntryResponse {

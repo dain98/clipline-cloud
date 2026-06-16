@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Test workspace
+        run: cargo test --workspace
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build web app
+        run: npm run build --prefix apps/clipline-cloud-web
+
+  database-backends:
+    name: Database Backends
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: clipline
+          POSTGRES_PASSWORD: clipline
+          POSTGRES_DB: clipline_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clipline -d clipline_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CLIPLINE_TEST_POSTGRES_URL: postgres://clipline:clipline@localhost:5432/clipline_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Test SQLite and Postgres repositories
+        run: cargo test -p clipline-cloud-db

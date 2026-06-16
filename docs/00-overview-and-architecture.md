@@ -66,13 +66,13 @@ Follows the desktop app's philosophy: local-first, privacy-aware, user-controlle
 
 Each is a deliberate v1 commitment. Later milestones must honor these.
 
-1. **Database: SQLite is the only *required* v1 database; Postgres is supported once CI proves it.**
+1. **Database: SQLite is the default/required v1 database; Postgres is supported.**
    Read-heavy, modest writes, single node → fits SQLite + WAL. A required Postgres container is
    exactly the friction a hobbyist audience doesn't want. Postgres is selected via
-   `CLIPLINE_DATABASE_URL` and promoted to "supported" only once CI proves *both* migration sets and
-   repository tests pass on both backends (dual-backend support is migration testing, SQL-dialect
-   discipline, pagination/timestamp/transaction-semantics checks, and per-backend backup docs — not
-   a connection-string swap).
+   `CLIPLINE_DATABASE_URL`; CI runs migrations and repository tests on both backends
+   (dual-backend support is migration testing, SQL-dialect discipline,
+   pagination/timestamp/transaction-semantics checks, and per-backend backup docs — not a
+   connection-string swap).
 2. **Tokens are opaque, never JWT.** Hashed-at-rest storage, revocation from the web UI, and
    `last_used_at` only work with opaque random tokens looked up by hash. Both browser sessions and
    desktop device tokens are opaque random strings stored as SHA-256 hashes.
