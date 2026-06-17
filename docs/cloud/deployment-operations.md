@@ -1,7 +1,8 @@
 # Clipline Cloud Deployment Operations
 
 This runbook covers the v1 Docker Compose profiles, operational limits, backup/restore, and
-failure-mode checks.
+failure-mode checks. For step-by-step first-time setup of each profile, start with the
+[deployment guide](deployment-guide.md); this document is the deeper operations reference.
 
 ## Compose Profiles
 
