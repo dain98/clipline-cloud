@@ -1,7 +1,7 @@
 import { api } from "/js/api.js";
 import { renderShell } from "/js/shell.js";
 import { markerTimelineHtml, bindMarkerTimeline } from "/js/components/marker_timeline.js";
-import { bindThumbFallback } from "/js/components/card.js";
+import { upNextCard, bindThumbFallback } from "/js/components/card.js";
 import {
   escapeHtml,
   escapeAttr,
@@ -19,6 +19,27 @@ import {
   nullableNumber,
 } from "/js/util.js";
 
+function partitionUpNext(clips, current) {
+  const others = clips.filter((c) => c.id !== current.id && c.status === "ready");
+  const key = (c) => c.game_id || c.game_name || "";
+  const same = others.filter((c) => key(c) && key(c) === key(current));
+  const rest = others.filter((c) => !(key(c) && key(c) === key(current)));
+  return [...same, ...rest].slice(0, 20);
+}
+
+async function loadUpNext(current) {
+  try {
+    const data = await api("/api/v1/clips?sort=uploaded_at_desc&page_size=30");
+    const rail = document.querySelector("#up-next");
+    rail.innerHTML =
+      '<h2 class="up-next-head">Up next</h2>' +
+      partitionUpNext(data.clips, current).map(upNextCard).join("");
+    bindThumbFallback(rail);
+  } catch (_) {
+    // non-fatal — leave rail empty
+  }
+}
+
 export async function renderClipDetail(id) {
   renderShell({
     active: "library",
@@ -32,6 +53,7 @@ export async function renderClipDetail(id) {
       body: clipWatchView(clip),
       onMount() {
         bindWatchEvents(clip);
+        loadUpNext(clip);
       },
     });
   } catch (error) {

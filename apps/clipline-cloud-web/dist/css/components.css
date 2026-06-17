@@ -588,10 +588,19 @@ details.description-card[open] .description-card__summary .icon {
   font-size: 13px;
 }
 
-/* Up-next aside placeholder */
+/* Up-next aside rail */
 .up-next {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: var(--space-3);
   min-width: 0;
+  align-content: start;
+}
+
+.up-next-head {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
 }
