@@ -173,6 +173,7 @@ pub struct ClipSummaryResponse {
     pub visibility: String,
     pub status: String,
     pub public_url: Option<String>,
+    pub has_thumbnail: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -201,6 +202,7 @@ pub struct ClipDetailResponse {
     pub status: String,
     pub public_share_id: Option<String>,
     pub public_url: Option<String>,
+    pub has_thumbnail: bool,
     pub markers: Vec<ClipMarkerResponse>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,

@@ -293,6 +293,7 @@ async fn detail_response(state: &AppState, clip: Clip) -> Result<ClipDetailRespo
 }
 
 fn clip_summary_response(clip: Clip, state: &AppState) -> ClipSummaryResponse {
+    let has_thumbnail = clip.thumbnail_key.is_some();
     ClipSummaryResponse {
         id: clip.id,
         title: clip.title,
@@ -311,6 +312,7 @@ fn clip_summary_response(clip: Clip, state: &AppState) -> ClipSummaryResponse {
             .public_share_id
             .as_deref()
             .and_then(|share_id| public_url(state, share_id)),
+        has_thumbnail,
         created_at: clip.created_at,
         updated_at: clip.updated_at,
     }
@@ -321,6 +323,7 @@ fn clip_detail_response(
     markers: Vec<ClipMarkerResponse>,
     state: &AppState,
 ) -> ClipDetailResponse {
+    let has_thumbnail = clip.thumbnail_key.is_some();
     let public_url = clip
         .public_share_id
         .as_deref()
@@ -348,6 +351,7 @@ fn clip_detail_response(
         status: clip.status,
         public_share_id: clip.public_share_id,
         public_url,
+        has_thumbnail,
         markers,
         created_at: clip.created_at,
         updated_at: clip.updated_at,
@@ -449,5 +453,33 @@ mod tests {
         assert_eq!(id.len(), 24);
         assert!(id.starts_with("c_"));
         assert!(id[2..].bytes().all(|byte| byte.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn clip_summary_serializes_has_thumbnail() {
+        let json = serde_json::to_value(ClipSummaryResponse {
+            id: "c_1".into(),
+            title: "t".into(),
+            game_name: None,
+            game_id: None,
+            recorded_at: None,
+            uploaded_at: None,
+            duration_ms: None,
+            file_size_bytes: None,
+            width: None,
+            height: None,
+            fps: None,
+            visibility: "private".into(),
+            status: "ready".into(),
+            public_url: None,
+            has_thumbnail: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .unwrap();
+        assert_eq!(
+            json.get("has_thumbnail").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 }
