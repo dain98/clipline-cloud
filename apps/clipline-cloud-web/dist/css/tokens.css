@@ -6,6 +6,7 @@
   --accent:#2f6fed; --accent-hover:#3b7bf5; --accent-contrast:#fff;
   --cyan:#4fd1c5; --danger:#e5484d; --danger-soft:rgba(229,72,77,.14);
   --gold:#d9a93f; --public:#4cb782; --public-soft:rgba(76,183,130,.16);
+  --tick: var(--accent);
   --space-1:.25rem; --space-2:.5rem; --space-3:.75rem; --space-4:1rem; --space-6:1.5rem;
   --radius-card:12px; --radius-btn:8px; --radius-pill:999px;
   --header-h:56px; --rail-w:240px; --rail-mini-w:72px;
