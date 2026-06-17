@@ -108,7 +108,6 @@ function chipBar(clips) {
     ),
   ].join("");
 
-  const filtersOpen = false; // panel state tracked in DOM
   const panel = filtersPanel();
 
   return `
@@ -230,12 +229,22 @@ function bindFiltersPanel() {
 // ── Kebab menu ────────────────────────────────────────────────────────────────
 
 let _openMenu = null;
+let _kebabGlobalsBound = false;
 
 function closeOpenMenu() {
   if (_openMenu) {
     _openMenu.remove();
     _openMenu = null;
   }
+}
+
+function bindKebabGlobals() {
+  if (_kebabGlobalsBound) return;
+  _kebabGlobalsBound = true;
+  document.addEventListener("click", closeOpenMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeOpenMenu();
+  });
 }
 
 function buildMenu(clipId, visibility, publicUrl) {
@@ -281,6 +290,7 @@ function positionMenu(menuEl, anchorEl) {
 }
 
 function bindKebabMenu() {
+  bindKebabGlobals();
   document.querySelectorAll("[data-kebab]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -350,13 +360,5 @@ function bindKebabMenu() {
         });
       }
     });
-  });
-
-  // Close on outside click
-  document.addEventListener("click", closeOpenMenu);
-
-  // Close on Escape
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeOpenMenu();
   });
 }
