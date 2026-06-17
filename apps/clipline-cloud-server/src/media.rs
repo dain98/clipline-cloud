@@ -43,6 +43,13 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Debug, Serialize)]
+struct PublicMarker {
+    kind: String,
+    label: Option<String>,
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
 struct PublicClipResponse {
     share_id: String,
     title: String,
@@ -55,6 +62,8 @@ struct PublicClipResponse {
     thumbnail_url: String,
     share_url: String,
     copy_notice: &'static str,
+    has_thumbnail: bool,
+    markers: Vec<PublicMarker>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,6 +129,19 @@ async fn get_public_clip(
     Path(share_id): Path<String>,
 ) -> Result<Json<PublicClipResponse>, ApiError> {
     let clip = load_public_clip(&state, &share_id).await?;
+    let has_thumbnail = clip.thumbnail_key.is_some();
+    let markers = state
+        .repositories
+        .clip_markers
+        .list_for_clip(&clip.id)
+        .await?
+        .into_iter()
+        .map(|m| PublicMarker {
+            kind: m.kind,
+            label: m.label,
+            timestamp_ms: m.timestamp_ms,
+        })
+        .collect();
     Ok(Json(PublicClipResponse {
         share_id: share_id.clone(),
         title: clip.title,
@@ -132,6 +154,8 @@ async fn get_public_clip(
         thumbnail_url: absolute_url(&state, &format!("api/v1/public/clips/{share_id}/thumbnail")),
         share_url: absolute_url(&state, &format!("c/{share_id}")),
         copy_notice: COPY_NOTICE,
+        has_thumbnail,
+        markers,
     }))
 }
 
@@ -521,6 +545,37 @@ fn storage_error(error: StorageError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_clip_response_serializes_markers_and_has_thumbnail() {
+        let resp = PublicClipResponse {
+            share_id: "c_x".into(),
+            title: "t".into(),
+            game_name: None,
+            game_id: None,
+            recorded_at: None,
+            uploaded_at: None,
+            duration_ms: Some(1000),
+            media_url: "u".into(),
+            thumbnail_url: "u".into(),
+            share_url: "u".into(),
+            copy_notice: "n",
+            has_thumbnail: false,
+            markers: vec![PublicMarker {
+                kind: "kill".into(),
+                label: Some("First Blood".into()),
+                timestamp_ms: 500,
+            }],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["markers"][0]["kind"], "kill");
+        assert_eq!(json["markers"][0]["timestamp_ms"], 500);
+        assert_eq!(json["has_thumbnail"], false);
+        assert!(
+            json["markers"][0].get("id").is_none(),
+            "must not leak internal id"
+        );
+    }
 
     #[test]
     fn parses_common_byte_ranges() {
