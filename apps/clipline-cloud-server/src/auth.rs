@@ -22,11 +22,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use clipline_cloud_api_types::{
     CreateDeviceTokenRequest, CreateDeviceTokenResponse, DeviceTokenResponse, DiscoveryFeatures,
-    DiscoveryResponse, MeResponse, UserResponse,
+    DiscoveryResponse, MeResponse, SessionResponse, UserResponse,
 };
 use clipline_cloud_db::{
     now_utc, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewResetPasswordToken, NewSession,
-    NewUser, Repositories, User,
+    NewUser, Repositories, Session, User,
 };
 use cookie::{Cookie, SameSite};
 use hmac::{Hmac, Mac};
@@ -286,6 +286,8 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/auth/device-tokens/{id}",
             delete(revoke_device_token),
         )
+        .route("/api/v1/auth/sessions", get(list_sessions))
+        .route("/api/v1/auth/sessions/{id}", delete(revoke_session))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route(
             "/api/v1/users/{id}",
@@ -527,18 +529,85 @@ async fn revoke_device_token(
     Ok(Json(json!({ "status": "ok" })))
 }
 
+async fn list_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<SessionResponse>>, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    let current_token_hash = match &auth.kind {
+        AuthKind::Cookie { token_hash } => Some(token_hash.as_str()),
+        AuthKind::Bearer => None,
+    };
+    let sessions = state
+        .repositories
+        .sessions
+        .list_for_user(&auth.user.id)
+        .await?
+        .into_iter()
+        .map(|session| session_response(session, current_token_hash))
+        .collect();
+    Ok(Json(sessions))
+}
+
+async fn revoke_session(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    require_csrf_for_cookie(&state, &headers, &auth)?;
+
+    state
+        .repositories
+        .sessions
+        .revoke_for_user_by_id(&auth.user.id, &id)
+        .await?;
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "session.revoked",
+        Some("session"),
+        Some(&id),
+        None,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "ok" })))
+}
+
 async fn list_users(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let _auth = require_admin(&state, &headers).await?;
+    let storage_by_owner = state
+        .repositories
+        .clips
+        .active_storage_bytes_by_owner()
+        .await?
+        .into_iter()
+        .map(|(owner_user_id, storage_bytes)| {
+            Ok((
+                owner_user_id,
+                u64::try_from(storage_bytes)
+                    .map_err(|_| ApiError::internal("stored user storage usage is negative"))?,
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, ApiError>>()?;
     let users = state
         .repositories
         .users
         .list()
         .await?
         .into_iter()
-        .map(user_response)
+        .map(|user| {
+            let storage_bytes = storage_by_owner
+                .get(user.id.as_str())
+                .copied()
+                .unwrap_or_default();
+            user_response_with_storage(user, storage_bytes)
+        })
         .collect();
     Ok(Json(users))
 }
@@ -1149,12 +1218,17 @@ fn header_to_string(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn user_response(value: User) -> UserResponse {
+    user_response_with_storage(value, 0)
+}
+
+fn user_response_with_storage(value: User, storage_bytes: u64) -> UserResponse {
     UserResponse {
         id: value.id,
         username: value.username,
         display_name: value.display_name,
         role: value.role,
         is_disabled: value.is_disabled,
+        storage_bytes,
         created_at: value.created_at,
         updated_at: value.updated_at,
         last_login_at: value.last_login_at,
@@ -1165,6 +1239,20 @@ fn device_token_response(value: DeviceToken) -> DeviceTokenResponse {
     DeviceTokenResponse {
         id: value.id,
         name: value.name,
+        created_at: value.created_at,
+        last_used_at: value.last_used_at,
+        expires_at: value.expires_at,
+        revoked_at: value.revoked_at,
+    }
+}
+
+fn session_response(value: Session, current_token_hash: Option<&str>) -> SessionResponse {
+    let current = current_token_hash.is_some_and(|token_hash| value.token_hash == token_hash);
+    SessionResponse {
+        id: value.id,
+        user_agent: value.user_agent,
+        ip_address: value.ip_address,
+        current,
         created_at: value.created_at,
         last_used_at: value.last_used_at,
         expires_at: value.expires_at,

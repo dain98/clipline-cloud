@@ -1,21 +1,21 @@
 :root {
-  color-scheme: light;
-  --bg: #f5f7f4;
-  --surface: #ffffff;
-  --surface-subtle: #eef3ef;
-  --surface-warm: #f8f2e8;
-  --ink: #172026;
-  --muted: #617078;
-  --line: #d9e1dd;
-  --accent: #1e6f5c;
-  --accent-strong: #165847;
-  --blue: #235c9f;
-  --blue-soft: #e7eef8;
-  --danger: #a53f3f;
-  --danger-soft: #f6e6e3;
-  --warning: #9a6a12;
-  --warning-soft: #fbf0d2;
-  --shadow: 0 8px 22px rgba(24, 35, 42, 0.08);
+  color-scheme: dark;
+  --bg: #0f141d;
+  --surface: #151b26;
+  --surface-subtle: #1b2331;
+  --surface-warm: #191f2b;
+  --ink: #eef4ff;
+  --muted: #9aa7b8;
+  --line: #263044;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --blue: #69a7ff;
+  --blue-soft: rgba(37, 99, 235, 0.18);
+  --danger: #f0525f;
+  --danger-soft: rgba(240, 82, 95, 0.14);
+  --warning: #e0b14a;
+  --warning-soft: rgba(224, 177, 74, 0.16);
+  --shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
@@ -31,6 +31,11 @@ body {
   color: var(--ink);
   margin: 0;
   min-height: 100vh;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 button,
@@ -110,9 +115,10 @@ a:hover {
 .brand-mark {
   align-items: center;
   aspect-ratio: 1;
-  background: var(--ink);
+  background: rgba(37, 99, 235, 0.14);
+  border: 1px solid rgba(105, 167, 255, 0.42);
   border-radius: 8px;
-  color: #fff;
+  color: #8bbcff;
   display: inline-flex;
   font-size: 0.78rem;
   font-weight: 800;
@@ -150,8 +156,9 @@ a:hover {
 }
 
 .sidebar {
-  background: #172026;
-  color: #edf3ef;
+  background: #111720;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -171,7 +178,7 @@ a:hover {
 }
 
 .sidebar-brand span {
-  color: #b6c2bd;
+  color: var(--muted);
   display: block;
   font-size: 0.8rem;
 }
@@ -184,7 +191,7 @@ a:hover {
 .nav-link {
   align-items: center;
   border-radius: 7px;
-  color: #dce6e1;
+  color: #d7e2f2;
   display: flex;
   gap: 0.62rem;
   min-height: 2.35rem;
@@ -193,25 +200,25 @@ a:hover {
 
 .nav-link:hover,
 .nav-link.active {
-  background: #233037;
+  background: #1e2a3a;
   color: #fff;
   text-decoration: none;
 }
 
 .sidebar-footer {
-  border-top: 1px solid #304049;
+  border-top: 1px solid var(--line);
   margin-top: auto;
   padding-top: 1rem;
 }
 
 .user-chip {
-  color: #dce6e1;
+  color: #d7e2f2;
   font-size: 0.88rem;
   min-width: 0;
 }
 
 .user-chip span {
-  color: #9fb0a8;
+  color: var(--muted);
   display: block;
   font-size: 0.78rem;
 }
@@ -222,7 +229,8 @@ a:hover {
 
 .topbar {
   align-items: center;
-  background: rgba(245, 247, 244, 0.92);
+  background: rgba(17, 23, 32, 0.92);
+  backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
@@ -280,7 +288,33 @@ a:hover {
   align-items: end;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: minmax(12rem, 2fr) repeat(5, minmax(8rem, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+}
+
+.toolbar .btn-primary {
+  min-height: 2.35rem;
+}
+
+.bulk-toolbar {
+  align-items: end;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: auto auto minmax(9rem, 12rem) auto auto;
+}
+
+.check-line {
+  align-items: center;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 0.9rem;
+  font-weight: 700;
+  gap: 0.45rem;
+  min-height: 2.35rem;
+}
+
+.check-line input,
+.clip-select input {
+  accent-color: var(--accent);
 }
 
 .field {
@@ -297,7 +331,7 @@ a:hover {
 .field input,
 .field select,
 .field textarea {
-  background: #fff;
+  background: #111720;
   border: 1px solid var(--line);
   border-radius: 7px;
   color: var(--ink);
@@ -314,6 +348,7 @@ a:hover {
 .btn-primary {
   background: var(--accent);
   color: #fff;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.24);
 }
 
 .btn-primary:hover {
@@ -321,7 +356,7 @@ a:hover {
 }
 
 .btn-secondary {
-  background: var(--surface);
+  background: #111720;
   border-color: var(--line);
   color: var(--ink);
 }
@@ -332,12 +367,12 @@ a:hover {
 
 .btn-danger {
   background: var(--danger-soft);
-  border-color: #efc2bb;
+  border-color: rgba(240, 82, 95, 0.36);
   color: var(--danger);
 }
 
 .btn-danger:hover {
-  background: #f0d2cc;
+  background: rgba(240, 82, 95, 0.22);
 }
 
 .btn-ghost {
@@ -367,6 +402,30 @@ a:hover {
   gap: 0.7rem;
 }
 
+.clip-groups {
+  display: grid;
+  gap: 1.1rem;
+}
+
+.clip-group {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.clip-group-header {
+  align-items: baseline;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0 0.1rem 0.45rem;
+}
+
+.clip-group-header h2 {
+  font-size: 0.95rem;
+  margin: 0;
+}
+
 .clip-row {
   align-items: center;
   background: var(--surface);
@@ -374,25 +433,59 @@ a:hover {
   border-radius: 8px;
   display: grid;
   gap: 0.9rem;
-  grid-template-columns: 8.5rem minmax(12rem, 1.7fr) minmax(8rem, 1fr) minmax(7rem, 0.8fr) auto;
+  grid-template-columns: 1.5rem 8.5rem minmax(12rem, 1.7fr) minmax(8rem, 1fr) minmax(7rem, 0.8fr) auto;
   padding: 0.7rem;
+}
+
+.clip-row:hover {
+  background: #18202d;
+  border-color: #31405a;
 }
 
 .thumb {
   aspect-ratio: 16 / 9;
-  background: #11191d;
+  background: #0a0f17;
+  border: 1px solid #263044;
   border-radius: 6px;
   display: block;
   object-fit: cover;
   width: 100%;
 }
 
+.clip-select {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
 .clip-title {
-  color: var(--ink);
+  color: #f6f9ff;
   display: block;
   font-weight: 800;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+
+.account-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.management-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.management-item {
+  align-items: center;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.75rem;
 }
 
 .meta-line {
@@ -418,12 +511,12 @@ a:hover {
 
 .badge-private {
   background: var(--surface-subtle);
-  color: #334047;
+  color: #c9d5e6;
 }
 
 .badge-public {
-  background: #dff1e8;
-  color: var(--accent-strong);
+  background: rgba(76, 183, 130, 0.16);
+  color: #7ee3aa;
 }
 
 .badge-unlisted {
@@ -458,14 +551,14 @@ a:hover {
 }
 
 .notice {
-  background: #e8f3ee;
-  border: 1px solid #c2dfd1;
-  color: #225f50;
+  background: rgba(37, 99, 235, 0.12);
+  border: 1px solid rgba(105, 167, 255, 0.3);
+  color: #b8d3ff;
 }
 
 .error-box {
   background: var(--danger-soft);
-  border: 1px solid #efc2bb;
+  border: 1px solid rgba(240, 82, 95, 0.36);
   color: var(--danger);
 }
 
@@ -476,7 +569,8 @@ a:hover {
 }
 
 .video-frame {
-  background: #0e1518;
+  background: #05080d;
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -488,7 +582,8 @@ video {
 }
 
 .timeline {
-  background: var(--surface-subtle);
+  background: #111720;
+  border: 1px solid var(--line);
   border-radius: 999px;
   height: 0.65rem;
   margin: 0.85rem 0 0.3rem;
@@ -496,8 +591,8 @@ video {
 }
 
 .tick {
-  background: var(--accent);
-  border: 2px solid #fff;
+  background: var(--danger);
+  border: 2px solid #111720;
   border-radius: 999px;
   height: 1rem;
   position: absolute;
@@ -538,7 +633,7 @@ video {
 }
 
 .progress-meter {
-  background: var(--surface-subtle);
+  background: #111720;
   border: 1px solid var(--line);
   border-radius: 999px;
   height: 0.5rem;
@@ -546,7 +641,7 @@ video {
 }
 
 .progress-meter span {
-  background: var(--warning);
+  background: var(--accent);
   display: block;
   height: 100%;
 }
@@ -577,9 +672,9 @@ video {
 
 .public-copy {
   background: var(--surface-warm);
-  border: 1px solid #ead8b9;
+  border: 1px solid rgba(224, 177, 74, 0.26);
   border-radius: 8px;
-  color: #5d4630;
+  color: #d8c08d;
   padding: 0.8rem 0.95rem;
 }
 
@@ -597,7 +692,7 @@ video {
 }
 
 .tab.active {
-  background: var(--ink);
+  background: var(--accent);
   color: #fff;
 }
 
@@ -651,6 +746,8 @@ th {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .bulk-toolbar,
+  .account-grid,
   .clip-row,
   .detail-layout,
   .admin-grid {
@@ -696,6 +793,8 @@ th {
   }
 
   .toolbar,
+  .bulk-toolbar,
+  .management-item,
   .share-line,
   .data-list div {
     grid-template-columns: 1fr;

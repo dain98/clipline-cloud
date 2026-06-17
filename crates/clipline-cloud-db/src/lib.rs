@@ -458,6 +458,20 @@ mod tests {
         assert_repositories_round_trip_all_tables(database).await;
     }
 
+    #[tokio::test]
+    async fn sqlite_active_storage_bytes_by_owner_filters_inactive_clips() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_active_storage_bytes_by_owner_filters_inactive_clips(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_active_storage_bytes_by_owner_filters_inactive_clips() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_active_storage_bytes_by_owner_filters_inactive_clips(database).await;
+    }
+
     async fn assert_repositories_round_trip_all_tables(database: Database) {
         let test_id = new_ulid().to_ascii_lowercase();
         let repos = Repositories::new(database);
@@ -699,6 +713,82 @@ mod tests {
             .expect("reset token")
             .used_at
             .is_some());
+    }
+
+    async fn assert_active_storage_bytes_by_owner_filters_inactive_clips(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let first_user = repos
+            .users
+            .create(&NewUser::new(
+                format!("storage-a-{test_id}"),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create first user");
+        let second_user = repos
+            .users
+            .create(&NewUser::new(
+                format!("storage-b-{test_id}"),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create second user");
+
+        let mut created = NewClip::new(&first_user.id, "created", "local");
+        created.file_size_bytes = Some(10);
+        repos.clips.create(&created).await.expect("created clip");
+
+        let mut ready = NewClip::new(&first_user.id, "ready", "local");
+        ready.status = "ready".to_string();
+        ready.file_size_bytes = Some(20);
+        repos.clips.create(&ready).await.expect("ready clip");
+
+        let mut failed = NewClip::new(&first_user.id, "failed", "local");
+        failed.status = "failed".to_string();
+        failed.file_size_bytes = Some(40);
+        repos.clips.create(&failed).await.expect("failed clip");
+
+        let mut deleted = NewClip::new(&first_user.id, "deleted", "local");
+        deleted.status = "ready".to_string();
+        deleted.file_size_bytes = Some(80);
+        let deleted = repos.clips.create(&deleted).await.expect("deleted clip");
+        repos
+            .clips
+            .soft_delete(&deleted.id)
+            .await
+            .expect("soft delete clip");
+
+        let mut uploading = NewClip::new(&second_user.id, "uploading", "local");
+        uploading.status = "uploading".to_string();
+        uploading.file_size_bytes = Some(7);
+        repos
+            .clips
+            .create(&uploading)
+            .await
+            .expect("uploading clip");
+
+        let usage = repos
+            .clips
+            .active_storage_bytes_by_owner()
+            .await
+            .expect("storage by owner")
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(usage.get(&first_user.id), Some(&30));
+        assert_eq!(usage.get(&second_user.id), Some(&7));
+        assert_eq!(usage.len(), 2);
+        assert_eq!(
+            repos
+                .clips
+                .active_storage_bytes_for_owner(&first_user.id)
+                .await
+                .expect("first owner storage"),
+            30
+        );
     }
 
     #[tokio::test]
@@ -987,10 +1077,15 @@ mod tests {
         let mut params = ClipListParams {
             owner_user_id: user.id.clone(),
             game: None,
+            source_type: None,
             visibility: None,
             status: None,
             from: None,
             to: None,
+            min_duration_ms: None,
+            max_duration_ms: None,
+            min_size_bytes: None,
+            max_size_bytes: None,
             query: Some("%".to_string()),
             sort: ClipSort::RecordedAtDesc,
             limit: 10,
@@ -1012,6 +1107,246 @@ mod tests {
             .expect("ordered clips");
         assert!(clips[0].recorded_at.is_some());
         assert!(clips[1].recorded_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn sqlite_clip_query_filters_source_duration_size_and_sorts_size() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_clip_query_filters_source_duration_size_and_sorts_size(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_clip_query_filters_source_duration_size_and_sorts_size() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_clip_query_filters_source_duration_size_and_sorts_size(database).await;
+    }
+
+    async fn assert_clip_query_filters_source_duration_size_and_sorts_size(database: Database) {
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("owner-{}", new_ulid()),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create user");
+
+        let mut small = NewClip::new(&user.id, "Small match", "local");
+        small.status = "ready".to_string();
+        small.source_type = Some("replay".to_string());
+        small.duration_ms = Some(20_000);
+        small.file_size_bytes = Some(2_000);
+        repos.clips.create(&small).await.expect("small clip");
+
+        let mut large = NewClip::new(&user.id, "Large match", "local");
+        large.status = "ready".to_string();
+        large.source_type = Some("replay".to_string());
+        large.duration_ms = Some(30_000);
+        large.file_size_bytes = Some(8_000);
+        repos.clips.create(&large).await.expect("large clip");
+
+        let mut wrong_source = NewClip::new(&user.id, "Wrong source", "local");
+        wrong_source.status = "ready".to_string();
+        wrong_source.source_type = Some("manual".to_string());
+        wrong_source.duration_ms = Some(25_000);
+        wrong_source.file_size_bytes = Some(5_000);
+        repos
+            .clips
+            .create(&wrong_source)
+            .await
+            .expect("wrong source clip");
+
+        let mut too_short = NewClip::new(&user.id, "Too short", "local");
+        too_short.status = "ready".to_string();
+        too_short.source_type = Some("replay".to_string());
+        too_short.duration_ms = Some(5_000);
+        too_short.file_size_bytes = Some(5_000);
+        repos.clips.create(&too_short).await.expect("short clip");
+
+        let mut too_large = NewClip::new(&user.id, "Too large", "local");
+        too_large.status = "ready".to_string();
+        too_large.source_type = Some("replay".to_string());
+        too_large.duration_ms = Some(25_000);
+        too_large.file_size_bytes = Some(50_000);
+        repos.clips.create(&too_large).await.expect("large clip");
+
+        let params = ClipListParams {
+            owner_user_id: user.id.clone(),
+            game: None,
+            source_type: Some("replay".to_string()),
+            visibility: None,
+            status: None,
+            from: None,
+            to: None,
+            min_duration_ms: Some(10_000),
+            max_duration_ms: Some(40_000),
+            min_size_bytes: Some(1_000),
+            max_size_bytes: Some(10_000),
+            query: None,
+            sort: ClipSort::FileSizeDesc,
+            limit: 10,
+            offset: 0,
+        };
+        let clips = repos
+            .clips
+            .list_for_owner(&params)
+            .await
+            .expect("advanced query clips");
+        assert_eq!(
+            clips
+                .iter()
+                .map(|clip| clip.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Large match", "Small match"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_bulk_soft_delete_rolls_back_when_audit_fails() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_bulk_soft_delete_rolls_back_when_audit_fails(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_bulk_soft_delete_rolls_back_when_audit_fails() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_bulk_soft_delete_rolls_back_when_audit_fails(database).await;
+    }
+
+    async fn assert_bulk_soft_delete_rolls_back_when_audit_fails(database: Database) {
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("owner-{}", new_ulid()),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create user");
+        let mut first = NewClip::new(&user.id, "first", "local");
+        first.status = "ready".to_string();
+        let first = repos.clips.create(&first).await.expect("first clip");
+        let mut second = NewClip::new(&user.id, "second", "local");
+        second.status = "ready".to_string();
+        let second = repos.clips.create(&second).await.expect("second clip");
+
+        let err = repos
+            .bulk_soft_delete_clips_with_audit(
+                &user.id,
+                &[first.id.clone(), second.id.clone()],
+                Some("missing-actor"),
+                Some("127.0.0.1"),
+            )
+            .await
+            .expect_err("invalid audit actor should fail");
+        assert!(matches!(err, DbError::Sqlx(sqlx::Error::Database(_))));
+
+        assert_eq!(
+            repos
+                .clips
+                .get(&first.id)
+                .await
+                .expect("get first")
+                .expect("first")
+                .status,
+            "ready"
+        );
+        assert_eq!(
+            repos
+                .clips
+                .get(&second.id)
+                .await
+                .expect("get second")
+                .expect("second")
+                .status,
+            "ready"
+        );
+        assert!(repos
+            .audit_log
+            .list_recent(10)
+            .await
+            .expect("audit entries")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sqlite_bulk_visibility_updates_and_audits_each_clip() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_bulk_visibility_updates_and_audits_each_clip(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_bulk_visibility_updates_and_audits_each_clip() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_bulk_visibility_updates_and_audits_each_clip(database).await;
+    }
+
+    async fn assert_bulk_visibility_updates_and_audits_each_clip(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(format!("owner-{test_id}"), "hash", "user"))
+            .await
+            .expect("create user");
+        let mut first = NewClip::new(&user.id, "first", "local");
+        first.status = "ready".to_string();
+        let first = repos.clips.create(&first).await.expect("first clip");
+        let mut second = NewClip::new(&user.id, "second", "local");
+        second.status = "ready".to_string();
+        let second = repos.clips.create(&second).await.expect("second clip");
+
+        let updates = vec![
+            BulkVisibilityUpdate {
+                clip_id: first.id.clone(),
+                public_share_id: Some(format!("c_{test_id}a")),
+            },
+            BulkVisibilityUpdate {
+                clip_id: second.id.clone(),
+                public_share_id: Some(format!("c_{test_id}b")),
+            },
+        ];
+        let affected = repos
+            .bulk_set_visibility_with_audit(
+                &user.id,
+                &updates,
+                "public",
+                Some(&user.id),
+                Some("127.0.0.1"),
+            )
+            .await
+            .expect("bulk visibility");
+        assert_eq!(affected, 2);
+        assert_eq!(
+            repos
+                .clips
+                .get(&first.id)
+                .await
+                .expect("get first")
+                .expect("first")
+                .visibility,
+            "public"
+        );
+        assert_eq!(
+            repos
+                .audit_log
+                .list_recent(10)
+                .await
+                .expect("audit entries")
+                .iter()
+                .filter(|entry| entry.action == "clip.visibility_changed")
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]

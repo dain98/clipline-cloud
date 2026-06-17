@@ -9,9 +9,9 @@ use clipline_cloud_api_types::{
     ClipDetailResponse, ClipListResponse, ClipMarkerResponse, ClipSummaryResponse,
     UpdateVisibilityRequest,
 };
-use clipline_cloud_db::{Clip, ClipListParams, ClipMarker, ClipSort};
+use clipline_cloud_db::{BulkVisibilityUpdate, Clip, ClipListParams, ClipMarker, ClipSort};
 use rand::{rngs::OsRng, RngCore};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
@@ -22,12 +22,18 @@ use crate::{
 const DEFAULT_PAGE: i64 = 1;
 const DEFAULT_PAGE_SIZE: i64 = 50;
 const MAX_PAGE_SIZE: i64 = 100;
+const MAX_BULK_CLIPS: usize = 100;
 const PUBLIC_SHARE_ID_LEN: usize = 22;
 const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/clips", get(list_clips))
+        .route("/api/v1/clips/bulk-delete", post(bulk_delete_clips))
+        .route(
+            "/api/v1/clips/bulk-visibility",
+            post(bulk_update_visibility),
+        )
         .route(
             "/api/v1/clips/{id}",
             get(get_clip).patch(update_clip).delete(delete_clip),
@@ -39,10 +45,15 @@ pub fn routes() -> Router<AppState> {
 struct ListClipsQuery {
     sort: Option<String>,
     game: Option<String>,
+    source_type: Option<String>,
     visibility: Option<String>,
     status: Option<String>,
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
+    min_duration_ms: Option<i64>,
+    max_duration_ms: Option<i64>,
+    min_size_bytes: Option<i64>,
+    max_size_bytes: Option<i64>,
     q: Option<String>,
     page: Option<i64>,
     page_size: Option<i64>,
@@ -59,6 +70,23 @@ struct UpdateClipRequest {
     duration_ms: Option<Option<i64>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct BulkClipIdsRequest {
+    ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkVisibilityRequest {
+    ids: Vec<String>,
+    visibility: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BulkMutationResponse {
+    status: &'static str,
+    affected: usize,
+}
+
 async fn list_clips(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -70,9 +98,24 @@ async fn list_clips(
         .page_size
         .unwrap_or(DEFAULT_PAGE_SIZE)
         .clamp(1, MAX_PAGE_SIZE);
+    let min_duration_ms = non_negative(query.min_duration_ms, "min_duration_ms")?;
+    let max_duration_ms = non_negative(query.max_duration_ms, "max_duration_ms")?;
+    let min_size_bytes = non_negative(query.min_size_bytes, "min_size_bytes")?;
+    let max_size_bytes = non_negative(query.max_size_bytes, "max_size_bytes")?;
+    validate_bounds(
+        min_duration_ms,
+        max_duration_ms,
+        "min_duration_ms must be less than or equal to max_duration_ms",
+    )?;
+    validate_bounds(
+        min_size_bytes,
+        max_size_bytes,
+        "min_size_bytes must be less than or equal to max_size_bytes",
+    )?;
     let params = ClipListParams {
         owner_user_id: auth.user.id.clone(),
         game: normalized_optional(query.game),
+        source_type: normalized_optional(query.source_type),
         visibility: normalized_optional(query.visibility)
             .map(validate_visibility)
             .transpose()?,
@@ -81,6 +124,10 @@ async fn list_clips(
             .transpose()?,
         from: query.from,
         to: query.to,
+        min_duration_ms,
+        max_duration_ms,
+        min_size_bytes,
+        max_size_bytes,
         query: normalized_optional(query.q),
         sort: parse_sort(query.sort.as_deref())?,
         limit: page_size,
@@ -228,6 +275,33 @@ async fn delete_clip(
     Ok(Json(json!({ "status": "ok" })))
 }
 
+async fn bulk_delete_clips(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Json(request): Json<BulkClipIdsRequest>,
+) -> Result<Json<BulkMutationResponse>, ApiError> {
+    let auth = auth::require_auth(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    let ids = normalize_bulk_ids(request.ids)?;
+    load_bulk_clips(&state, &auth.user.id, &ids, false).await?;
+
+    let affected = state
+        .repositories
+        .bulk_soft_delete_clips_with_audit(
+            &auth.user.id,
+            &ids,
+            Some(&auth.user.id),
+            Some(client_ip.as_str()),
+        )
+        .await?;
+
+    Ok(Json(BulkMutationResponse {
+        status: "ok",
+        affected,
+    }))
+}
+
 async fn update_visibility(
     State(state): State<AppState>,
     Extension(client_ip): Extension<ClientIp>,
@@ -278,6 +352,51 @@ async fn update_visibility(
         .await?
         .expect("updated clip should exist");
     Ok(Json(detail_response(&state, clip).await?))
+}
+
+async fn bulk_update_visibility(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Json(request): Json<BulkVisibilityRequest>,
+) -> Result<Json<BulkMutationResponse>, ApiError> {
+    let auth = auth::require_auth(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    let visibility = validate_visibility(request.visibility)?;
+    let ids = normalize_bulk_ids(request.ids)?;
+    let clips = load_bulk_clips(&state, &auth.user.id, &ids, true).await?;
+    let updates = clips
+        .into_iter()
+        .map(|clip| {
+            let public_share_id = match visibility.as_str() {
+                "private" => None,
+                "public" | "unlisted" => clip
+                    .public_share_id
+                    .clone()
+                    .or_else(|| Some(generate_public_share_id())),
+                _ => unreachable!("validated visibility"),
+            };
+            BulkVisibilityUpdate {
+                clip_id: clip.id,
+                public_share_id,
+            }
+        })
+        .collect::<Vec<_>>();
+    let affected = state
+        .repositories
+        .bulk_set_visibility_with_audit(
+            &auth.user.id,
+            &updates,
+            &visibility,
+            Some(&auth.user.id),
+            Some(client_ip.as_str()),
+        )
+        .await?;
+
+    Ok(Json(BulkMutationResponse {
+        status: "ok",
+        affected,
+    }))
 }
 
 async fn detail_response(state: &AppState, clip: Clip) -> Result<ClipDetailResponse, ApiError> {
@@ -373,9 +492,85 @@ fn parse_sort(value: Option<&str>) -> Result<ClipSort, ApiError> {
         "uploaded_at_asc" => Ok(ClipSort::UploadedAtAsc),
         "duration_desc" => Ok(ClipSort::DurationDesc),
         "duration_asc" => Ok(ClipSort::DurationAsc),
+        "size_desc" => Ok(ClipSort::FileSizeDesc),
+        "size_asc" => Ok(ClipSort::FileSizeAsc),
         "title_asc" => Ok(ClipSort::TitleAsc),
+        "title_desc" => Ok(ClipSort::TitleDesc),
+        "created_at_desc" => Ok(ClipSort::CreatedAtDesc),
+        "created_at_asc" => Ok(ClipSort::CreatedAtAsc),
+        "updated_at_desc" => Ok(ClipSort::UpdatedAtDesc),
+        "updated_at_asc" => Ok(ClipSort::UpdatedAtAsc),
         _ => Err(ApiError::bad_request("unsupported clip sort")),
     }
+}
+
+fn normalize_bulk_ids(ids: Vec<String>) -> Result<Vec<String>, ApiError> {
+    let mut normalized = Vec::new();
+    for id in ids {
+        let id = id.trim().to_string();
+        if id.is_empty() || normalized.iter().any(|existing| existing == &id) {
+            continue;
+        }
+        normalized.push(id);
+    }
+    if normalized.is_empty() {
+        return Err(ApiError::bad_request("at least one clip id is required"));
+    }
+    if normalized.len() > MAX_BULK_CLIPS {
+        return Err(ApiError::bad_request(format!(
+            "bulk operations are limited to {MAX_BULK_CLIPS} clips"
+        )));
+    }
+    Ok(normalized)
+}
+
+async fn load_bulk_clips(
+    state: &AppState,
+    owner_user_id: &str,
+    ids: &[String],
+    ready_only: bool,
+) -> Result<Vec<Clip>, ApiError> {
+    let mut clips = Vec::with_capacity(ids.len());
+    for id in ids {
+        let clip = if ready_only {
+            state
+                .repositories
+                .clips
+                .get_owned_ready(owner_user_id, id)
+                .await?
+        } else {
+            state
+                .repositories
+                .clips
+                .get_owned_non_deleted(owner_user_id, id)
+                .await?
+        };
+        let Some(clip) = clip else {
+            return Err(ApiError::not_found("one or more clips were not found"));
+        };
+        clips.push(clip);
+    }
+    Ok(clips)
+}
+
+fn non_negative(value: Option<i64>, field: &'static str) -> Result<Option<i64>, ApiError> {
+    match value {
+        Some(value) if value < 0 => Err(ApiError::bad_request(format!(
+            "{field} must be non-negative"
+        ))),
+        value => Ok(value),
+    }
+}
+
+fn validate_bounds(
+    min: Option<i64>,
+    max: Option<i64>,
+    message: &'static str,
+) -> Result<(), ApiError> {
+    if matches!((min, max), (Some(min), Some(max)) if min > max) {
+        return Err(ApiError::bad_request(message));
+    }
+    Ok(())
 }
 
 fn validate_visibility(value: String) -> Result<String, ApiError> {
@@ -449,5 +644,27 @@ mod tests {
         assert_eq!(id.len(), 24);
         assert!(id.starts_with("c_"));
         assert!(id[2..].bytes().all(|byte| byte.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn bulk_ids_are_trimmed_deduplicated_and_limited() {
+        assert_eq!(
+            normalize_bulk_ids(vec![
+                " clip-a ".to_string(),
+                "".to_string(),
+                "clip-a".to_string(),
+                "clip-b".to_string(),
+            ])
+            .expect("normalized ids"),
+            vec!["clip-a".to_string(), "clip-b".to_string()]
+        );
+
+        assert!(normalize_bulk_ids(Vec::new()).is_err());
+        assert!(normalize_bulk_ids(
+            (0..=MAX_BULK_CLIPS)
+                .map(|index| format!("clip-{index}"))
+                .collect()
+        )
+        .is_err());
     }
 }
