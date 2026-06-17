@@ -173,6 +173,7 @@ pub struct ClipSummaryResponse {
     pub visibility: String,
     pub status: String,
     pub public_url: Option<String>,
+    #[serde(default)]
     pub has_thumbnail: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -202,6 +203,7 @@ pub struct ClipDetailResponse {
     pub status: String,
     pub public_share_id: Option<String>,
     pub public_url: Option<String>,
+    #[serde(default)]
     pub has_thumbnail: bool,
     pub markers: Vec<ClipMarkerResponse>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -221,4 +223,47 @@ pub struct ClipMarkerResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateVisibilityRequest {
     pub visibility: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A v1.0.0 server predates `has_thumbnail`, so its responses omit the field.
+    // `#[serde(default)]` must let a newer client deserialize them (defaulting to false)
+    // rather than erroring on the missing field.
+    #[test]
+    fn clip_summary_deserializes_old_server_json_without_has_thumbnail() {
+        let json = r#"{
+            "id": "c_1", "title": "t", "game_name": null, "game_id": null,
+            "recorded_at": null, "uploaded_at": null, "duration_ms": null,
+            "file_size_bytes": null, "width": null, "height": null, "fps": null,
+            "visibility": "private", "status": "ready", "public_url": null,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let resp: ClipSummaryResponse = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            !resp.has_thumbnail,
+            "missing has_thumbnail must default to false"
+        );
+    }
+
+    #[test]
+    fn clip_detail_deserializes_old_server_json_without_has_thumbnail() {
+        let json = r#"{
+            "id": "c_1", "client_clip_id": null, "title": "t", "game_name": null,
+            "game_id": null, "game_executable": null, "source_type": null,
+            "recorded_at": null, "uploaded_at": null, "duration_ms": null,
+            "file_size_bytes": null, "width": null, "height": null, "fps": null,
+            "container": null, "video_codec": null, "audio_codec": null,
+            "checksum_sha256": null, "visibility": "private", "status": "ready",
+            "public_share_id": null, "public_url": null, "markers": [],
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let resp: ClipDetailResponse = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            !resp.has_thumbnail,
+            "missing has_thumbnail must default to false"
+        );
+    }
 }

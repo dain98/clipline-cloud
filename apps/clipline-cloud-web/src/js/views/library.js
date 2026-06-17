@@ -13,12 +13,9 @@ import {
 } from "/js/util.js";
 
 export async function renderLibrary() {
-  const activeRail =
-    state.libraryQuery.visibility === "public"
-      ? "public"
-      : state.libraryQuery.visibility === "private"
-      ? "private"
-      : "library";
+  // All library views (Home/Public/Unlisted/Private) use the "library" rail context;
+  // shell.js highlights the specific rail item by matching state.libraryQuery.visibility.
+  const activeRail = "library";
 
   // Loading skeleton
   renderShell({
@@ -136,7 +133,7 @@ function filtersPanel() {
         ["title_asc", "Title A-Z"],
       ])}
       ${selectField("Status", "status", state.libraryQuery.status, [
-        ["", "Any status"],
+        ["", "Ready"],
         ["created", "Created"],
         ["uploading", "Uploading"],
         ["processing", "Processing"],
