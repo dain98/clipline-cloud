@@ -83,9 +83,12 @@ struct UploadSessionResponse {
     part_size_bytes: Option<i64>,
     progress_basis_points: u16,
     checksum_sha256: Option<String>,
+    failure_reason: Option<String>,
+    recovery_action: Option<&'static str>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
+    failed_at: Option<DateTime<Utc>>,
     expires_at: DateTime<Utc>,
 }
 
@@ -270,6 +273,7 @@ impl From<UploadSession> for UploadSessionResponse {
             value.received_size_bytes,
             value.expected_size_bytes,
         );
+        let recovery_action = recovery_action(value.status.as_str());
         Self {
             id: value.id,
             clip_id: value.clip_id,
@@ -280,9 +284,12 @@ impl From<UploadSession> for UploadSessionResponse {
             part_size_bytes: value.part_size_bytes,
             progress_basis_points,
             checksum_sha256: value.checksum_sha256,
+            failure_reason: value.failure_reason,
+            recovery_action,
             created_at: value.created_at,
             updated_at: value.updated_at,
             completed_at: value.completed_at,
+            failed_at: value.failed_at,
             expires_at: value.expires_at,
         }
     }
@@ -305,6 +312,14 @@ fn admin_progress_basis_points(
         .unwrap_or_default()
         .min(10_000);
     value as u16
+}
+
+fn recovery_action(status: &str) -> Option<&'static str> {
+    match status {
+        "failed" => Some("delete_and_retry"),
+        "created" | "uploading" => Some("retry"),
+        _ => None,
+    }
 }
 
 impl From<AuditLogEntry> for AuditLogEntryResponse {

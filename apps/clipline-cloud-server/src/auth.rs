@@ -1247,6 +1247,17 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn service_unavailable_after(
+        message: impl Into<String>,
+        retry_after: Duration,
+    ) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+            retry_after: Some(retry_after),
+        }
+    }
+
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,

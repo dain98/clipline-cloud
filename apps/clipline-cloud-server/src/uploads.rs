@@ -31,6 +31,7 @@ const MIB: u64 = 1024 * 1024;
 const S3_MIN_PART_SIZE_BYTES: u64 = 5 * MIB;
 const MAX_MULTIPART_PARTS: u64 = 10_000;
 const PART_SHA256_HEADER: &str = "x-clipline-part-sha256";
+const STORAGE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub fn routes(max_request_body_bytes: usize) -> Router<AppState> {
     Router::new()
@@ -51,23 +52,11 @@ async fn create_upload(
     auth::require_csrf_for_cookie(&state, &headers, &auth)?;
     validate_create_request(&state.config, &request)?;
 
-    if let Some(client_clip_id) = normalized_optional(&request.client_clip_id) {
-        if let Some(existing_clip) = state
-            .repositories
-            .clips
-            .get_by_owner_client_clip_id(&auth.user.id, &client_clip_id)
-            .await?
+    let client_clip_id = normalized_optional(&request.client_clip_id);
+    if let Some(client_clip_id) = client_clip_id.as_deref() {
+        if let Some(existing_session) =
+            load_existing_idempotent_session(&state, &auth.user.id, client_clip_id).await?
         {
-            let Some(existing_session) = state
-                .repositories
-                .upload_sessions
-                .get_by_clip_id(&existing_clip.id)
-                .await?
-            else {
-                return Err(ApiError::conflict(
-                    "existing idempotent clip is missing an upload session",
-                ));
-            };
             return Ok(Json(create_response(&existing_session)?));
         }
     }
@@ -113,7 +102,7 @@ async fn create_upload(
         request.title.trim(),
         state.config.storage_backend_name(),
     );
-    new_clip.client_clip_id = normalized_optional(&request.client_clip_id);
+    new_clip.client_clip_id = client_clip_id.clone();
     new_clip.game_name = normalized_optional(&request.game_name);
     new_clip.game_id = normalized_optional(&request.game_id);
     new_clip.game_executable = normalized_optional(&request.game_executable);
@@ -133,7 +122,27 @@ async fn create_upload(
     new_clip.poster_key = Some(keys.poster.as_str().to_string());
     new_clip.thumbnail_key = Some(keys.thumbnail.as_str().to_string());
 
-    let clip = state.repositories.clips.create(&new_clip).await?;
+    let clip = match state.repositories.clips.create(&new_clip).await {
+        Ok(clip) => clip,
+        Err(error) => {
+            cleanup_created_storage_upload(&state, storage_upload_id.as_deref(), &keys.source)
+                .await;
+            if let Some(client_clip_id) = client_clip_id.as_deref() {
+                if error.is_unique_violation() {
+                    if let Some(existing_session) =
+                        load_existing_idempotent_session(&state, &auth.user.id, client_clip_id)
+                            .await?
+                    {
+                        return Ok(Json(create_response(&existing_session)?));
+                    }
+                    return Err(ApiError::conflict(
+                        "idempotent upload is being created; retry this request",
+                    ));
+                }
+            }
+            return Err(error.into());
+        }
+    };
     for marker in request.markers.unwrap_or_default() {
         let mut new_marker = NewClipMarker::new(&clip.id, marker.kind.trim(), marker.timestamp_ms);
         new_marker.label = normalized_optional(&marker.label);
@@ -345,9 +354,10 @@ async fn complete_upload(
             match state.storage.head_object(&key).await {
                 Ok(metadata) if metadata.size_bytes == expected_size => metadata,
                 Ok(_) => {
-                    return Err(ApiError::conflict(
-                        "stored object exists but size does not match expected upload size",
-                    ))
+                    let reason =
+                        "stored object exists but size does not match expected upload size";
+                    mark_upload_failed(&state, &session, reason).await?;
+                    return Err(ApiError::conflict(reason));
                 }
                 Err(head_error) => return Err(storage_error(head_error)),
             }
@@ -355,9 +365,9 @@ async fn complete_upload(
     };
 
     if metadata.size_bytes != expected_size {
-        return Err(ApiError::conflict(
-            "completed object size does not match expected upload size",
-        ));
+        let reason = "completed object size does not match expected upload size";
+        mark_upload_failed(&state, &session, reason).await?;
+        return Err(ApiError::conflict(reason));
     }
 
     if !is_s3_storage(&state.config) {
@@ -369,10 +379,9 @@ async fn complete_upload(
         let checksum = sha256_hex(&stored.bytes);
         if Some(checksum.as_str()) != session.checksum_sha256.as_deref() {
             let _ = state.storage.delete_object(&key).await;
-            state.repositories.upload_sessions.fail(&session.id).await?;
-            return Err(ApiError::conflict(
-                "completed local object SHA-256 does not match expected upload checksum",
-            ));
+            let reason = "completed local object SHA-256 does not match expected upload checksum";
+            mark_upload_failed(&state, &session, reason).await?;
+            return Err(ApiError::conflict(reason));
         }
     }
 
@@ -444,6 +453,55 @@ async fn load_owned_upload(
         return Err(ApiError::internal("upload session clip is missing"));
     };
     Ok((session, clip))
+}
+
+async fn load_existing_idempotent_session(
+    state: &AppState,
+    user_id: &str,
+    client_clip_id: &str,
+) -> Result<Option<UploadSession>, ApiError> {
+    let Some(existing_clip) = state
+        .repositories
+        .clips
+        .get_by_owner_client_clip_id(user_id, client_clip_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(existing_session) = state
+        .repositories
+        .upload_sessions
+        .get_by_clip_id(&existing_clip.id)
+        .await?
+    else {
+        return Err(ApiError::conflict(
+            "idempotent upload is being created; retry this request",
+        ));
+    };
+    Ok(Some(existing_session))
+}
+
+async fn cleanup_created_storage_upload(
+    state: &AppState,
+    storage_upload_id: Option<&str>,
+    key: &ObjectKey,
+) {
+    let Some(storage_upload_id) = storage_upload_id else {
+        return;
+    };
+    if let Err(error) = state
+        .storage
+        .abort_multipart_upload(storage_upload_id, key)
+        .await
+    {
+        if !matches!(error, StorageError::NotFound(_)) {
+            warn!(
+                event = "api.upload_orphan_cleanup_failed",
+                storage_upload_id = %storage_upload_id,
+                error = %error,
+            );
+        }
+    }
 }
 
 fn validate_create_request(config: &Config, request: &CreateUploadRequest) -> Result<(), ApiError> {
@@ -531,7 +589,16 @@ fn ensure_mutable_upload(session: &UploadSession) -> Result<(), ApiError> {
         "created" | "uploading" => Ok(()),
         "completed" => Err(ApiError::conflict("upload session is already completed")),
         "aborted" => Err(ApiError::conflict("upload session is aborted")),
-        "failed" => Err(ApiError::conflict("upload session is failed")),
+        "failed" => {
+            let message = match session.failure_reason.as_deref() {
+                Some(reason) => format!(
+                    "upload session is failed: {reason}; delete this upload and retry from a new session"
+                ),
+                None => "upload session is failed; delete this upload and retry from a new session"
+                    .to_string(),
+            };
+            Err(ApiError::conflict(message))
+        }
         _ => Err(ApiError::conflict("upload session is not mutable")),
     }
 }
@@ -596,6 +663,8 @@ async fn progress_response(
             received_size_bytes,
             file_size_bytes,
         ),
+        failure_reason: session.failure_reason.clone(),
+        recovery_action: recovery_action(session.status.as_str()).map(ToOwned::to_owned),
         expires_at: session.expires_at,
         received_parts,
         missing_parts,
@@ -860,6 +929,38 @@ async fn finalize_upload_db(state: &AppState, session: &UploadSession) -> Result
     Ok(())
 }
 
+async fn mark_upload_failed(
+    state: &AppState,
+    session: &UploadSession,
+    reason: &str,
+) -> Result<(), ApiError> {
+    state
+        .repositories
+        .upload_sessions
+        .fail(&session.id, reason)
+        .await?;
+    if !state
+        .repositories
+        .clips
+        .mark_failed(&session.clip_id)
+        .await?
+    {
+        warn!(
+            event = "api.upload_clip_mark_failed_skipped",
+            clip_id = %session.clip_id,
+        );
+    }
+    Ok(())
+}
+
+fn recovery_action(status: &str) -> Option<&'static str> {
+    match status {
+        "failed" => Some("delete_and_retry"),
+        "created" | "uploading" => Some("retry"),
+        _ => None,
+    }
+}
+
 fn optional_checksum_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
     let Some(value) = headers
         .get(PART_SHA256_HEADER)
@@ -938,8 +1039,29 @@ fn should_try_completion_reconciliation(error: &StorageError) -> bool {
 fn storage_error(error: StorageError) -> ApiError {
     match error {
         StorageError::NotFound(_) => ApiError::not_found("storage object not found"),
-        StorageError::InvalidKey { .. } | StorageError::InvalidPart(_) => {
-            ApiError::bad_request(error.to_string())
+        StorageError::InvalidKey { .. }
+        | StorageError::InvalidPart(_)
+        | StorageError::InvalidRange { .. } => ApiError::bad_request(error.to_string()),
+        StorageError::CompletionInterrupted => {
+            warn!(event = "api.storage_retryable_error", error = %error);
+            ApiError::service_unavailable_after(
+                "storage operation did not finish; retry this upload request",
+                STORAGE_RETRY_AFTER,
+            )
+        }
+        StorageError::Io(error) if io_error_is_retryable(&error) => {
+            warn!(event = "api.storage_retryable_error", error = %error);
+            ApiError::service_unavailable_after(
+                "storage is temporarily unavailable; retry this upload request later",
+                STORAGE_RETRY_AFTER,
+            )
+        }
+        StorageError::S3(message) if s3_error_is_retryable(&message) => {
+            warn!(event = "api.storage_retryable_error", error = %message);
+            ApiError::service_unavailable_after(
+                "storage is temporarily unavailable; retry this upload request later",
+                STORAGE_RETRY_AFTER,
+            )
         }
         other => {
             warn!(event = "api.storage_error", error = %other);
@@ -948,9 +1070,39 @@ fn storage_error(error: StorageError) -> ApiError {
     }
 }
 
+fn io_error_is_retryable(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+    ) || error.raw_os_error() == Some(28)
+}
+
+fn s3_error_is_retryable(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("timeout")
+        || lower.contains("temporar")
+        || lower.contains("slowdown")
+        || lower.contains("throttl")
+        || lower.contains("internalerror")
+        || lower.contains("serviceunavailable")
+        || lower.contains("503")
+        || lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("504")
+        || lower.contains("connection")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
 
     fn session(part_size_bytes: i64, expected_size_bytes: i64) -> UploadSession {
         let now = now_utc();
@@ -965,9 +1117,11 @@ mod tests {
             storage_key: "objects/media/token/source.mp4".to_string(),
             storage_upload_id: Some("storage-upload".to_string()),
             checksum_sha256: Some("0".repeat(64)),
+            failure_reason: None,
             created_at: now,
             updated_at: now,
             completed_at: None,
+            failed_at: None,
             expires_at: now + ChronoDuration::hours(1),
         }
     }
@@ -1020,5 +1174,46 @@ mod tests {
         assert_eq!(progress_basis_points("uploading", 150, 100), 10_000);
         assert_eq!(progress_basis_points("created", 0, 0), 0);
         assert_eq!(progress_basis_points("completed", 0, 100), 10_000);
+    }
+
+    #[test]
+    fn recovery_action_marks_failed_uploads_delete_and_retry() {
+        assert_eq!(recovery_action("uploading"), Some("retry"));
+        assert_eq!(recovery_action("failed"), Some("delete_and_retry"));
+        assert_eq!(recovery_action("completed"), None);
+    }
+
+    #[test]
+    fn retryable_storage_errors_are_service_unavailable() {
+        let error = storage_error(StorageError::CompletionInterrupted);
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("10")
+        );
+    }
+
+    #[test]
+    fn permanent_storage_errors_are_internal() {
+        let error = storage_error(StorageError::S3("AccessDenied".to_string()));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let error = storage_error(StorageError::Url(
+            url::Url::parse("://not-a-url").expect_err("invalid url"),
+        ));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn transient_s3_errors_are_service_unavailable() {
+        let error = storage_error(StorageError::S3("ServiceUnavailable: 503".to_string()));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

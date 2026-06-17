@@ -801,6 +801,7 @@ function adminJobsView(failedUploads, deadJobs, recentErrors) {
 
 function uploadItem(upload) {
   const progress = Math.max(0, Math.min(10000, Number(upload.progress_basis_points || 0)));
+  const action = recoveryActionLabel(upload.recovery_action);
   return `
     <div class="job-item">
       <div class="job-title-line">
@@ -811,8 +812,21 @@ function uploadItem(upload) {
         <span style="width:${progress / 100}%"></span>
       </div>
       <span class="muted">clip ${escapeHtml(upload.clip_id)} - ${formatBytes(upload.received_size_bytes)} of ${formatBytes(upload.expected_size_bytes)} - updated ${formatDate(upload.updated_at)}</span>
+      ${upload.failure_reason ? `<span class="error-box">${escapeHtml(upload.failure_reason)}</span>` : ""}
+      ${action ? `<span class="muted">Recovery: ${escapeHtml(action)}</span>` : ""}
     </div>
   `;
+}
+
+function recoveryActionLabel(action) {
+  switch (action) {
+    case "delete_and_retry":
+      return "delete the failed upload and retry from a new session";
+    case "retry":
+      return "retry the current upload request";
+    default:
+      return "";
+  }
 }
 
 function jobItem(job) {
