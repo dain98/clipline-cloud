@@ -126,9 +126,10 @@ S3 mode adds the `CLIPLINE_S3_*` block and sets `CLIPLINE_STORAGE_BACKEND: s3`. 
 
 `_FILE` secret variants are supported everywhere and preferred over inline passwords.
 
-The Caddy profile pins Caddy to `172.30.0.2` and sets
-`CLIPLINE_TRUSTED_PROXY_HOPS=172.30.0.2`. If the subnet or static IP is overridden, update both
-values together or the server will ignore `X-Forwarded-For` and audit logs will show the proxy IP.
+The Caddy profile defaults Caddy to `172.30.0.2` and sets `CLIPLINE_TRUSTED_PROXY_HOPS` from the
+same `CLIPLINE_CADDY_IP` value. If the default `172.30.0.0/24` subnet overlaps an existing Docker
+network, override `CLIPLINE_CADDY_SUBNET`, `CLIPLINE_CADDY_IP`, and `CLIPLINE_APP_IP` together so
+the server still trusts only the real proxy hop and audit logs keep the original client IP.
 
 ### Backup & restore (§25)
 

@@ -92,8 +92,18 @@ RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
 
 `RUN_CADDY=1` checks localhost TLS plus secure headers through Caddy on host ports `8081`/`8443` by
 default. Override `CLIPLINE_CADDY_HTTP_PORT` and `CLIPLINE_CADDY_HTTPS_PORT` when those ports are
-busy or when rehearsing production-style `80`/`443` bindings. Use the production HTTPS command below
-with a real DNS name for the ACME-backed deployment check.
+busy or when rehearsing production-style `80`/`443` bindings. If Docker reports that the Caddy
+network pool overlaps with an existing host network, override the Caddy subnet and matching static
+IPs:
+
+```sh
+CLIPLINE_CADDY_SUBNET=172.31.250.0/24 \
+CLIPLINE_CADDY_IP=172.31.250.2 \
+CLIPLINE_APP_IP=172.31.250.10 \
+RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
+```
+
+Use the production HTTPS command below with a real DNS name for the ACME-backed deployment check.
 If a smoke check fails, the active Compose project is left in place for `docker compose logs` and
 manual inspection; remove it with `docker compose -p <project> -f <profile-file> down -v`.
 
@@ -109,11 +119,11 @@ CLIPLINE_DOMAIN=clips.example.com CLIPLINE_ACME_EMAIL=ops@example.com \
 Set `CLIPLINE_ACME_EMAIL` to a monitored address so ACME expiry and account notices reach an
 operator.
 
-The Caddy service uses a fixed internal IP (`172.30.0.2`) and the app sets
-`CLIPLINE_TRUSTED_PROXY_HOPS=172.30.0.2`. `X-Forwarded-For` is ignored unless the socket peer is one
-of the configured trusted proxy IPs. If you override the Compose subnet or Caddy static IP, update
-the Caddy `ipv4_address` and `CLIPLINE_TRUSTED_PROXY_HOPS` together or audit logs will record the
-proxy IP instead of the real client IP.
+The Caddy service defaults to internal IP `172.30.0.2`, and the app sets
+`CLIPLINE_TRUSTED_PROXY_HOPS` from the same `CLIPLINE_CADDY_IP` value. `X-Forwarded-For` is ignored
+unless the socket peer is one of the configured trusted proxy IPs. If you override the Compose
+subnet, keep `CLIPLINE_CADDY_IP` and `CLIPLINE_APP_IP` inside that subnet so audit logs record the
+real client IP instead of the proxy IP.
 
 For production, pin `CLIPLINE_IMAGE` to a released version tag instead of relying on `:latest`.
 Profiles that default to `http://localhost:8080` are local/LAN defaults; set `CLIPLINE_PUBLIC_URL` to

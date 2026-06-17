@@ -14,7 +14,7 @@ services:
       CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: ${CLIPLINE_BOOTSTRAP_ADMIN_USERNAME:-admin}
       CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
       CLIPLINE_SESSION_SECRET_FILE: /run/secrets/session_secret
-      CLIPLINE_TRUSTED_PROXY_HOPS: 172.30.0.2
+      CLIPLINE_TRUSTED_PROXY_HOPS: ${CLIPLINE_CADDY_IP:-172.30.0.2}
       CLIPLINE_MAX_UPLOAD_SIZE_BYTES: ${CLIPLINE_MAX_UPLOAD_SIZE_BYTES:-5368709120}
       CLIPLINE_UPLOAD_PART_SIZE_BYTES: ${CLIPLINE_UPLOAD_PART_SIZE_BYTES:-8388608}
       CLIPLINE_SINGLE_PUT_MAX_BYTES: ${CLIPLINE_SINGLE_PUT_MAX_BYTES:-67108864}
@@ -33,7 +33,7 @@ services:
       - session_secret
     networks:
       clipline:
-        ipv4_address: 172.30.0.10
+        ipv4_address: ${CLIPLINE_APP_IP:-172.30.0.10}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
       interval: 30s
@@ -60,7 +60,7 @@ services:
       - caddy_config:/config
     networks:
       clipline:
-        ipv4_address: 172.30.0.2
+        ipv4_address: ${CLIPLINE_CADDY_IP:-172.30.0.2}
 
 secrets:
   admin_password:
@@ -77,4 +77,4 @@ networks:
   clipline:
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: ${CLIPLINE_CADDY_SUBNET:-172.30.0.0/24}
