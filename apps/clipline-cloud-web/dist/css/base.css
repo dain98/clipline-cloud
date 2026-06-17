@@ -124,6 +124,15 @@ button:not(:disabled):active,
   padding-right: 0.5rem;
 }
 
+/* Base inline icon sizing. Lived in the old styles.css; restored here so every
+   <svg class="icon"> is constrained (scoped rules in components.css override). */
+.icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  stroke-width: 2;
+}
+
 /* Form controls */
 .field {
   display: grid;
