@@ -170,6 +170,13 @@ checksum and ETag because the API server never sees the bytes. The authoritative
 remains the asynchronous `validate_object` job after completion. Treat the ack checksum as resumable
 upload metadata, not as final proof of object integrity.
 
+**Size enforcement difference:** `expected_size_bytes` in the presign response tells the client which
+byte range to upload, but the presigned S3 `UploadPart` URL does not itself enforce that length. The
+ack `size_bytes` value is also client-reported metadata used for progress and complete-time part
+accounting. The first server-observed size check in direct mode is the post-complete `head_object`
+check; if the assembled object size differs from `expected_size_bytes`, the upload is marked failed
+and the clip never becomes ready.
+
 ### Complete (§12)
 
 The server verifies every part is present and `Σ size == expected_size_bytes`, then calls
