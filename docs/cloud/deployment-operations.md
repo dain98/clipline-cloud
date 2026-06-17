@@ -114,7 +114,8 @@ deploy/compose/smoke.sh
 By default it builds a local `clipline-cloud:ops-smoke` image, validates all five Compose files,
 starts the default, MinIO, and Postgres profiles with temporary secrets, checks `/readyz`, creates an
 admin device token, opens admin diagnostics, verifies SQLite/local and Postgres/local backup and
-restore, and confirms that stopping MinIO/Postgres flips `/readyz` to storage/database not-ready.
+restore, exercises the MinIO direct-S3 upload path, and confirms that stopping MinIO/Postgres flips
+`/readyz` to storage/database not-ready.
 
 Useful variants:
 
@@ -122,6 +123,7 @@ Useful variants:
 CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
 BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 deploy/compose/smoke.sh
 RUN_PROFILES="default minio" deploy/compose/smoke.sh
+RUN_DIRECT_S3=0 RUN_PROFILES=minio deploy/compose/smoke.sh
 RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
 ```
 

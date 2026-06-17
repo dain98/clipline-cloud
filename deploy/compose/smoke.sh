@@ -9,6 +9,7 @@ IMAGE="${CLIPLINE_IMAGE:-clipline-cloud:ops-smoke}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
 RUN_PROFILES="${RUN_PROFILES-default minio postgres}"
 RUN_CADDY="${RUN_CADDY:-0}"
+RUN_DIRECT_S3="${RUN_DIRECT_S3:-1}"
 CONFIG_ONLY="${CONFIG_ONLY:-0}"
 KEEP="${KEEP:-0}"
 ISSUED_DEVICE_TOKEN=""
@@ -112,6 +113,8 @@ compose() {
     CLIPLINE_HTTP_PORT="${CLIPLINE_HTTP_PORT:-}" \
     MINIO_API_PORT="${MINIO_API_PORT:-}" \
     MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-}" \
+    CLIPLINE_DIRECT_S3_UPLOADS="${CLIPLINE_DIRECT_S3_UPLOADS:-}" \
+    CLIPLINE_SINGLE_PUT_MAX_BYTES="${CLIPLINE_SINGLE_PUT_MAX_BYTES:-}" \
     CLIPLINE_S3_ENDPOINT="${CLIPLINE_S3_ENDPOINT:-}" \
     CLIPLINE_S3_BUCKET="${CLIPLINE_S3_BUCKET:-}" \
     CLIPLINE_S3_REGION="${CLIPLINE_S3_REGION:-}" \
@@ -258,6 +261,163 @@ assert_admin_overview() {
   die "admin overview response missing storage_backend for $project"
 }
 
+smoke_direct_s3_upload() {
+  local project="$1"
+  local file="$2"
+  local token="$3"
+
+  log "Smoke-testing direct S3 multipart upload"
+  compose "$project" "$file" exec -T -e SMOKE_TOKEN="$token" clipline-cloud sh -s <<'SCRIPT'
+set -eu
+
+api="http://127.0.0.1:8080"
+clip="/tmp/clipline-direct-s3-smoke.mp4"
+put_headers="/tmp/clipline-direct-s3-put-headers.txt"
+put_output="/tmp/clipline-direct-s3-put.out"
+curl_headers="/tmp/clipline-direct-s3-curl-headers.conf"
+headers_lines="/tmp/clipline-direct-s3-headers-lines.txt"
+trap 'rm -f "$clip" "$put_headers" "$put_output" "$curl_headers" "$headers_lines"' EXIT
+
+# The runtime image intentionally omits jq; these parsers assume serde's compact JSON output.
+json_string() {
+  field="$1"
+  sed -n "s/.*\"$field\":\"\([^\"]*\)\".*/\1/p"
+}
+
+json_number() {
+  field="$1"
+  sed -n "s/.*\"$field\":\([0-9][0-9]*\).*/\1/p"
+}
+
+require_json_string() {
+  field="$1"
+  value="$(printf '%s' "$2" | json_string "$field")"
+  [ -n "$value" ] || {
+    printf 'missing JSON string field %s in: %s\n' "$field" "$2" >&2
+    exit 1
+  }
+  printf '%s' "$value"
+}
+
+require_json_number() {
+  field="$1"
+  value="$(printf '%s' "$2" | json_number "$field")"
+  [ -n "$value" ] || {
+    printf 'missing JSON number field %s in: %s\n' "$field" "$2" >&2
+    exit 1
+  }
+  printf '%s' "$value"
+}
+
+ffmpeg -hide_banner -loglevel error -nostdin -y \
+  -f lavfi -i testsrc2=size=160x90:rate=15 \
+  -t 1 \
+  -c:v mpeg4 \
+  -pix_fmt yuv420p \
+  -movflags +faststart \
+  "$clip"
+
+size="$(wc -c < "$clip" | tr -d ' ')"
+checksum="$(sha256sum "$clip" | awk '{print $1}')"
+client_clip_id="$(printf 'direct-s3-smoke-%s-%s' "$(date +%s)" "$$")"
+payload="$(printf '{"client_clip_id":"%s","title":"Direct S3 smoke","source_type":"deployment_smoke","duration_ms":1000,"file_size_bytes":%s,"checksum_sha256":"%s","container":"mp4","video_codec":"mpeg4","width":160,"height":90,"fps":15,"visibility":"private"}' "$client_clip_id" "$size" "$checksum")"
+
+# This check depends on the same compact JSON assumption as the field parsers above.
+discovery="$(curl -fsS "$api/.well-known/clipline-cloud")"
+printf '%s' "$discovery" | grep -q '"direct_s3_upload":true' || {
+  printf 'direct_s3_upload discovery feature was not enabled: %s\n' "$discovery" >&2
+  exit 1
+}
+
+create_response="$(curl -fsS \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "$payload" \
+  "$api/api/v1/uploads")"
+
+mode="$(require_json_string mode "$create_response")"
+[ "$mode" = "chunked" ] || {
+  printf 'expected chunked upload mode, got %s in: %s\n' "$mode" "$create_response" >&2
+  exit 1
+}
+clip_id="$(require_json_string clip_id "$create_response")"
+upload_id="$(require_json_string upload_id "$create_response")"
+presign_template="$(require_json_string direct_part_presign_url_template "$create_response")"
+ack_template="$(require_json_string direct_part_ack_url_template "$create_response")"
+presign_path="$(printf '%s' "$presign_template" | sed 's/{part_number}/1/g')"
+ack_path="$(printf '%s' "$ack_template" | sed 's/{part_number}/1/g')"
+
+presign_response="$(curl -fsS \
+  -X POST \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  "$api$presign_path")"
+put_url="$(require_json_string url "$presign_response")"
+expected_size="$(require_json_number expected_size_bytes "$presign_response")"
+[ "$expected_size" = "$size" ] || {
+  printf 'presign expected_size_bytes=%s did not match file size=%s\n' "$expected_size" "$size" >&2
+  exit 1
+}
+
+: > "$curl_headers"
+headers_segment="$(printf '%s' "$presign_response" | sed -n 's/.*"headers":\[\(.*\)\].*/\1/p')"
+if [ -n "$headers_segment" ]; then
+  printf '%s' "$headers_segment" | sed 's/},{/}\n{/g' > "$headers_lines"
+  while IFS= read -r header_json; do
+    name="$(printf '%s' "$header_json" | json_string name)"
+    value="$(printf '%s' "$header_json" | json_string value)"
+    [ -n "$name" ] || {
+      printf 'could not parse presigned header name from: %s\n' "$header_json" >&2
+      exit 1
+    }
+    printf 'header = "%s: %s"\n' "$name" "$value" >> "$curl_headers"
+  done < "$headers_lines"
+fi
+
+if [ -s "$curl_headers" ]; then
+  curl -fsS --config "$curl_headers" -D "$put_headers" -o "$put_output" \
+    -X PUT --data-binary "@$clip" "$put_url"
+else
+  curl -fsS -D "$put_headers" -o "$put_output" \
+    -X PUT --data-binary "@$clip" "$put_url"
+fi
+
+etag="$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' "$put_headers" | tr -d '\r' | tail -n 1)"
+etag="$(printf '%s' "$etag" | sed 's/^"//; s/"$//')"
+[ -n "$etag" ] || {
+  printf 'S3 direct PUT did not return an ETag\n' >&2
+  cat "$put_headers" >&2
+  exit 1
+}
+
+ack_payload="$(printf '{"size_bytes":%s,"checksum_sha256":"%s","etag":"%s"}' "$size" "$checksum" "$etag")"
+ack_response="$(curl -fsS \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "$ack_payload" \
+  "$api$ack_path")"
+printf '%s' "$ack_response" | grep -q "\"upload_id\":\"$upload_id\"" || {
+  printf 'ack response did not reference upload_id %s: %s\n' "$upload_id" "$ack_response" >&2
+  exit 1
+}
+
+curl -fsS \
+  -X POST \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  "$api/api/v1/uploads/$upload_id/complete" >/dev/null
+
+for _ in $(seq 1 120); do
+  if clip_response="$(curl -fsS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/clips/$clip_id" 2>/dev/null)"; then
+    printf '%s' "$clip_response" | grep -q '"status":"ready"' && exit 0
+  fi
+  sleep 2
+done
+
+printf 'direct S3 uploaded clip %s did not become ready\n' "$clip_id" >&2
+curl -sS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/admin/jobs/recent-errors" >&2 || true
+exit 1
+SCRIPT
+}
+
 expect_not_ready() {
   local project="$1"
   local file="$2"
@@ -354,10 +514,17 @@ run_profile() {
   local project=""
   local password=""
   local token=""
+  local CLIPLINE_DIRECT_S3_UPLOADS="${CLIPLINE_DIRECT_S3_UPLOADS:-}"
+  local CLIPLINE_SINGLE_PUT_MAX_BYTES="${CLIPLINE_SINGLE_PUT_MAX_BYTES:-}"
 
   file="$(compose_file_for_profile "$profile")"
   project="clipline-smoke-$profile-$SMOKE_ID"
   register_cleanup "$project" "$file"
+
+  if [ "$profile" = "minio" ] && [ "$RUN_DIRECT_S3" = "1" ]; then
+    CLIPLINE_DIRECT_S3_UPLOADS="${CLIPLINE_DIRECT_S3_UPLOADS:-true}"
+    CLIPLINE_SINGLE_PUT_MAX_BYTES="${CLIPLINE_SINGLE_PUT_MAX_BYTES:-1}"
+  fi
 
   log "Starting $profile profile"
   compose "$project" "$file" up -d
@@ -375,6 +542,11 @@ run_profile() {
       smoke_backup_restore "$project" "$file" "$token"
       ;;
     minio)
+      if [ "$RUN_DIRECT_S3" = "1" ]; then
+        smoke_direct_s3_upload "$project" "$file" "$token"
+      else
+        log "Skipping direct S3 runtime smoke; set RUN_DIRECT_S3=1 to enable"
+      fi
       log "Checking storage readiness failure"
       compose "$project" "$file" stop minio >/dev/null
       expect_not_ready "$project" "$file" storage

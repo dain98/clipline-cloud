@@ -43,7 +43,7 @@ Notes from earlier design decisions that make these cheaper:
 - [ ] Direct-to-S3 multipart via presigned part URLs (backend orchestrates; client PUTs to S3) — or TUS
   - [x] Server scaffold: S3-only config flag, discovery/admin capability, presigned part URL endpoint, direct part ack endpoint
   - [ ] Desktop client direct-upload flow
-  - [ ] MinIO/direct-S3 smoke test covering presign → PUT to S3 → ack → complete → validate
+  - [x] MinIO/direct-S3 smoke test covering presign → PUT to S3 → ack → complete → validate
 - [x] Dedicated worker container as an additional job runner (no schema change; relies on doc-06 claiming)
 - [ ] Server-side transcoding to multiple qualities (new job kinds on the runner)
 - [ ] CDN in front of public clips (extends doc-08 public-media path)
@@ -67,3 +67,6 @@ Notes from earlier design decisions that make these cheaper:
   `CLIPLINE_DIRECT_S3_UPLOADS=true`; chunked upload creation then advertises presign/ack URL
   templates, the API can mint short-lived S3 `UploadPart` URLs, and clients can acknowledge direct
   parts with size/checksum/ETag metadata before the existing complete path runs.
+- 2026-06-17: Added Docker MinIO smoke coverage for the full direct-S3 server path: presign,
+  direct PUT to MinIO, ack, complete, validate-object job, and ready clip polling. The desktop
+  client flow remains the unshipped part of direct-to-S3.
