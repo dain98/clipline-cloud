@@ -236,6 +236,27 @@
   padding: 1.5rem;
 }
 
+/* ── Watch / clip detail layout ────────────────────────────────── */
+.watch-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .watch-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.watch-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
 /* Icon buttons */
 .icon-btn {
   display: flex;

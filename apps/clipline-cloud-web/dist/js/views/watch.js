@@ -1,10 +1,13 @@
 import { api } from "/js/api.js";
 import { renderShell } from "/js/shell.js";
+import { markerTimelineHtml, bindMarkerTimeline } from "/js/components/marker_timeline.js";
+import { bindThumbFallback } from "/js/components/card.js";
 import {
   escapeHtml,
   escapeAttr,
   icon,
   flash,
+  copyText,
   formatDate,
   formatDuration,
   formatBytes,
@@ -19,16 +22,16 @@ import {
 export async function renderClipDetail(id) {
   renderShell({
     active: "library",
-    body: `<div class="empty-state">Loading clip...</div>`,
+    body: `<div class="empty-state">Loading clip…</div>`,
   });
 
   try {
     const clip = await api(`/api/v1/clips/${encodeURIComponent(id)}`);
     renderShell({
       active: "library",
-      body: clipDetailView(clip),
+      body: clipWatchView(clip),
       onMount() {
-        bindClipDetailEvents(clip);
+        bindWatchEvents(clip);
       },
     });
   } catch (error) {
@@ -39,81 +42,195 @@ export async function renderClipDetail(id) {
   }
 }
 
-function clipDetailView(clip) {
+function clipWatchView(clip) {
+  const safeId = encodeURIComponent(clip.id);
+  const dims =
+    clip.width && clip.height ? `${clip.width} × ${clip.height}` : "Unknown";
+
   return `
-    <section class="detail-layout">
-      <div class="section">
-        <div class="video-frame">
-          <video controls preload="metadata" src="/api/v1/clips/${encodeURIComponent(clip.id)}/media"></video>
+    <div class="watch-layout">
+      <div class="watch-main">
+
+        <!-- Player -->
+        <div class="player-frame">
+          <video id="player" controls preload="metadata"
+            src="/api/v1/clips/${safeId}/media"></video>
         </div>
-        <div class="panel">
-          <div class="section-header">
-            <h2>Markers</h2>
-            <span class="muted">${clip.markers.length} marker${clip.markers.length === 1 ? "" : "s"}</span>
-          </div>
-          ${markerTimeline(clip)}
-          ${
-            clip.markers.length
-              ? `<ul class="marker-list">${clip.markers.map(markerItem).join("")}</ul>`
-              : `<p class="muted">No markers on this clip.</p>`
-          }
+
+        <!-- Title -->
+        <h1 class="watch-title">${escapeHtml(clip.title)}</h1>
+
+        <!-- Action pills -->
+        <div class="watch-actions">
+          <button id="share-btn" class="chip">
+            ${icon("share")} Share
+          </button>
+          <button id="visibility-btn" class="chip">
+            ${icon("globe")} Visibility
+          </button>
+          <button id="edit-btn" class="chip">
+            ${icon("edit")} Edit
+          </button>
+          <button id="delete-btn" class="chip chip--danger">
+            ${icon("trash")} Delete
+          </button>
         </div>
-        <form id="clip-edit-form" class="panel section">
-          <h2>Metadata</h2>
-          ${field("Title", "title", "text", clip.title, "Clip title")}
-          ${field("Game name", "game_name", "text", clip.game_name || "", "Optional")}
-          ${field("Game ID", "game_id", "text", clip.game_id || "", "Optional")}
-          ${field("Duration ms", "duration_ms", "number", clip.duration_ms ?? "", "Optional")}
-          <button class="btn-primary" type="submit">${icon("save")} Save metadata</button>
-        </form>
-      </div>
-      <aside class="section">
-        <div class="panel section">
-          <div class="section-header">
-            <h2>Visibility</h2>
-            ${visibilityBadge(clip.visibility)}
-          </div>
+
+        <!-- Meta line -->
+        <div class="watch-meta">
+          <span>${escapeHtml(formatDate(clip.recorded_at))}</span>
+          <span class="watch-meta-sep">·</span>
+          <span>${escapeHtml(formatDuration(clip.duration_ms))}</span>
+          <span class="watch-meta-sep">·</span>
+          <span>${escapeHtml(formatBytes(clip.file_size_bytes))}</span>
+          <span class="watch-meta-sep">·</span>
+          ${visibilityBadge(clip.visibility)}
+        </div>
+
+        <!-- Visibility inline panel (hidden by default) -->
+        <div id="visibility-panel" class="description-card" hidden>
+          <h2 class="description-card__heading">Visibility</h2>
           ${selectField("Visibility", "detail_visibility", clip.visibility, [
             ["private", "Private"],
             ["public", "Public"],
             ["unlisted", "Unlisted"],
           ])}
-          <button id="clip-visibility-button" class="btn-secondary">${icon("refresh")} Apply visibility</button>
-          ${
-            clip.public_url
-              ? `<div class="share-line">
-                  <input readonly value="${escapeAttr(clip.public_url)}" aria-label="Public URL">
-                  <button class="btn-secondary" data-copy="${escapeAttr(clip.public_url)}">${icon("copy")} Copy</button>
-                </div>`
-              : `<p class="muted">No public URL is active.</p>`
-          }
+          <div class="watch-actions" style="margin-top:var(--space-3)">
+            <button id="apply-visibility-btn" class="chip chip--accent">
+              ${icon("refresh")} Apply
+            </button>
+            ${clip.public_url
+              ? `<button class="chip" data-copy="${escapeAttr(clip.public_url)}">
+                   ${icon("copy")} Copy link
+                 </button>`
+              : ""}
+          </div>
         </div>
-        <div class="panel">
-          <h2>Details</h2>
+
+        <!-- Edit form (hidden until toggled) -->
+        <form id="clip-edit-form" class="description-card" hidden>
+          <h2 class="description-card__heading">Edit metadata</h2>
+          ${field("Title", "title", "text", clip.title, "Clip title")}
+          ${field("Game name", "game_name", "text", clip.game_name || "", "Optional")}
+          ${field("Game ID", "game_id", "text", clip.game_id || "", "Optional")}
+          ${field("Duration ms", "duration_ms", "number", clip.duration_ms ?? "", "Optional")}
+          <div class="watch-actions" style="margin-top:var(--space-3)">
+            <button class="chip chip--accent" type="submit">
+              ${icon("save")} Save metadata
+            </button>
+          </div>
+        </form>
+
+        <!-- Description card: technical details + markers -->
+        <details class="description-card" open>
+          <summary class="description-card__summary">
+            <span class="description-card__heading">Details &amp; chapters</span>
+            ${icon("chevronDown")}
+          </summary>
+
           <dl class="data-list">
             ${dataRow("Recorded", formatDate(clip.recorded_at))}
             ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
             ${dataRow("Duration", formatDuration(clip.duration_ms))}
             ${dataRow("Size", formatBytes(clip.file_size_bytes))}
-            ${dataRow("Dimensions", clip.width && clip.height ? `${clip.width} x ${clip.height}` : "Unknown")}
+            ${dataRow("Dimensions", dims)}
             ${dataRow("FPS", clip.fps ?? "Unknown")}
             ${dataRow("Container", clip.container || "Unknown")}
             ${dataRow("Video codec", clip.video_codec || "Unknown")}
             ${dataRow("Audio codec", clip.audio_codec || "Unknown")}
-            ${dataRow("Checksum", clip.checksum_sha256 || "Unknown", true)}
+            ${dataRow("Checksum", clip.checksum_sha256 || "Unknown")}
           </dl>
-        </div>
-        <div class="panel section">
-          <h2>Danger zone</h2>
-          <button id="clip-delete-button" class="btn-danger">${icon("trash")} Delete clip</button>
-        </div>
-      </aside>
-    </section>
+
+          <div class="marker-section">
+            <h3 class="marker-section__heading">
+              Chapters
+              <span class="text-muted">${clip.markers.length} marker${clip.markers.length === 1 ? "" : "s"}</span>
+            </h3>
+            ${markerTimelineHtml({ markers: clip.markers, durationMs: clip.duration_ms })}
+          </div>
+        </details>
+
+      </div>
+
+      <!-- Up-next rail — populated in Task 10 -->
+      <aside class="up-next" id="up-next"></aside>
+    </div>
   `;
 }
 
-function bindClipDetailEvents(clip) {
-  document.querySelector("#clip-edit-form").addEventListener("submit", async (event) => {
+function bindWatchEvents(clip) {
+  const contentRoot = document.querySelector("#app-content");
+  const videoEl = document.querySelector("#player");
+
+  // Force guide rail to mini on watch page
+  document.querySelector(".app-body")?.classList.add("rail-mini");
+
+  // Bind marker timeline seeking
+  bindMarkerTimeline(contentRoot, videoEl);
+
+  // Bind thumbnail fallback (for any thumb images in up-next area later)
+  bindThumbFallback(contentRoot);
+
+  // ── Share ────────────────────────────────────────────────────────────────
+  document.querySelector("#share-btn").addEventListener("click", async () => {
+    if (clip.public_url) {
+      await copyText(clip.public_url);
+    } else {
+      // Publish first, then copy
+      try {
+        const updated = await api(
+          `/api/v1/clips/${encodeURIComponent(clip.id)}/visibility`,
+          { method: "POST", body: { visibility: "public" } }
+        );
+        const url = updated?.public_url || clip.public_url;
+        flash(url ? "Published and copied." : "Published.");
+        if (url) {
+          await copyText(url);
+        } else {
+          renderClipDetail(clip.id);
+        }
+      } catch (error) {
+        flash(error.message, "error");
+        renderClipDetail(clip.id);
+      }
+    }
+  });
+
+  // ── Visibility toggle ────────────────────────────────────────────────────
+  const visibilityPanel = document.querySelector("#visibility-panel");
+  document.querySelector("#visibility-btn").addEventListener("click", () => {
+    visibilityPanel.hidden = !visibilityPanel.hidden;
+  });
+
+  document.querySelector("#apply-visibility-btn")?.addEventListener("click", async () => {
+    const visibility = document.querySelector("[name='detail_visibility']").value;
+    try {
+      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}/visibility`, {
+        method: "POST",
+        body: { visibility },
+      });
+      flash(visibility === "private" ? "Public access removed." : "Visibility updated.");
+      renderClipDetail(clip.id);
+    } catch (error) {
+      flash(error.message, "error");
+      renderClipDetail(clip.id);
+    }
+  });
+
+  // Inline copy link button inside visibility panel
+  visibilityPanel?.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await copyText(btn.dataset.copy);
+    });
+  });
+
+  // ── Edit form toggle ──────────────────────────────────────────────────────
+  const editForm = document.querySelector("#clip-edit-form");
+  document.querySelector("#edit-btn").addEventListener("click", () => {
+    editForm.hidden = !editForm.hidden;
+  });
+
+  editForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     try {
@@ -134,27 +251,16 @@ function bindClipDetailEvents(clip) {
     }
   });
 
-  document.querySelector("#clip-visibility-button").addEventListener("click", async () => {
-    const visibility = document.querySelector("[name='detail_visibility']").value;
-    try {
-      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}/visibility`, {
-        method: "POST",
-        body: { visibility },
-      });
-      flash(visibility === "private" ? "Public access removed." : "Visibility updated.");
-      renderClipDetail(clip.id);
-    } catch (error) {
-      flash(error.message, "error");
-      renderClipDetail(clip.id);
-    }
-  });
-
-  document.querySelector("#clip-delete-button").addEventListener("click", async () => {
+  // ── Delete ────────────────────────────────────────────────────────────────
+  document.querySelector("#delete-btn").addEventListener("click", async () => {
     if (!window.confirm("Delete this clip?")) {
       return;
     }
     try {
-      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, { method: "DELETE", body: {} });
+      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, {
+        method: "DELETE",
+        body: {},
+      });
       flash("Clip deleted.");
       const { navigate } = await import("/js/router.js");
       navigate("/");
@@ -163,26 +269,4 @@ function bindClipDetailEvents(clip) {
       renderClipDetail(clip.id);
     }
   });
-}
-
-function markerTimeline(clip) {
-  if (!clip.duration_ms || !clip.markers.length) {
-    return "";
-  }
-  const ticks = clip.markers
-    .map((marker) => {
-      const left = Math.max(0, Math.min(100, (marker.timestamp_ms / clip.duration_ms) * 100));
-      return `<span class="tick" style="left:${left}%" title="${escapeAttr(marker.label || marker.kind)}"></span>`;
-    })
-    .join("");
-  return `<div class="timeline" aria-hidden="true">${ticks}</div>`;
-}
-
-function markerItem(marker) {
-  return `
-    <li>
-      <strong>${escapeHtml(marker.label || marker.kind)}</strong>
-      <span class="muted">${formatDuration(marker.timestamp_ms)} ${escapeHtml(marker.kind)}</span>
-    </li>
-  `;
 }
