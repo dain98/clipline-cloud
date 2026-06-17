@@ -403,6 +403,7 @@ run_caddy_profile() {
   local https_port="${CLIPLINE_CADDY_HTTPS_PORT:-8443}"
   local headers_file="$tmp_dir/caddy-headers.out"
   local readyz_file="$tmp_dir/caddy-readyz.out"
+  local probe_ok="0"
 
   file="$(compose_file_for_profile "$profile")"
   project="clipline-smoke-caddy-$SMOKE_ID"
@@ -417,7 +418,19 @@ run_caddy_profile() {
   wait_healthy "$project" "$file" clipline-cloud
   wait_healthy "$project" "$file" caddy
 
-  curl -k -fsS -D "$headers_file" "https://localhost:${https_port}/readyz" > "$readyz_file"
+  for _ in $(seq 1 30); do
+    if curl -k -fsS -D "$headers_file" "https://localhost:${https_port}/readyz" > "$readyz_file"; then
+      probe_ok="1"
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$probe_ok" != "1" ]; then
+    compose "$project" "$file" logs caddy >&2 || true
+    die "Caddy HTTPS /readyz probe failed for $project"
+  fi
+
   grep -qi "^strict-transport-security:" "$headers_file"
   grep -qi "^x-content-type-options: nosniff" "$headers_file"
 }
