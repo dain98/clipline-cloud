@@ -43,8 +43,8 @@ that shows where the project stands.
 | 07 | [Clips API, Sorting & Search](07-clips-api-and-library-queries.md) | Phase 1 | ☑ Complete |
 | 08 | [Media Serving & Public Sharing](08-media-serving-and-public-sharing.md) | Phase 1 | ☑ Complete |
 | 09 | [Web Frontend](09-web-frontend.md) | Phase 1 | ☑ Complete |
-| 10 | [Desktop App Integration](10-desktop-app-integration.md) | Phase 1 | ◐ In progress |
-| 11 | [Deployment, Operations & Hardening](11-deployment-operations-and-hardening.md) | Phase 1 | ◐ In progress |
+| 10 | [Desktop App Integration](10-desktop-app-integration.md) | Phase 1 | ☑ Complete |
+| 11 | [Deployment, Operations & Hardening](11-deployment-operations-and-hardening.md) | Phase 1 | ☑ Complete |
 | 12 | [Phase 2 — Processing & Reliability](12-phase2-processing-and-reliability.md) | Phase 2 | ☑ Complete |
 | 13 | [Phase 3 — Admin & Library Polish](13-phase3-admin-and-library-polish.md) | Phase 3 | ☐ Not started |
 | 14 | [Phase 4 — Optional Scale](14-phase4-optional-scale.md) | Phase 4 | ☐ Not started |
