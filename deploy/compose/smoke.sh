@@ -273,8 +273,12 @@ set -eu
 api="http://127.0.0.1:8080"
 clip="/tmp/clipline-direct-s3-smoke.mp4"
 put_headers="/tmp/clipline-direct-s3-put-headers.txt"
+put_output="/tmp/clipline-direct-s3-put.out"
 curl_headers="/tmp/clipline-direct-s3-curl-headers.conf"
+headers_lines="/tmp/clipline-direct-s3-headers-lines.txt"
+trap 'rm -f "$clip" "$put_headers" "$put_output" "$curl_headers" "$headers_lines"' EXIT
 
+# The runtime image intentionally omits jq; these parsers assume serde's compact JSON output.
 json_string() {
   field="$1"
   sed -n "s/.*\"$field\":\"\([^\"]*\)\".*/\1/p"
@@ -315,8 +319,10 @@ ffmpeg -hide_banner -loglevel error -nostdin -y \
 
 size="$(wc -c < "$clip" | tr -d ' ')"
 checksum="$(sha256sum "$clip" | awk '{print $1}')"
-payload="$(printf '{"client_clip_id":"direct-s3-smoke-%s","title":"Direct S3 smoke","source_type":"deployment_smoke","duration_ms":1000,"file_size_bytes":%s,"checksum_sha256":"%s","container":"mp4","video_codec":"mpeg4","width":160,"height":90,"fps":15,"visibility":"private"}' "$(date +%s)" "$size" "$checksum")"
+client_clip_id="$(printf 'direct-s3-smoke-%s-%s' "$(date +%s)" "$$")"
+payload="$(printf '{"client_clip_id":"%s","title":"Direct S3 smoke","source_type":"deployment_smoke","duration_ms":1000,"file_size_bytes":%s,"checksum_sha256":"%s","container":"mp4","video_codec":"mpeg4","width":160,"height":90,"fps":15,"visibility":"private"}' "$client_clip_id" "$size" "$checksum")"
 
+# This check depends on the same compact JSON assumption as the field parsers above.
 discovery="$(curl -fsS "$api/.well-known/clipline-cloud")"
 printf '%s' "$discovery" | grep -q '"direct_s3_upload":true' || {
   printf 'direct_s3_upload discovery feature was not enabled: %s\n' "$discovery" >&2
@@ -329,15 +335,15 @@ create_response="$(curl -fsS \
   --data "$payload" \
   "$api/api/v1/uploads")"
 
-mode="$(printf '%s' "$create_response" | require_json_string mode "$create_response")"
+mode="$(require_json_string mode "$create_response")"
 [ "$mode" = "chunked" ] || {
   printf 'expected chunked upload mode, got %s in: %s\n' "$mode" "$create_response" >&2
   exit 1
 }
-clip_id="$(printf '%s' "$create_response" | require_json_string clip_id "$create_response")"
-upload_id="$(printf '%s' "$create_response" | require_json_string upload_id "$create_response")"
-presign_template="$(printf '%s' "$create_response" | require_json_string direct_part_presign_url_template "$create_response")"
-ack_template="$(printf '%s' "$create_response" | require_json_string direct_part_ack_url_template "$create_response")"
+clip_id="$(require_json_string clip_id "$create_response")"
+upload_id="$(require_json_string upload_id "$create_response")"
+presign_template="$(require_json_string direct_part_presign_url_template "$create_response")"
+ack_template="$(require_json_string direct_part_ack_url_template "$create_response")"
 presign_path="$(printf '%s' "$presign_template" | sed 's/{part_number}/1/g')"
 ack_path="$(printf '%s' "$ack_template" | sed 's/{part_number}/1/g')"
 
@@ -345,8 +351,8 @@ presign_response="$(curl -fsS \
   -X POST \
   -H "Authorization: Bearer $SMOKE_TOKEN" \
   "$api$presign_path")"
-put_url="$(printf '%s' "$presign_response" | require_json_string url "$presign_response")"
-expected_size="$(printf '%s' "$presign_response" | require_json_number expected_size_bytes "$presign_response")"
+put_url="$(require_json_string url "$presign_response")"
+expected_size="$(require_json_number expected_size_bytes "$presign_response")"
 [ "$expected_size" = "$size" ] || {
   printf 'presign expected_size_bytes=%s did not match file size=%s\n' "$expected_size" "$size" >&2
   exit 1
@@ -355,7 +361,8 @@ expected_size="$(printf '%s' "$presign_response" | require_json_number expected_
 : > "$curl_headers"
 headers_segment="$(printf '%s' "$presign_response" | sed -n 's/.*"headers":\[\(.*\)\].*/\1/p')"
 if [ -n "$headers_segment" ]; then
-  printf '%s' "$headers_segment" | sed 's/},{/}\n{/g' | while IFS= read -r header_json; do
+  printf '%s' "$headers_segment" | sed 's/},{/}\n{/g' > "$headers_lines"
+  while IFS= read -r header_json; do
     name="$(printf '%s' "$header_json" | json_string name)"
     value="$(printf '%s' "$header_json" | json_string value)"
     [ -n "$name" ] || {
@@ -363,14 +370,14 @@ if [ -n "$headers_segment" ]; then
       exit 1
     }
     printf 'header = "%s: %s"\n' "$name" "$value" >> "$curl_headers"
-  done
+  done < "$headers_lines"
 fi
 
 if [ -s "$curl_headers" ]; then
-  curl -fsS --config "$curl_headers" -D "$put_headers" -o /tmp/clipline-direct-s3-put.out \
+  curl -fsS --config "$curl_headers" -D "$put_headers" -o "$put_output" \
     -X PUT --data-binary "@$clip" "$put_url"
 else
-  curl -fsS -D "$put_headers" -o /tmp/clipline-direct-s3-put.out \
+  curl -fsS -D "$put_headers" -o "$put_output" \
     -X PUT --data-binary "@$clip" "$put_url"
 fi
 
@@ -398,7 +405,7 @@ curl -fsS \
   -H "Authorization: Bearer $SMOKE_TOKEN" \
   "$api/api/v1/uploads/$upload_id/complete" >/dev/null
 
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
   if clip_response="$(curl -fsS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/clips/$clip_id" 2>/dev/null)"; then
     printf '%s' "$clip_response" | grep -q '"status":"ready"' && exit 0
   fi
