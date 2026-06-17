@@ -34,8 +34,10 @@ The app listens on port `8080` inside the container.
 | `docker-compose.caddy.yml` | SQLite | Local disk | Single-host HTTPS via Caddy |
 | `docker-compose.minio.yml` | SQLite | Bundled MinIO | Local S3 testing only — **not production** |
 
-Mix the database and storage choices by combining the relevant environment variables; the files above are
-the supported starting points.
+These files are the supported starting points, not a turnkey profile for every database/storage
+combination. The common combinations have a dedicated file; for one that doesn't (for example
+Postgres + S3), merge the relevant environment variables **and** secret mounts from the two matching
+profiles rather than assuming environment variables alone cover it.
 
 ## Simplest local/LAN test
 
@@ -57,9 +59,10 @@ One-time password: <generated-password>
 Save this password now. It will not be shown again.
 ```
 
-Log in, change the password, and create users. To set a fixed bootstrap password instead of the generated
-one, provide an `admin_password.txt` secret (see the profiles below) or set
-`CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD` before first boot, then rotate it after first login.
+Log in, change the password, and create users. To set a fixed bootstrap password for this default profile
+instead of the generated one, set `CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD` inline before first boot, then rotate
+it after first login. (The default `docker-compose.yml` does not read an `admin_password.txt` secret — that
+file is used by the Caddy, Postgres, and S3 profiles below.)
 
 ## Production behind a reverse proxy (Nginx Proxy Manager)
 
@@ -228,7 +231,7 @@ Keep the previous tag available so you can roll back by pointing `CLIPLINE_IMAGE
 - **Port 8080 already in use:** publish a different host port with `CLIPLINE_HTTP_PORT=18080`.
 - **MinIO test ports already in use:** set `MINIO_API_PORT=19000 MINIO_CONSOLE_PORT=19001`.
 - **Caddy Docker subnet overlaps an existing network:** set a non-conflicting subnet and matching static
-  IPs, e.g. `CLIPLINE_CADDY_SUBNET=172.31.250.0/24 CLIPLINE_CADDY_IP=172.31.250.2 CLIPLINE_APP_IP=172.31.250.10`.
+  IPs. Choose any unused private /24, e.g. `CLIPLINE_CADDY_SUBNET=10.251.250.0/24 CLIPLINE_CADDY_IP=10.251.250.2 CLIPLINE_APP_IP=10.251.250.10`.
 - **App won't come up / 502 from the proxy:** check readiness with `/readyz` and read the logs:
 
   ```sh

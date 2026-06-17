@@ -86,7 +86,7 @@ Useful variants:
 
 ```sh
 CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
-BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:latest deploy/compose/smoke.sh
+BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 deploy/compose/smoke.sh
 RUN_PROFILES="default minio" deploy/compose/smoke.sh
 RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
 ```

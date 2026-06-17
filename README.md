@@ -48,7 +48,7 @@ app at your server URL (`https://your-domain` in production).
 | Metadata DB | SQLite (default) or Postgres |
 | Media storage | Local disk (default) or S3-compatible object storage |
 
-Compose profiles for each combination live in [`deploy/compose/`](deploy/compose/). The
+Compose profiles for the common combinations live in [`deploy/compose/`](deploy/compose/). The
 [deployment guide](docs/cloud/deployment-guide.md) covers each one.
 
 ## Production note
