@@ -12,7 +12,7 @@
   gap: var(--space-2);
   padding: 0 var(--space-3);
   height: 56px;
-  background: var(--bg-surface);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: sticky;
@@ -44,7 +44,7 @@
 .wordmark {
   font-weight: 700;
   font-size: 1.1rem;
-  color: var(--text-primary);
+  color: var(--text);
   text-decoration: none;
   letter-spacing: -0.02em;
 }
@@ -53,7 +53,7 @@
 .search-pill {
   display: flex;
   align-items: center;
-  background: var(--bg-base);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 24px;
   overflow: hidden;
@@ -65,7 +65,7 @@
   border: none;
   background: transparent;
   padding: var(--space-2) var(--space-3);
-  color: var(--text-primary);
+  color: var(--text);
   font-size: 0.9rem;
   outline: none;
 }
@@ -91,7 +91,7 @@
   width: 240px;
   flex-shrink: 0;
   overflow-y: auto;
-  background: var(--bg-surface);
+  background: var(--surface);
   padding: var(--space-2) 0;
   transition: width 0.2s ease;
 }
@@ -111,9 +111,9 @@
   align-items: center;
   gap: var(--space-3);
   padding: 10px var(--space-4);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   text-decoration: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-btn);
   margin: 2px var(--space-2);
   font-size: 0.875rem;
   font-weight: 500;
@@ -127,13 +127,13 @@
 }
 
 .rail-link:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .rail-link.active {
-  background: var(--bg-active);
-  color: var(--text-primary);
+  background: var(--surface-3);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -169,7 +169,7 @@
   height: 32px;
   border-radius: 50%;
   background: var(--accent);
-  color: var(--on-accent, #fff);
+  color: var(--accent-contrast);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -182,9 +182,9 @@
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
-  background: var(--bg-surface);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-btn);
   box-shadow: 0 8px 24px rgba(0,0,0,0.3);
   min-width: 180px;
   z-index: 200;
@@ -209,15 +209,15 @@
   text-align: left;
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: 0.875rem;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 
 .menu-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 /* Icon buttons */
@@ -231,11 +231,11 @@
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   transition: background 0.15s, color 0.15s;
 }
 
 .icon-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--surface-2);
+  color: var(--text);
 }
