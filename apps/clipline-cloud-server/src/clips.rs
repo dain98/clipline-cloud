@@ -530,25 +530,13 @@ async fn load_bulk_clips(
     ids: &[String],
     ready_only: bool,
 ) -> Result<Vec<Clip>, ApiError> {
-    let mut clips = Vec::with_capacity(ids.len());
-    for id in ids {
-        let clip = if ready_only {
-            state
-                .repositories
-                .clips
-                .get_owned_ready(owner_user_id, id)
-                .await?
-        } else {
-            state
-                .repositories
-                .clips
-                .get_owned_non_deleted(owner_user_id, id)
-                .await?
-        };
-        let Some(clip) = clip else {
-            return Err(ApiError::not_found("one or more clips were not found"));
-        };
-        clips.push(clip);
+    let clips = state
+        .repositories
+        .clips
+        .list_owned_for_bulk(owner_user_id, ids, ready_only)
+        .await?;
+    if clips.len() != ids.len() {
+        return Err(ApiError::not_found("one or more clips were not found"));
     }
     Ok(clips)
 }
@@ -637,6 +625,21 @@ fn public_url(state: &AppState, share_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use axum::{
+        http::{header, HeaderValue, StatusCode},
+        response::IntoResponse,
+    };
+    use clipline_cloud_db::{new_ulid, Database, NewClip, NewDeviceToken, NewUser, Repositories};
+    use clipline_cloud_storage::{LocalStorage, SharedStorageBackend};
+    use sha2::{Digest, Sha256};
+    use tempfile::TempDir;
+
+    struct TestApp {
+        state: AppState,
+        _temp_dir: TempDir,
+    }
 
     #[test]
     fn generated_public_share_id_has_expected_shape() {
@@ -666,5 +669,212 @@ mod tests {
                 .collect()
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_rejects_foreign_clip_without_mutating_owned_clip() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+        let other = insert_user(&app.state, "other").await;
+        let owned_clip = insert_ready_clip(&app.state, &owner.id, "owned").await;
+        let foreign_clip = insert_ready_clip(&app.state, &other.id, "foreign").await;
+        let headers = auth_headers(&app.state, &owner.id).await;
+
+        let status = error_status(
+            bulk_delete_clips(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers,
+                Json(BulkClipIdsRequest {
+                    ids: vec![owned_clip.id.clone(), foreign_clip.id.clone()],
+                }),
+            )
+            .await,
+        );
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let owned_after = app
+            .state
+            .repositories
+            .clips
+            .get(&owned_clip.id)
+            .await
+            .expect("clip lookup")
+            .expect("owned clip");
+        assert_eq!(owned_after.status, "ready");
+        assert!(owned_after.deleted_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn bulk_visibility_rejects_foreign_clip_without_mutating_owned_clip() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+        let other = insert_user(&app.state, "other").await;
+        let owned_clip = insert_ready_clip(&app.state, &owner.id, "owned").await;
+        let foreign_clip = insert_ready_clip(&app.state, &other.id, "foreign").await;
+        let headers = auth_headers(&app.state, &owner.id).await;
+
+        let status = error_status(
+            bulk_update_visibility(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers,
+                Json(BulkVisibilityRequest {
+                    ids: vec![owned_clip.id.clone(), foreign_clip.id.clone()],
+                    visibility: "public".to_string(),
+                }),
+            )
+            .await,
+        );
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let owned_after = app
+            .state
+            .repositories
+            .clips
+            .get(&owned_clip.id)
+            .await
+            .expect("clip lookup")
+            .expect("owned clip");
+        assert_eq!(owned_after.visibility, "private");
+        assert!(owned_after.public_share_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_rejects_empty_selection() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+        let headers = auth_headers(&app.state, &owner.id).await;
+
+        let status = error_status(
+            bulk_delete_clips(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers,
+                Json(BulkClipIdsRequest { ids: Vec::new() }),
+            )
+            .await,
+        );
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_clips_rejects_invalid_sort_key() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+        let headers = auth_headers(&app.state, &owner.id).await;
+
+        let status = error_status(
+            list_clips(
+                State(app.state.clone()),
+                headers,
+                Query(ListClipsQuery {
+                    sort: Some("definitely-not-a-sort".to_string()),
+                    game: None,
+                    source_type: None,
+                    visibility: None,
+                    status: None,
+                    from: None,
+                    to: None,
+                    min_duration_ms: None,
+                    max_duration_ms: None,
+                    min_size_bytes: None,
+                    max_size_bytes: None,
+                    q: None,
+                    page: None,
+                    page_size: None,
+                }),
+            )
+            .await,
+        );
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    async fn test_app() -> TestApp {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", temp_dir.path().join("clipline.db").display());
+        let config = Arc::new(crate::config::Config::for_tests(
+            database_url.clone(),
+            temp_dir.path().join("data"),
+        ));
+        let database = Database::connect_and_migrate(&database_url)
+            .await
+            .expect("database");
+        let repositories = Repositories::new(database.clone());
+        let storage: SharedStorageBackend =
+            Arc::new(LocalStorage::new(temp_dir.path().join("data")));
+        let auth = auth::AuthRuntime::new(config.session_secret.as_deref());
+        let state = AppState {
+            config,
+            database,
+            repositories,
+            storage,
+            auth,
+        };
+        TestApp {
+            state,
+            _temp_dir: temp_dir,
+        }
+    }
+
+    async fn insert_user(state: &AppState, username: &str) -> clipline_cloud_db::User {
+        state
+            .repositories
+            .users
+            .create(&NewUser::new(
+                format!("{username}-{}", new_ulid()),
+                "argon2id-hash",
+                "user",
+            ))
+            .await
+            .expect("user")
+    }
+
+    async fn insert_ready_clip(state: &AppState, owner_user_id: &str, title: &str) -> Clip {
+        let mut new_clip = NewClip::new(owner_user_id, title, "local");
+        new_clip.status = "ready".to_string();
+        state
+            .repositories
+            .clips
+            .create(&new_clip)
+            .await
+            .expect("clip")
+    }
+
+    async fn auth_headers(state: &AppState, user_id: &str) -> HeaderMap {
+        let raw_token = format!("test-token-{}", new_ulid());
+        let token_hash = hash_token_for_test(&raw_token);
+        state
+            .repositories
+            .device_tokens
+            .create(&NewDeviceToken::new(user_id, "test token", token_hash))
+            .await
+            .expect("device token");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {raw_token}")).expect("authorization header"),
+        );
+        headers
+    }
+
+    fn hash_token_for_test(token: &str) -> String {
+        let digest = Sha256::digest(token.as_bytes());
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    fn error_status<T>(result: Result<T, ApiError>) -> StatusCode {
+        match result {
+            Ok(_) => panic!("expected handler error"),
+            Err(error) => error.into_response().status(),
+        }
     }
 }

@@ -141,6 +141,21 @@ impl Config {
         Self::from_source(&source)
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_tests(database_url: impl Into<String>, data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
+        let source = BTreeMap::from([
+            ("CLIPLINE_PUBLIC_URL", "http://localhost:8080".to_string()),
+            ("CLIPLINE_DATABASE_URL", database_url.into()),
+            ("CLIPLINE_DATA_DIR", data_dir.display().to_string()),
+            (
+                "CLIPLINE_SESSION_SECRET",
+                "clipline-test-session-secret".to_string(),
+            ),
+        ]);
+        Self::from_source(&source).expect("test config should be valid")
+    }
+
     pub fn startup_warnings(&self) -> &[StartupWarning] {
         &self.startup_warnings
     }

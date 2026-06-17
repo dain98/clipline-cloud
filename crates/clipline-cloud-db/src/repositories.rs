@@ -539,13 +539,12 @@ impl SessionRepository {
         Ok(())
     }
 
-    pub async fn revoke_for_user_by_id(&self, user_id: &str, id: &str) -> DbResult<()> {
-        db_execute!(
+    pub async fn revoke_for_user_by_id(&self, user_id: &str, id: &str) -> DbResult<u64> {
+        Ok(db_execute_rows!(
             &self.database,
             "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND id = ? AND revoked_at IS NULL",
             [now_utc(), user_id, id]
-        )?;
-        Ok(())
+        )?)
     }
 
     pub async fn delete(&self, id: &str) -> DbResult<()> {
@@ -635,13 +634,12 @@ impl DeviceTokenRepository {
         Ok(())
     }
 
-    pub async fn revoke_for_user(&self, user_id: &str, id: &str) -> DbResult<()> {
-        db_execute!(
+    pub async fn revoke_for_user(&self, user_id: &str, id: &str) -> DbResult<u64> {
+        Ok(db_execute_rows!(
             &self.database,
-            "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND id = ?",
+            "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND id = ? AND revoked_at IS NULL",
             [now_utc(), user_id, id]
-        )?;
-        Ok(())
+        )?)
     }
 
     pub async fn revoke_all_for_user(&self, user_id: &str) -> DbResult<()> {
@@ -753,6 +751,30 @@ impl ClipRepository {
                 + " WHERE owner_user_id = ? AND id = ? AND deleted_at IS NULL",
             [owner_user_id, id]
         )?)
+    }
+
+    pub async fn list_owned_for_bulk(
+        &self,
+        owner_user_id: &str,
+        ids: &[String],
+        ready_only: bool,
+    ) -> DbResult<Vec<Clip>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        match &self.database {
+            Database::Sqlite(pool) => {
+                let mut builder = QueryBuilder::<Sqlite>::new(CLIP_SELECT_SQL);
+                push_bulk_clip_filters_sqlite(&mut builder, owner_user_id, ids, ready_only);
+                Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
+            }
+            Database::Postgres(pool) => {
+                let mut builder = QueryBuilder::<Postgres>::new(CLIP_SELECT_SQL);
+                push_bulk_clip_filters_postgres(&mut builder, owner_user_id, ids, ready_only);
+                Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
+            }
+        }
     }
 
     pub async fn get_by_owner_client_clip_id(
@@ -1080,6 +1102,44 @@ fn push_clip_list_filters_postgres(
     builder.push(" AND deleted_at IS NULL");
     push_clip_status_filter_postgres(builder, params);
     push_clip_optional_filters_postgres(builder, params);
+}
+
+fn push_bulk_clip_filters_sqlite(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    owner_user_id: &str,
+    ids: &[String],
+    ready_only: bool,
+) {
+    builder.push(" WHERE owner_user_id = ");
+    builder.push_bind(owner_user_id.to_string());
+    builder.push(" AND deleted_at IS NULL AND id IN (");
+    let mut separated = builder.separated(", ");
+    for id in ids {
+        separated.push_bind(id.clone());
+    }
+    separated.push_unseparated(")");
+    if ready_only {
+        builder.push(" AND status = 'ready'");
+    }
+}
+
+fn push_bulk_clip_filters_postgres(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    owner_user_id: &str,
+    ids: &[String],
+    ready_only: bool,
+) {
+    builder.push(" WHERE owner_user_id = ");
+    builder.push_bind(owner_user_id.to_string());
+    builder.push(" AND deleted_at IS NULL AND id IN (");
+    let mut separated = builder.separated(", ");
+    for id in ids {
+        separated.push_bind(id.clone());
+    }
+    separated.push_unseparated(")");
+    if ready_only {
+        builder.push(" AND status = 'ready'");
+    }
 }
 
 fn push_clip_status_filter_sqlite(builder: &mut QueryBuilder<'_, Sqlite>, params: &ClipListParams) {
