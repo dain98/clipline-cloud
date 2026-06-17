@@ -1,0 +1,177 @@
+/* Reset */
+* {
+  box-sizing: border-box;
+}
+
+/* Base */
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  line-height: 1.5;
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Links */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+/* Focus */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Form element font inheritance */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+/* Button base */
+.btn,
+button,
+.btn-primary,
+.btn-secondary,
+.btn-danger,
+.btn-ghost,
+.tab {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-btn);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 0.45rem;
+  justify-content: center;
+  min-height: 2.35rem;
+  padding: 0.48rem 0.72rem;
+  text-decoration: none;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+  white-space: nowrap;
+}
+
+button:disabled,
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button:not(:disabled):active,
+.btn:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+/* Button variants */
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+}
+
+.btn-secondary {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  background: var(--surface-3);
+  text-decoration: none;
+}
+
+.btn-danger {
+  background: var(--danger-soft);
+  border-color: rgba(229, 72, 77, 0.3);
+  color: var(--danger);
+}
+
+.btn-danger:hover {
+  background: rgba(229, 72, 77, 0.22);
+  text-decoration: none;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: inherit;
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+  text-decoration: none;
+}
+
+.icon-btn {
+  min-width: 2.35rem;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+/* Form controls */
+.field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.field > span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.field input,
+.field select,
+.field textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text);
+  min-height: 2.35rem;
+  padding: 0.48rem 0.65rem;
+  width: 100%;
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.field textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+/* Helpers */
+.muted {
+  color: var(--text-muted);
+}
+
+.mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.84em;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
