@@ -65,6 +65,10 @@ The worker shares the same database, storage, secrets, and image, but does not b
 Run only one web container with `CLIPLINE_PROCESS_ROLE=web`; additional worker containers are safe
 because job claiming is atomic, but one worker is enough for typical self-hosted deployments.
 
+For true split-worker deployments, prefer the Postgres profile. SQLite split mode is acceptable only
+when both containers run on the same host against a local Docker volume; do not put the SQLite data
+file on NFS/SMB or another network filesystem, and expect writes to serialize under load.
+
 ## Simplest local/LAN test
 
 ```sh

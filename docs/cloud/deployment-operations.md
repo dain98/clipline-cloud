@@ -79,8 +79,8 @@ The server supports three process roles:
 | `web` | yes | no | HTTP/API container when a separate worker is enabled. |
 | `worker` | no | yes | Dedicated durable-job runner container. |
 
-All Compose profiles default the `clipline-cloud` service to `all`. To split processing, set the
-web service role through the Compose helper variable and enable the `worker` profile:
+All Compose profiles default the `clipline-cloud` service to `all`. When enabling the `worker`
+profile, also set the web service role to `web` so there is exactly one job runner container:
 
 ```sh
 CLIPLINE_WEB_PROCESS_ROLE=web docker compose --profile worker up -d
@@ -95,8 +95,13 @@ docker compose -f docker-compose.postgres.yml --profile worker up -d
 
 The worker starts after `clipline-cloud` is healthy, then runs cleanup, validation, thumbnail,
 poster, and probe jobs from the shared `jobs` table. Atomic job claiming and stale-lock recovery
-allow multiple workers, but start with one. If `CLIPLINE_WEB_PROCESS_ROLE` is left unset while the
-worker profile is enabled, both containers may run job loops; this is safe but redundant.
+allow multiple workers, but start with one. Do not leave `CLIPLINE_WEB_PROCESS_ROLE` unset when
+using `--profile worker`; the default `all` web container would also run a job loop, which is
+unnecessary and can race while seeding recurring cleanup sweep jobs.
+
+Prefer Postgres for production worker-split deployments. SQLite split mode works only when both
+containers share the same host-local Docker volume; SQLite serializes writers and should not be run
+from NFS/SMB or another network-backed volume.
 
 ## Smoke Verification
 
