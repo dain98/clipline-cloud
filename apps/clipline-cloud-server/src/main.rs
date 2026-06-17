@@ -24,7 +24,8 @@ use clipline_cloud_core::jobs::{
 };
 use clipline_cloud_db::{Database, Repositories};
 use clipline_cloud_storage::{LocalStorage, S3Storage, S3StorageConfig, SharedStorageBackend};
-use config::{Config, StorageConfig};
+use config::{Config, ProcessRole, StorageConfig};
+use tokio::task::JoinHandle;
 use tokio::{net::TcpListener, sync::watch};
 use tower_http::{catch_panic::CatchPanicLayer, services::ServeDir};
 use tracing::{info, warn};
@@ -65,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run(config: Config) -> anyhow::Result<()> {
     let bind_addr = config.bind_addr;
+    let process_role = config.process_role;
     let config = Arc::new(config);
     let database = Database::connect_and_migrate(&config.database_url)
         .await
@@ -75,9 +77,16 @@ async fn run(config: Config) -> anyhow::Result<()> {
         backend = ?database.kind(),
     );
     let repositories = Repositories::new(database.clone());
-    auth::ensure_first_admin(&config, &repositories)
-        .await
-        .context("failed to ensure first admin user")?;
+    if process_role.runs_http() {
+        auth::ensure_first_admin(&config, &repositories)
+            .await
+            .context("failed to ensure first admin user")?;
+    } else {
+        info!(
+            event = "auth.bootstrap_admin.skipped",
+            process_role = process_role.as_str()
+        );
+    }
 
     let storage = build_storage(&config)
         .await
@@ -87,14 +96,38 @@ async fn run(config: Config) -> anyhow::Result<()> {
         backend = config.storage_backend_name(),
     );
 
+    match process_role {
+        ProcessRole::All => {
+            let (job_shutdown_tx, job_runner_handle) =
+                start_job_runner(&config, repositories.clone(), storage.clone(), "server").await?;
+            let server_result =
+                run_http_server(config, database, repositories, storage, bind_addr).await;
+            stop_job_runner(job_shutdown_tx, job_runner_handle).await;
+            server_result?;
+        }
+        ProcessRole::Web => {
+            run_http_server(config, database, repositories, storage, bind_addr).await?;
+        }
+        ProcessRole::Worker => {
+            let (job_shutdown_tx, job_runner_handle) =
+                start_job_runner(&config, repositories, storage, "worker").await?;
+            shutdown_signal().await;
+            stop_job_runner(job_shutdown_tx, job_runner_handle).await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_http_server(
+    config: Arc<Config>,
+    database: Database,
+    repositories: Repositories,
+    storage: SharedStorageBackend,
+    bind_addr: SocketAddr,
+) -> anyhow::Result<()> {
     let auth_runtime = auth::AuthRuntime::new(config.session_secret.as_deref());
-    let app = router(
-        config.clone(),
-        database,
-        repositories.clone(),
-        storage.clone(),
-        auth_runtime,
-    );
+    let app = router(config, database, repositories, storage, auth_runtime);
     let listener = TcpListener::bind(bind_addr)
         .await
         .with_context(|| format!("failed to bind {bind_addr}"))?;
@@ -104,45 +137,57 @@ async fn run(config: Config) -> anyhow::Result<()> {
 
     info!(event = "server.listening", bind_addr = %local_addr);
 
-    let (job_shutdown_tx, job_shutdown_rx) = watch::channel(false);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server failed")
+}
+
+async fn start_job_runner(
+    config: &Config,
+    repositories: Repositories,
+    storage: SharedStorageBackend,
+    runner_prefix: &str,
+) -> anyhow::Result<(watch::Sender<bool>, JoinHandle<()>)> {
     ensure_cleanup_session_sweep(&repositories)
         .await
         .context("failed to schedule cleanup session sweep")?;
     ensure_cleanup_clip_sweep(&repositories)
         .await
         .context("failed to schedule cleanup clip sweep")?;
+
+    let (job_shutdown_tx, job_shutdown_rx) = watch::channel(false);
     let job_runner = JobRunner::new(
         repositories,
         storage,
         JobRunnerConfig {
-            runner_id: format!("server-{}", clipline_cloud_db::new_ulid()),
+            runner_id: format!("{runner_prefix}-{}", clipline_cloud_db::new_ulid()),
             poll_interval: config.job_poll_interval,
             lock_timeout: config.job_lock_timeout,
             retry_base_delay: config.job_retry_base_delay,
             retry_max_delay: config.job_retry_max_delay,
         },
     );
-    let job_runner_handle = tokio::spawn(job_runner.run_until_shutdown(job_shutdown_rx));
+    Ok((
+        job_shutdown_tx,
+        tokio::spawn(job_runner.run_until_shutdown(job_shutdown_rx)),
+    ))
+}
 
-    let server_result = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await;
+async fn stop_job_runner(job_shutdown_tx: watch::Sender<bool>, job_runner_handle: JoinHandle<()>) {
     let _ = job_shutdown_tx.send(true);
     if let Err(error) = job_runner_handle.await {
         warn!(event = "jobs.runner_join_failed", error = %error);
     }
-
-    server_result.context("server failed")?;
-
-    Ok(())
 }
 
 fn log_config_summary(config: &Config) {
     info!(
         event = "config.loaded",
+        process_role = config.process_role.as_str(),
         public_url = %config.public_url,
         database_url = %config.database_url,
         storage_backend = config.storage_backend_name(),
@@ -431,9 +476,34 @@ fn round_up_to_mib_saturating(value: u64) -> u64 {
 }
 
 async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        warn!(event = "server.shutdown_signal_error", error = %error);
-        return;
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(event = "server.shutdown_signal_error", signal = "ctrl_c", error = %error);
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut signal) => {
+                    signal.recv().await;
+                }
+                Err(error) => {
+                    warn!(event = "server.shutdown_signal_error", signal = "sigterm", error = %error);
+                }
+            }
+        };
+
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = terminate => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
     }
 
     info!(event = "server.shutdown");

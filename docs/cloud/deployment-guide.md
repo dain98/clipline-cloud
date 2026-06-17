@@ -39,6 +39,36 @@ combination. The common combinations have a dedicated file; for one that doesn't
 Postgres + S3), merge the relevant environment variables **and** secret mounts from the two matching
 profiles rather than assuming environment variables alone cover it.
 
+## Optional worker container
+
+By default, each profile runs one `clipline-cloud` container with both the HTTP server and durable
+job runner enabled (`CLIPLINE_PROCESS_ROLE=all`). This is the recommended simple setup.
+
+To split processing into a second container, set the web container role to `web` and enable the
+Compose `worker` profile:
+
+```sh
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 \
+CLIPLINE_WEB_PROCESS_ROLE=web \
+docker compose --profile worker up -d
+```
+
+Use the same pattern with any profile file, for example:
+
+```sh
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 \
+CLIPLINE_WEB_PROCESS_ROLE=web \
+docker compose -f docker-compose.postgres.yml --profile worker up -d
+```
+
+The worker shares the same database, storage, secrets, and image, but does not bind port `8080`.
+Run only one web container with `CLIPLINE_PROCESS_ROLE=web`; additional worker containers are safe
+because job claiming is atomic, but one worker is enough for typical self-hosted deployments.
+
+For true split-worker deployments, prefer the Postgres profile. SQLite split mode is acceptable only
+when both containers run on the same host against a local Docker volume; do not put the SQLite data
+file on NFS/SMB or another network filesystem, and expect writes to serialize under load.
+
 ## Simplest local/LAN test
 
 ```sh

@@ -1,7 +1,7 @@
 # 14 — Phase 4: Optional Scale
 
 **Phase:** Phase 4 (post-v1, build only if demand appears)
-**Status:** ☐ Not started
+**Status:** ◐ In progress
 **Depends on:** Phase 1 complete (docs 01–11); doc 06 (job claiming was designed for the worker split); doc 05 (upload protocol)
 **Design sections:** §30 Phase 4, §12 (direct-to-S3 future), §7 (worker-split safety)
 
@@ -39,7 +39,7 @@ Notes from earlier design decisions that make these cheaper:
 ## Implementation checklist (activate items only when demanded)
 
 - [ ] Direct-to-S3 multipart via presigned part URLs (backend orchestrates; client PUTs to S3) — or TUS
-- [ ] Dedicated worker container as an additional job runner (no schema change; relies on doc-06 claiming)
+- [x] Dedicated worker container as an additional job runner (no schema change; relies on doc-06 claiming)
 - [ ] Server-side transcoding to multiple qualities (new job kinds on the runner)
 - [ ] CDN in front of public clips (extends doc-08 public-media path)
 - [ ] Invite links (self-service onboarding without full self-registration)
@@ -49,9 +49,12 @@ Notes from earlier design decisions that make these cheaper:
 ## Definition of done
 
 - [ ] Per shipped item: it works end to end, is documented, and degrades gracefully when disabled
-- [ ] The dedicated worker (if shipped) coexists with the in-process runner without double-processing jobs
-- [ ] No Phase-4 feature is enabled by default that would compromise the v1 self-hosted simplicity guarantee
+- [x] The dedicated worker (if shipped) coexists with the in-process runner without double-processing jobs
+- [x] No Phase-4 feature is enabled by default that would compromise the v1 self-hosted simplicity guarantee
 
 ## Progress log
 
-- _(empty)_
+- 2026-06-17: Added `CLIPLINE_PROCESS_ROLE=all|web|worker` plus optional Compose
+  `clipline-worker` services. The default remains the single combined process; split deployments
+  set the web container to `web` and enable the worker profile so job processing runs in a separate
+  container against the same database/storage state.

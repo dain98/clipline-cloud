@@ -54,6 +54,7 @@ goes here so it is type-checked on both ends.
 ```
 CLIPLINE_PUBLIC_URL                 # required for share links; warns if not HTTPS
 CLIPLINE_BIND_ADDR
+CLIPLINE_PROCESS_ROLE               # all (default) | web | worker
 CLIPLINE_DATABASE_URL[_FILE]        # sqlite:///data/clipline.db (default) | postgres://...
 
 CLIPLINE_BOOTSTRAP_ADMIN_USERNAME
@@ -89,6 +90,8 @@ CLIPLINE_LOG_LEVEL
 **Validation rules (fail loudly at startup):**
 
 - `CLIPLINE_PUBLIC_URL` is required (needed for share links).
+- `CLIPLINE_PROCESS_ROLE` must be `all`, `web`, or `worker`; `all` preserves the default combined
+  HTTP + job-runner process.
 - `local` backend requires `CLIPLINE_DATA_DIR`.
 - `s3` backend requires `CLIPLINE_S3_ENDPOINT`, `CLIPLINE_S3_BUCKET`, access key, secret key.
 - `CLIPLINE_PUBLIC_MEDIA_MODE` must be `presigned` or `proxy`; public read URL TTL must be positive.
