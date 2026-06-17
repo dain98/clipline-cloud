@@ -1,51 +1,65 @@
 import { api } from "/js/api.js";
-import { escapeHtml, escapeAttr, formatDate, formatDuration, dataRow } from "/js/util.js";
+import { escapeHtml, escapeAttr, formatDate, formatDuration, icon } from "/js/util.js";
+import { markerTimelineHtml, bindMarkerTimeline } from "/js/components/marker_timeline.js";
 
 const app = document.querySelector("#app");
 
 export async function renderPublicShare(shareId) {
   app.innerHTML = `
-    <main class="public-shell">
-      <section class="public-panel">
-        <div class="empty-state">Loading public clip...</div>
-      </section>
-    </main>
+    <div class="public-shell">
+      <header class="public-topbar">
+        <div class="brand-mark" aria-hidden="true">CL</div>
+        <span class="wordmark">Clipline</span>
+      </header>
+      <main class="public-main">
+        <div class="empty-state">Loading clip…</div>
+      </main>
+    </div>
   `;
   try {
     const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
     const mediaUrl = safeMediaUrl(clip.media_url);
-    const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
+    const posterAttr = clip.has_thumbnail ? ` poster="${escapeAttr(safeMediaUrl(clip.thumbnail_url))}"` : "";
+    const gameLabel = escapeHtml(clip.game_name || clip.game_id || "");
     app.innerHTML = `
-      <main class="public-shell">
-        <section class="public-panel" aria-labelledby="public-title">
-          <div>
-            <div class="brand-mark" aria-hidden="true">CL</div>
-            <h1 id="public-title">${escapeHtml(clip.title)}</h1>
-            <p>${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
+      <div class="public-shell">
+        <header class="public-topbar">
+          <div class="brand-mark" aria-hidden="true">CL</div>
+          <span class="wordmark">Clipline</span>
+        </header>
+        <main class="public-main" id="public-root">
+          <div class="player-frame">
+            <video id="public-video" controls preload="metadata"${posterAttr}${mediaUrl ? ` src="${escapeAttr(mediaUrl)}"` : ""}></video>
           </div>
-          <div class="video-frame">
-            <video controls preload="metadata" ${thumbnailUrl ? `poster="${escapeAttr(thumbnailUrl)}"` : ""} ${mediaUrl ? `src="${escapeAttr(mediaUrl)}"` : ""}></video>
-          </div>
-          <div class="panel">
-            <dl class="data-list">
-              ${dataRow("Recorded", formatDate(clip.recorded_at))}
-              ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
-              ${dataRow("Duration", formatDuration(clip.duration_ms))}
-            </dl>
-          </div>
-          <div class="public-copy">${escapeHtml(clip.copy_notice)}</div>
-        </section>
-      </main>
+          <h1>${escapeHtml(clip.title)}</h1>
+          ${gameLabel ? `<p class="text-muted">${gameLabel}</p>` : ""}
+          <p class="text-faint">
+            Recorded&nbsp;${escapeHtml(formatDate(clip.recorded_at))} &middot;
+            Uploaded&nbsp;${escapeHtml(formatDate(clip.uploaded_at))} &middot;
+            ${escapeHtml(formatDuration(clip.duration_ms))}
+          </p>
+          ${markerTimelineHtml({ markers: clip.markers, durationMs: clip.duration_ms })}
+          ${clip.copy_notice ? `<p class="text-faint copy-notice">${escapeHtml(clip.copy_notice)}</p>` : ""}
+        </main>
+      </div>
     `;
+    const publicRoot = document.querySelector("#public-root");
+    const videoEl = document.querySelector("#public-video");
+    bindMarkerTimeline(publicRoot, videoEl);
   } catch (_) {
     app.innerHTML = `
-      <main class="public-shell">
-        <section class="public-panel">
+      <div class="public-shell">
+        <header class="public-topbar">
           <div class="brand-mark" aria-hidden="true">CL</div>
-          <h1>Clip unavailable</h1>
-          <p>This public link is no longer active.</p>
-        </section>
-      </main>
+          <span class="wordmark">Clipline</span>
+        </header>
+        <main class="public-main">
+          <div class="empty-state">
+            ${icon("film")}
+            <p>This link is no longer active.</p>
+          </div>
+        </main>
+      </div>
     `;
   }
 }
