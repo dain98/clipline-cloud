@@ -220,6 +220,22 @@
   color: var(--text);
 }
 
+/* Auth / login layout */
+.auth-shell {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 1.25rem;
+}
+
+.auth-card {
+  width: min(100%, 26rem);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 1.5rem;
+}
+
 /* Icon buttons */
 .icon-btn {
   display: flex;
