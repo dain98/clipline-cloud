@@ -18,8 +18,6 @@ import {
 export async function renderAdmin(tab) {
   renderShell({
     active: "admin",
-    title: "Admin",
-    subtitle: "Accounts, instance summary, and processing diagnostics.",
     body: `<div class="empty-state">Loading admin data...</div>`,
   });
 
@@ -33,16 +31,14 @@ export async function renderAdmin(tab) {
     ]);
     renderShell({
       active: "admin",
-      title: "Admin",
-      subtitle: "Accounts, instance summary, and processing diagnostics.",
       body: adminView(tab, { overview, users, failedUploads, deadJobs, recentErrors }),
+      onMount() {
+        bindAdminEvents();
+      },
     });
-    bindAdminEvents();
   } catch (error) {
     renderShell({
       active: "admin",
-      title: "Admin",
-      subtitle: "Accounts, instance summary, and processing diagnostics.",
       body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
     });
   }

@@ -12,4 +12,7 @@ export const state = {
     to: "",
   },
   adminResetToken: null,
+  ui: {
+    railOpen: true,
+  },
 };

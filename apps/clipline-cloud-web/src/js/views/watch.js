@@ -19,8 +19,6 @@ import {
 export async function renderClipDetail(id) {
   renderShell({
     active: "library",
-    title: "Clip detail",
-    subtitle: "Playback, metadata, markers, and visibility.",
     body: `<div class="empty-state">Loading clip...</div>`,
   });
 
@@ -28,16 +26,14 @@ export async function renderClipDetail(id) {
     const clip = await api(`/api/v1/clips/${encodeURIComponent(id)}`);
     renderShell({
       active: "library",
-      title: clip.title,
-      subtitle: clip.game_name || clip.game_id || "No game metadata",
       body: clipDetailView(clip),
+      onMount() {
+        bindClipDetailEvents(clip);
+      },
     });
-    bindClipDetailEvents(clip);
   } catch (error) {
     renderShell({
       active: "library",
-      title: "Clip detail",
-      subtitle: "Playback, metadata, markers, and visibility.",
       body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
     });
   }

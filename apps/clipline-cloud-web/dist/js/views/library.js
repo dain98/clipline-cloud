@@ -17,8 +17,6 @@ import {
 export async function renderLibrary() {
   renderShell({
     active: "library",
-    title: "Library",
-    subtitle: "Your ready clips, filters, and sharing controls.",
     body: `<div class="empty-state">Loading clips...</div>`,
   });
 
@@ -26,16 +24,14 @@ export async function renderLibrary() {
     const data = await api(`/api/v1/clips?${libraryParams().toString()}`);
     renderShell({
       active: "library",
-      title: "Library",
-      subtitle: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"} in this view.`,
       body: libraryView(data.clips),
+      onMount() {
+        bindLibraryEvents();
+      },
     });
-    bindLibraryEvents();
   } catch (error) {
     renderShell({
       active: "library",
-      title: "Library",
-      subtitle: "Your ready clips, filters, and sharing controls.",
       body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
     });
   }
