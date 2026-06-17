@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
-use sqlx::{Postgres, QueryBuilder, Sqlite};
+use serde_json::json;
+use sqlx::{types::Json, Postgres, QueryBuilder, Sqlite};
 
 use crate::{
     db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AuditLogEntry, Clip,
@@ -16,21 +17,39 @@ pub enum ClipSort {
     UploadedAtAsc,
     DurationDesc,
     DurationAsc,
+    FileSizeDesc,
+    FileSizeAsc,
     TitleAsc,
+    TitleDesc,
+    CreatedAtDesc,
+    CreatedAtAsc,
+    UpdatedAtDesc,
+    UpdatedAtAsc,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClipListParams {
     pub owner_user_id: String,
     pub game: Option<String>,
+    pub source_type: Option<String>,
     pub visibility: Option<String>,
     pub status: Option<String>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
+    pub min_duration_ms: Option<i64>,
+    pub max_duration_ms: Option<i64>,
+    pub min_size_bytes: Option<i64>,
+    pub max_size_bytes: Option<i64>,
     pub query: Option<String>,
     pub sort: ClipSort,
     pub limit: i64,
     pub offset: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BulkVisibilityUpdate {
+    pub clip_id: String,
+    pub public_share_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -62,6 +81,218 @@ impl Repositories {
             reset_password_tokens: ResetPasswordTokenRepository::new(database),
         }
     }
+
+    pub async fn bulk_soft_delete_clips_with_audit(
+        &self,
+        owner_user_id: &str,
+        clip_ids: &[String],
+        actor_user_id: Option<&str>,
+        ip_address: Option<&str>,
+    ) -> DbResult<usize> {
+        match &self.clips.database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                for clip_id in clip_ids {
+                    let now = now_utc();
+                    let rows = sqlx::query(
+                        "UPDATE clips
+                         SET status = 'deleted', deleted_at = ?, updated_at = ?
+                         WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL",
+                    )
+                    .bind(now)
+                    .bind(now)
+                    .bind(clip_id)
+                    .bind(owner_user_id)
+                    .execute(&mut *transaction)
+                    .await?
+                    .rows_affected();
+                    if rows != 1 {
+                        return Err(sqlx::Error::RowNotFound.into());
+                    }
+
+                    let entry = bulk_audit_entry(
+                        actor_user_id,
+                        ip_address,
+                        "clip.deleted",
+                        clip_id,
+                        Json(json!({ "bulk": true })),
+                    );
+                    insert_audit_sqlite(&mut transaction, &entry).await?;
+                }
+                transaction.commit().await?;
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                let update_sql = crate::postgres_placeholders(
+                    "UPDATE clips
+                     SET status = 'deleted', deleted_at = ?, updated_at = ?
+                     WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL",
+                );
+                for clip_id in clip_ids {
+                    let now = now_utc();
+                    let rows = sqlx::query(&update_sql)
+                        .bind(now)
+                        .bind(now)
+                        .bind(clip_id)
+                        .bind(owner_user_id)
+                        .execute(&mut *transaction)
+                        .await?
+                        .rows_affected();
+                    if rows != 1 {
+                        return Err(sqlx::Error::RowNotFound.into());
+                    }
+
+                    let entry = bulk_audit_entry(
+                        actor_user_id,
+                        ip_address,
+                        "clip.deleted",
+                        clip_id,
+                        Json(json!({ "bulk": true })),
+                    );
+                    insert_audit_postgres(&mut transaction, &entry).await?;
+                }
+                transaction.commit().await?;
+            }
+        }
+
+        Ok(clip_ids.len())
+    }
+
+    pub async fn bulk_set_visibility_with_audit(
+        &self,
+        owner_user_id: &str,
+        updates: &[BulkVisibilityUpdate],
+        visibility: &str,
+        actor_user_id: Option<&str>,
+        ip_address: Option<&str>,
+    ) -> DbResult<usize> {
+        match &self.clips.database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                for update in updates {
+                    let rows = sqlx::query(
+                        "UPDATE clips
+                         SET visibility = ?, public_share_id = ?, updated_at = ?
+                         WHERE id = ? AND owner_user_id = ? AND status = 'ready' AND deleted_at IS NULL",
+                    )
+                    .bind(visibility)
+                    .bind(update.public_share_id.as_deref())
+                    .bind(now_utc())
+                    .bind(&update.clip_id)
+                    .bind(owner_user_id)
+                    .execute(&mut *transaction)
+                    .await?
+                    .rows_affected();
+                    if rows != 1 {
+                        return Err(sqlx::Error::RowNotFound.into());
+                    }
+
+                    let entry = bulk_audit_entry(
+                        actor_user_id,
+                        ip_address,
+                        "clip.visibility_changed",
+                        &update.clip_id,
+                        Json(json!({ "visibility": visibility, "bulk": true })),
+                    );
+                    insert_audit_sqlite(&mut transaction, &entry).await?;
+                }
+                transaction.commit().await?;
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                let update_sql = crate::postgres_placeholders(
+                    "UPDATE clips
+                     SET visibility = ?, public_share_id = ?, updated_at = ?
+                     WHERE id = ? AND owner_user_id = ? AND status = 'ready' AND deleted_at IS NULL",
+                );
+                for update in updates {
+                    let rows = sqlx::query(&update_sql)
+                        .bind(visibility)
+                        .bind(update.public_share_id.as_deref())
+                        .bind(now_utc())
+                        .bind(&update.clip_id)
+                        .bind(owner_user_id)
+                        .execute(&mut *transaction)
+                        .await?
+                        .rows_affected();
+                    if rows != 1 {
+                        return Err(sqlx::Error::RowNotFound.into());
+                    }
+
+                    let entry = bulk_audit_entry(
+                        actor_user_id,
+                        ip_address,
+                        "clip.visibility_changed",
+                        &update.clip_id,
+                        Json(json!({ "visibility": visibility, "bulk": true })),
+                    );
+                    insert_audit_postgres(&mut transaction, &entry).await?;
+                }
+                transaction.commit().await?;
+            }
+        }
+
+        Ok(updates.len())
+    }
+}
+
+fn bulk_audit_entry(
+    actor_user_id: Option<&str>,
+    ip_address: Option<&str>,
+    action: &str,
+    target_id: &str,
+    metadata: Json<serde_json::Value>,
+) -> NewAuditLogEntry {
+    let mut entry = NewAuditLogEntry::new(action);
+    entry.actor_user_id = actor_user_id.map(ToOwned::to_owned);
+    entry.target_type = Some("clip".to_string());
+    entry.target_id = Some(target_id.to_string());
+    entry.ip_address = ip_address.map(ToOwned::to_owned);
+    entry.metadata_json = Some(metadata);
+    entry
+}
+
+async fn insert_audit_sqlite(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    entry: &NewAuditLogEntry,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&entry.id)
+    .bind(entry.actor_user_id.as_deref())
+    .bind(&entry.action)
+    .bind(entry.target_type.as_deref())
+    .bind(entry.target_id.as_deref())
+    .bind(entry.ip_address.as_deref())
+    .bind(entry.metadata_json.as_ref())
+    .bind(entry.created_at)
+    .execute(&mut **transaction)
+    .await
+    .map(|_| ())
+}
+
+async fn insert_audit_postgres(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    entry: &NewAuditLogEntry,
+) -> Result<(), sqlx::Error> {
+    let sql = crate::postgres_placeholders(
+        "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    sqlx::query(&sql)
+        .bind(&entry.id)
+        .bind(entry.actor_user_id.as_deref())
+        .bind(&entry.action)
+        .bind(entry.target_type.as_deref())
+        .bind(entry.target_id.as_deref())
+        .bind(entry.ip_address.as_deref())
+        .bind(entry.metadata_json.as_ref())
+        .bind(entry.created_at)
+        .execute(&mut **transaction)
+        .await
+        .map(|_| ())
 }
 
 #[derive(Clone)]
@@ -260,6 +491,18 @@ impl SessionRepository {
         )?)
     }
 
+    pub async fn list_for_user(&self, user_id: &str) -> DbResult<Vec<Session>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            Session,
+            "SELECT id, user_id, token_hash, user_agent, CAST(ip_address AS TEXT) AS ip_address, created_at, last_used_at, expires_at, revoked_at
+             FROM sessions
+             WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+             ORDER BY COALESCE(last_used_at, created_at) DESC, created_at DESC, id ASC",
+            [user_id, now_utc()]
+        )?)
+    }
+
     pub async fn touch(&self, id: &str) -> DbResult<()> {
         db_execute!(
             &self.database,
@@ -294,6 +537,14 @@ impl SessionRepository {
             [now_utc(), user_id]
         )?;
         Ok(())
+    }
+
+    pub async fn revoke_for_user_by_id(&self, user_id: &str, id: &str) -> DbResult<u64> {
+        Ok(db_execute_rows!(
+            &self.database,
+            "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND id = ? AND revoked_at IS NULL",
+            [now_utc(), user_id, id]
+        )?)
     }
 
     pub async fn delete(&self, id: &str) -> DbResult<()> {
@@ -383,13 +634,12 @@ impl DeviceTokenRepository {
         Ok(())
     }
 
-    pub async fn revoke_for_user(&self, user_id: &str, id: &str) -> DbResult<()> {
-        db_execute!(
+    pub async fn revoke_for_user(&self, user_id: &str, id: &str) -> DbResult<u64> {
+        Ok(db_execute_rows!(
             &self.database,
-            "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND id = ?",
+            "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND id = ? AND revoked_at IS NULL",
             [now_utc(), user_id, id]
-        )?;
-        Ok(())
+        )?)
     }
 
     pub async fn revoke_all_for_user(&self, user_id: &str) -> DbResult<()> {
@@ -501,6 +751,30 @@ impl ClipRepository {
                 + " WHERE owner_user_id = ? AND id = ? AND deleted_at IS NULL",
             [owner_user_id, id]
         )?)
+    }
+
+    pub async fn list_owned_for_bulk(
+        &self,
+        owner_user_id: &str,
+        ids: &[String],
+        ready_only: bool,
+    ) -> DbResult<Vec<Clip>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        match &self.database {
+            Database::Sqlite(pool) => {
+                let mut builder = QueryBuilder::<Sqlite>::new(CLIP_SELECT_SQL);
+                push_bulk_clip_filters_sqlite(&mut builder, owner_user_id, ids, ready_only);
+                Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
+            }
+            Database::Postgres(pool) => {
+                let mut builder = QueryBuilder::<Postgres>::new(CLIP_SELECT_SQL);
+                push_bulk_clip_filters_postgres(&mut builder, owner_user_id, ids, ready_only);
+                Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
+            }
+        }
     }
 
     pub async fn get_by_owner_client_clip_id(
@@ -628,6 +902,20 @@ impl ClipRepository {
         )?
         .map(|row| row.0)
         .unwrap_or_default())
+    }
+
+    pub async fn active_storage_bytes_by_owner(&self) -> DbResult<Vec<(String, i64)>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            (String, i64),
+            "SELECT owner_user_id, CAST(COALESCE(SUM(file_size_bytes), 0) AS BIGINT)
+             FROM clips
+             WHERE deleted_at IS NULL
+               AND status IN ('created','uploading','processing','ready')
+             GROUP BY owner_user_id
+             ORDER BY owner_user_id ASC",
+            []
+        )?)
     }
 
     pub async fn update_status(&self, id: &str, status: &str) -> DbResult<()> {
@@ -816,6 +1104,44 @@ fn push_clip_list_filters_postgres(
     push_clip_optional_filters_postgres(builder, params);
 }
 
+fn push_bulk_clip_filters_sqlite(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    owner_user_id: &str,
+    ids: &[String],
+    ready_only: bool,
+) {
+    builder.push(" WHERE owner_user_id = ");
+    builder.push_bind(owner_user_id.to_string());
+    builder.push(" AND deleted_at IS NULL AND id IN (");
+    let mut separated = builder.separated(", ");
+    for id in ids {
+        separated.push_bind(id.clone());
+    }
+    separated.push_unseparated(")");
+    if ready_only {
+        builder.push(" AND status = 'ready'");
+    }
+}
+
+fn push_bulk_clip_filters_postgres(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    owner_user_id: &str,
+    ids: &[String],
+    ready_only: bool,
+) {
+    builder.push(" WHERE owner_user_id = ");
+    builder.push_bind(owner_user_id.to_string());
+    builder.push(" AND deleted_at IS NULL AND id IN (");
+    let mut separated = builder.separated(", ");
+    for id in ids {
+        separated.push_bind(id.clone());
+    }
+    separated.push_unseparated(")");
+    if ready_only {
+        builder.push(" AND status = 'ready'");
+    }
+}
+
 fn push_clip_status_filter_sqlite(builder: &mut QueryBuilder<'_, Sqlite>, params: &ClipListParams) {
     builder.push(" AND status = ");
     builder.push_bind(params.status.clone().unwrap_or_else(|| "ready".to_string()));
@@ -840,6 +1166,10 @@ fn push_clip_optional_filters_sqlite(
         builder.push_bind(game.clone());
         builder.push(")");
     }
+    if let Some(source_type) = &params.source_type {
+        builder.push(" AND source_type = ");
+        builder.push_bind(source_type.clone());
+    }
     if let Some(visibility) = &params.visibility {
         builder.push(" AND visibility = ");
         builder.push_bind(visibility.clone());
@@ -851,6 +1181,22 @@ fn push_clip_optional_filters_sqlite(
     if let Some(to) = params.to {
         builder.push(" AND COALESCE(recorded_at, uploaded_at, created_at) <= ");
         builder.push_bind(to);
+    }
+    if let Some(min_duration_ms) = params.min_duration_ms {
+        builder.push(" AND duration_ms >= ");
+        builder.push_bind(min_duration_ms);
+    }
+    if let Some(max_duration_ms) = params.max_duration_ms {
+        builder.push(" AND duration_ms <= ");
+        builder.push_bind(max_duration_ms);
+    }
+    if let Some(min_size_bytes) = params.min_size_bytes {
+        builder.push(" AND file_size_bytes >= ");
+        builder.push_bind(min_size_bytes);
+    }
+    if let Some(max_size_bytes) = params.max_size_bytes {
+        builder.push(" AND file_size_bytes <= ");
+        builder.push_bind(max_size_bytes);
     }
     if let Some(query) = &params.query {
         let pattern = escaped_like_pattern(query);
@@ -875,6 +1221,10 @@ fn push_clip_optional_filters_postgres(
         builder.push_bind(game.clone());
         builder.push(")");
     }
+    if let Some(source_type) = &params.source_type {
+        builder.push(" AND source_type = ");
+        builder.push_bind(source_type.clone());
+    }
     if let Some(visibility) = &params.visibility {
         builder.push(" AND visibility = ");
         builder.push_bind(visibility.clone());
@@ -886,6 +1236,22 @@ fn push_clip_optional_filters_postgres(
     if let Some(to) = params.to {
         builder.push(" AND COALESCE(recorded_at, uploaded_at, created_at) <= ");
         builder.push_bind(to);
+    }
+    if let Some(min_duration_ms) = params.min_duration_ms {
+        builder.push(" AND duration_ms >= ");
+        builder.push_bind(min_duration_ms);
+    }
+    if let Some(max_duration_ms) = params.max_duration_ms {
+        builder.push(" AND duration_ms <= ");
+        builder.push_bind(max_duration_ms);
+    }
+    if let Some(min_size_bytes) = params.min_size_bytes {
+        builder.push(" AND file_size_bytes >= ");
+        builder.push_bind(min_size_bytes);
+    }
+    if let Some(max_size_bytes) = params.max_size_bytes {
+        builder.push(" AND file_size_bytes <= ");
+        builder.push_bind(max_size_bytes);
     }
     if let Some(query) = &params.query {
         let pattern = escaped_like_pattern(query);
@@ -907,7 +1273,18 @@ fn clip_order_by(sort: ClipSort) -> &'static str {
         ClipSort::UploadedAtAsc => " ORDER BY uploaded_at IS NULL ASC, uploaded_at ASC, id ASC",
         ClipSort::DurationDesc => " ORDER BY duration_ms IS NULL ASC, duration_ms DESC, id DESC",
         ClipSort::DurationAsc => " ORDER BY duration_ms IS NULL ASC, duration_ms ASC, id ASC",
+        ClipSort::FileSizeDesc => {
+            " ORDER BY file_size_bytes IS NULL ASC, file_size_bytes DESC, id DESC"
+        }
+        ClipSort::FileSizeAsc => {
+            " ORDER BY file_size_bytes IS NULL ASC, file_size_bytes ASC, id ASC"
+        }
         ClipSort::TitleAsc => " ORDER BY title ASC, id ASC",
+        ClipSort::TitleDesc => " ORDER BY title DESC, id DESC",
+        ClipSort::CreatedAtDesc => " ORDER BY created_at DESC, id DESC",
+        ClipSort::CreatedAtAsc => " ORDER BY created_at ASC, id ASC",
+        ClipSort::UpdatedAtDesc => " ORDER BY updated_at DESC, id DESC",
+        ClipSort::UpdatedAtAsc => " ORDER BY updated_at ASC, id ASC",
     }
 }
 

@@ -22,11 +22,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use clipline_cloud_api_types::{
     CreateDeviceTokenRequest, CreateDeviceTokenResponse, DeviceTokenResponse, DiscoveryFeatures,
-    DiscoveryResponse, MeResponse, UserResponse,
+    DiscoveryResponse, MeResponse, SessionResponse, UserResponse,
 };
 use clipline_cloud_db::{
     now_utc, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewResetPasswordToken, NewSession,
-    NewUser, Repositories, User,
+    NewUser, Repositories, Session, User,
 };
 use cookie::{Cookie, SameSite};
 use hmac::{Hmac, Mac};
@@ -286,6 +286,8 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/auth/device-tokens/{id}",
             delete(revoke_device_token),
         )
+        .route("/api/v1/auth/sessions", get(list_sessions))
+        .route("/api/v1/auth/sessions/{id}", delete(revoke_session))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route(
             "/api/v1/users/{id}",
@@ -509,11 +511,14 @@ async fn revoke_device_token(
     let auth = require_auth(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
 
-    state
+    let revoked = state
         .repositories
         .device_tokens
         .revoke_for_user(&auth.user.id, &id)
         .await?;
+    if revoked == 0 {
+        return Err(ApiError::not_found("device token not found"));
+    }
     audit_with_ip(
         &state.repositories,
         Some(client_ip.as_str()),
@@ -527,18 +532,88 @@ async fn revoke_device_token(
     Ok(Json(json!({ "status": "ok" })))
 }
 
+async fn list_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<SessionResponse>>, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    let current_token_hash = match &auth.kind {
+        AuthKind::Cookie { token_hash } => Some(token_hash.as_str()),
+        AuthKind::Bearer => None,
+    };
+    let sessions = state
+        .repositories
+        .sessions
+        .list_for_user(&auth.user.id)
+        .await?
+        .into_iter()
+        .map(|session| session_response(session, current_token_hash))
+        .collect();
+    Ok(Json(sessions))
+}
+
+async fn revoke_session(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    require_csrf_for_cookie(&state, &headers, &auth)?;
+
+    let revoked = state
+        .repositories
+        .sessions
+        .revoke_for_user_by_id(&auth.user.id, &id)
+        .await?;
+    if revoked == 0 {
+        return Err(ApiError::not_found("session not found"));
+    }
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "session.revoked",
+        Some("session"),
+        Some(&id),
+        None,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "ok" })))
+}
+
 async fn list_users(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let _auth = require_admin(&state, &headers).await?;
+    let storage_by_owner = state
+        .repositories
+        .clips
+        .active_storage_bytes_by_owner()
+        .await?
+        .into_iter()
+        .map(|(owner_user_id, storage_bytes)| {
+            Ok((
+                owner_user_id,
+                u64::try_from(storage_bytes)
+                    .map_err(|_| ApiError::internal("stored user storage usage is negative"))?,
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, ApiError>>()?;
     let users = state
         .repositories
         .users
         .list()
         .await?
         .into_iter()
-        .map(user_response)
+        .map(|user| {
+            let storage_bytes = storage_by_owner
+                .get(user.id.as_str())
+                .copied()
+                .unwrap_or_default();
+            user_response_with_storage(user, storage_bytes)
+        })
         .collect();
     Ok(Json(users))
 }
@@ -1149,12 +1224,17 @@ fn header_to_string(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn user_response(value: User) -> UserResponse {
+    user_response_with_storage(value, 0)
+}
+
+fn user_response_with_storage(value: User, storage_bytes: u64) -> UserResponse {
     UserResponse {
         id: value.id,
         username: value.username,
         display_name: value.display_name,
         role: value.role,
         is_disabled: value.is_disabled,
+        storage_bytes,
         created_at: value.created_at,
         updated_at: value.updated_at,
         last_login_at: value.last_login_at,
@@ -1165,6 +1245,20 @@ fn device_token_response(value: DeviceToken) -> DeviceTokenResponse {
     DeviceTokenResponse {
         id: value.id,
         name: value.name,
+        created_at: value.created_at,
+        last_used_at: value.last_used_at,
+        expires_at: value.expires_at,
+        revoked_at: value.revoked_at,
+    }
+}
+
+fn session_response(value: Session, current_token_hash: Option<&str>) -> SessionResponse {
+    let current = current_token_hash.is_some_and(|token_hash| value.token_hash == token_hash);
+    SessionResponse {
+        id: value.id,
+        user_agent: value.user_agent,
+        ip_address: value.ip_address,
+        current,
         created_at: value.created_at,
         last_used_at: value.last_used_at,
         expires_at: value.expires_at,
@@ -1293,6 +1387,19 @@ impl From<clipline_cloud_db::DbError> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use axum::response::IntoResponse;
+    use clipline_cloud_db::{
+        new_ulid, Database, DeviceToken, NewDeviceToken, NewSession, NewUser, Repositories, Session,
+    };
+    use clipline_cloud_storage::{LocalStorage, SharedStorageBackend};
+    use tempfile::TempDir;
+
+    struct TestApp {
+        state: AppState,
+        _temp_dir: TempDir,
+    }
 
     #[test]
     fn token_hash_is_sha256_hex_not_plaintext() {
@@ -1395,5 +1502,205 @@ mod tests {
             response.headers().get(header::RETRY_AFTER),
             Some(&HeaderValue::from_static("7"))
         );
+    }
+
+    #[tokio::test]
+    async fn revoke_routes_reject_foreign_ids_without_audit() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+        let other = insert_user(&app.state, "other").await;
+        let headers = auth_headers(&app.state, &owner.id).await;
+        let other_session = insert_session(&app.state, &other.id).await;
+        let other_token = insert_device_token(&app.state, &other.id).await;
+
+        let session_status = error_status(
+            revoke_session(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers.clone(),
+                Path(other_session.id.clone()),
+            )
+            .await,
+        );
+        let token_status = error_status(
+            revoke_device_token(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers,
+                Path(other_token.id.clone()),
+            )
+            .await,
+        );
+
+        assert_eq!(session_status, StatusCode::NOT_FOUND);
+        assert_eq!(token_status, StatusCode::NOT_FOUND);
+        assert!(app
+            .state
+            .repositories
+            .sessions
+            .get(&other_session.id)
+            .await
+            .expect("session lookup")
+            .expect("session")
+            .revoked_at
+            .is_none());
+        assert!(app
+            .state
+            .repositories
+            .device_tokens
+            .get(&other_token.id)
+            .await
+            .expect("token lookup")
+            .expect("token")
+            .revoked_at
+            .is_none());
+        assert!(app
+            .state
+            .repositories
+            .audit_log
+            .list_recent(10)
+            .await
+            .expect("audit log")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoke_routes_reject_already_revoked_ids_without_audit() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+        let headers = auth_headers(&app.state, &owner.id).await;
+        let session = insert_session(&app.state, &owner.id).await;
+        let token = insert_device_token(&app.state, &owner.id).await;
+        app.state
+            .repositories
+            .sessions
+            .revoke(&session.id)
+            .await
+            .expect("revoke session");
+        app.state
+            .repositories
+            .device_tokens
+            .revoke(&token.id)
+            .await
+            .expect("revoke token");
+
+        let session_status = error_status(
+            revoke_session(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers.clone(),
+                Path(session.id),
+            )
+            .await,
+        );
+        let token_status = error_status(
+            revoke_device_token(
+                State(app.state.clone()),
+                Extension(ClientIp("203.0.113.10".to_string())),
+                headers,
+                Path(token.id),
+            )
+            .await,
+        );
+
+        assert_eq!(session_status, StatusCode::NOT_FOUND);
+        assert_eq!(token_status, StatusCode::NOT_FOUND);
+        assert!(app
+            .state
+            .repositories
+            .audit_log
+            .list_recent(10)
+            .await
+            .expect("audit log")
+            .is_empty());
+    }
+
+    async fn test_app() -> TestApp {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", temp_dir.path().join("clipline.db").display());
+        let config = Arc::new(crate::config::Config::for_tests(
+            database_url.clone(),
+            temp_dir.path().join("data"),
+        ));
+        let database = Database::connect_and_migrate(&database_url)
+            .await
+            .expect("database");
+        let repositories = Repositories::new(database.clone());
+        let storage: SharedStorageBackend =
+            Arc::new(LocalStorage::new(temp_dir.path().join("data")));
+        let auth = AuthRuntime::new(config.session_secret.as_deref());
+        let state = AppState {
+            config,
+            database,
+            repositories,
+            storage,
+            auth,
+        };
+        TestApp {
+            state,
+            _temp_dir: temp_dir,
+        }
+    }
+
+    async fn insert_user(state: &AppState, username: &str) -> User {
+        state
+            .repositories
+            .users
+            .create(&NewUser::new(
+                format!("{username}-{}", new_ulid()),
+                "argon2id-hash",
+                "user",
+            ))
+            .await
+            .expect("user")
+    }
+
+    async fn auth_headers(state: &AppState, user_id: &str) -> HeaderMap {
+        let raw_token = format!("test-token-{}", new_ulid());
+        let token_hash = hash_token(&raw_token);
+        state
+            .repositories
+            .device_tokens
+            .create(&NewDeviceToken::new(user_id, "test token", token_hash))
+            .await
+            .expect("device token");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {raw_token}")).expect("authorization header"),
+        );
+        headers
+    }
+
+    async fn insert_session(state: &AppState, user_id: &str) -> Session {
+        let token_hash = hash_token(&format!("session-token-{}", new_ulid()));
+        state
+            .repositories
+            .sessions
+            .create(&NewSession::new(
+                user_id,
+                token_hash,
+                now_utc() + ChronoDuration::hours(1),
+            ))
+            .await
+            .expect("session")
+    }
+
+    async fn insert_device_token(state: &AppState, user_id: &str) -> DeviceToken {
+        let token_hash = hash_token(&format!("device-token-{}", new_ulid()));
+        state
+            .repositories
+            .device_tokens
+            .create(&NewDeviceToken::new(user_id, "target token", token_hash))
+            .await
+            .expect("device token")
+    }
+
+    fn error_status<T>(result: Result<T, ApiError>) -> StatusCode {
+        match result {
+            Ok(_) => panic!("expected handler error"),
+            Err(error) => error.into_response().status(),
+        }
     }
 }

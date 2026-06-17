@@ -1,7 +1,7 @@
 # 13 — Phase 3: Admin & Library Polish
 
 **Phase:** Phase 3 (post-v1)
-**Status:** ☐ Not started
+**Status:** ☑ Complete
 **Depends on:** Phase 1 complete (docs 01–11); benefits from Phase 2 (doc 12)
 **Design sections:** §30 Phase 3, §17 (admin/library), §20 (quotas)
 
@@ -34,22 +34,31 @@ visibility; device-token and session management UI.
 
 ## Implementation checklist
 
-- [ ] Per-user storage usage computed and shown in the admin UI
-- [ ] Enforced per-user quotas + global storage-warning threshold (surfaced + blocking at upload create)
-- [ ] Advanced sort/search beyond the doc-07 baseline; additions index-backed and dialect-clean
-- [ ] Game grouping in the library view
-- [ ] Bulk delete (soft-delete) across selected clips, transactional, audit-logged per clip
-- [ ] Bulk visibility change across selected clips, audit-logged per clip
-- [ ] Session management UI: list + revoke active browser sessions
-- [ ] Device-token management UI: list + revoke device tokens with `name` / `last_used_at`
+- [x] Per-user storage usage computed and shown in the admin UI
+- [x] Enforced per-user quotas + global storage-warning threshold (surfaced + blocking at upload create)
+- [x] Advanced sort/search beyond the doc-07 baseline; additions index-backed and dialect-clean
+- [x] Game grouping in the library view
+- [x] Bulk delete (soft-delete) across selected clips, transactional, audit-logged per clip
+- [x] Bulk visibility change across selected clips, audit-logged per clip
+- [x] Session management UI: list + revoke active browser sessions
+- [x] Device-token management UI: list + revoke device tokens with `name` / `last_used_at`
 
 ## Definition of done
 
-- [ ] Admins see accurate per-user storage usage; quotas block over-quota uploads with a clear error
-- [ ] Advanced sort/search and game grouping work and stay performant on a large library
-- [ ] Bulk delete and bulk visibility apply atomically and are fully audit-logged
-- [ ] Users/admins can review and revoke sessions and device tokens from the UI; revocation is immediate
+- [x] Admins see accurate per-user storage usage; quotas block over-quota uploads with a clear error
+- [x] Advanced sort/search and game grouping work and stay performant on a large library
+- [x] Bulk delete and bulk visibility apply atomically and are fully audit-logged
+- [x] Users/admins can review and revoke sessions and device tokens from the UI; revocation is immediate
 
 ## Progress log
 
-- _(empty)_
+- 2026-06-17: Added per-user active storage aggregation to the admin users API and surfaced it in
+  the admin Users table.
+- 2026-06-17: Surfaced quota, active upload, total storage, and global storage warning state in the
+  admin Overview panel; upload creation already enforces the configured per-user quota.
+- 2026-06-17: Added index-backed source, duration, size, created, updated, and file-size query
+  support plus expanded library controls and client-side game grouping.
+- 2026-06-17: Added owner-scoped bulk selection UI plus transactional bulk delete / bulk visibility
+  endpoints with full selection prevalidation and per-clip audit entries.
+- 2026-06-17: Added Account navigation for browser session and device-token review/revocation, plus
+  current-session detection and user-scoped session revoke endpoints.

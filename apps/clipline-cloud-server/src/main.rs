@@ -235,6 +235,7 @@ fn router(
         .route("/", get(spa_index))
         .route("/login", get(spa_index))
         .route("/admin", get(spa_index))
+        .route("/account", get(spa_index))
         .route("/clip/{*path}", get(spa_index))
         .route("/c/{*path}", get(spa_index))
         .merge(auth::routes())

@@ -4,14 +4,21 @@ const state = {
   user: null,
   csrfToken: null,
   flash: null,
+  selectedClipIds: new Set(),
   libraryQuery: {
     sort: "uploaded_at_desc",
     game: "",
+    source_type: "",
     visibility: "",
     status: "",
     q: "",
     from: "",
     to: "",
+    min_duration_seconds: "",
+    max_duration_seconds: "",
+    min_size_mib: "",
+    max_size_mib: "",
+    group: "none",
   },
   adminResetToken: null,
 };
@@ -76,6 +83,8 @@ async function route() {
       return;
     }
     await renderAdmin(current.tab);
+  } else if (current.name === "account") {
+    await renderAccount();
   } else {
     await renderLibrary();
   }
@@ -94,6 +103,9 @@ function currentRoute() {
       name: "admin",
       tab: new URLSearchParams(window.location.search).get("tab") || "overview",
     };
+  }
+  if (path === "/account") {
+    return { name: "account" };
   }
   if (path === "/login") {
     return { name: "login" };
@@ -219,12 +231,13 @@ function renderShell({ active, title, subtitle, body }) {
         <div class="sidebar-brand">
           <div class="brand-mark" aria-hidden="true">CL</div>
           <div>
-            <strong>Clipline Cloud</strong>
-            <span>Self-hosted clips</span>
+            <strong>Clipline</strong>
+            <span>Cloud library</span>
           </div>
         </div>
         <nav class="nav-stack" aria-label="Primary">
           ${navLink("/", "library", active, icon("library"), "Library")}
+          ${navLink("/account", "account", active, icon("user"), "Account")}
           ${adminLink}
         </nav>
         <div class="sidebar-footer">
@@ -283,6 +296,7 @@ async function renderLibrary() {
 
   try {
     const data = await api(`/api/v1/clips?${libraryParams().toString()}`);
+    syncSelectedClips(data.clips);
     renderShell({
       active: "library",
       title: "Library",
@@ -304,7 +318,7 @@ function libraryParams() {
   const params = new URLSearchParams();
   params.set("sort", state.libraryQuery.sort);
   params.set("page_size", "100");
-  for (const key of ["game", "visibility", "status", "q"]) {
+  for (const key of ["game", "source_type", "visibility", "status", "q"]) {
     if (state.libraryQuery[key]) {
       params.set(key, state.libraryQuery[key]);
     }
@@ -315,6 +329,10 @@ function libraryParams() {
   if (state.libraryQuery.to) {
     params.set("to", `${state.libraryQuery.to}T23:59:59Z`);
   }
+  setNumericParam(params, "min_duration_ms", secondsToMilliseconds(state.libraryQuery.min_duration_seconds));
+  setNumericParam(params, "max_duration_ms", secondsToMilliseconds(state.libraryQuery.max_duration_seconds));
+  setNumericParam(params, "min_size_bytes", mebibytesToBytes(state.libraryQuery.min_size_mib));
+  setNumericParam(params, "max_size_bytes", mebibytesToBytes(state.libraryQuery.max_size_mib));
   return params;
 }
 
@@ -328,11 +346,23 @@ function libraryView(clips) {
           ["uploaded_at_asc", "Uploaded oldest"],
           ["recorded_at_desc", "Recorded newest"],
           ["recorded_at_asc", "Recorded oldest"],
+          ["updated_at_desc", "Updated newest"],
+          ["updated_at_asc", "Updated oldest"],
+          ["created_at_desc", "Created newest"],
+          ["created_at_asc", "Created oldest"],
           ["duration_desc", "Duration longest"],
           ["duration_asc", "Duration shortest"],
+          ["size_desc", "Size largest"],
+          ["size_asc", "Size smallest"],
           ["title_asc", "Title A-Z"],
+          ["title_desc", "Title Z-A"],
+        ])}
+        ${selectField("Group", "group", state.libraryQuery.group, [
+          ["none", "None"],
+          ["game", "Game"],
         ])}
         ${field("Game", "game", "text", state.libraryQuery.game, "Name or ID")}
+        ${field("Source", "source_type", "text", state.libraryQuery.source_type, "Source type")}
         ${selectField("Visibility", "visibility", state.libraryQuery.visibility, [
           ["", "Any"],
           ["private", "Private"],
@@ -347,14 +377,77 @@ function libraryView(clips) {
           ["ready", "Ready"],
           ["failed", "Failed"],
         ])}
+        ${field("From", "from", "date", state.libraryQuery.from, "")}
+        ${field("To", "to", "date", state.libraryQuery.to, "")}
+        ${numberField("Min duration", "min_duration_seconds", state.libraryQuery.min_duration_seconds, "Seconds")}
+        ${numberField("Max duration", "max_duration_seconds", state.libraryQuery.max_duration_seconds, "Seconds")}
+        ${numberField("Min size", "min_size_mib", state.libraryQuery.min_size_mib, "MiB", "0.1")}
+        ${numberField("Max size", "max_size_mib", state.libraryQuery.max_size_mib, "MiB", "0.1")}
         <button class="btn-primary" type="submit">${icon("search")} Apply</button>
       </form>
       ${
         clips.length
-          ? `<div class="clip-grid">${clips.map(clipRow).join("")}</div>`
+          ? `${bulkActions(clips)}${libraryResultsView(clips)}`
           : `<div class="empty-state">No clips match this view.</div>`
       }
     </section>
+  `;
+}
+
+function bulkActions(clips) {
+  const selectedCount = selectedVisibleCount(clips);
+  const allSelected = clips.length > 0 && selectedCount === clips.length;
+  return `
+    <div class="panel bulk-toolbar">
+      <label class="check-line">
+        <input id="select-visible-clips" type="checkbox" ${allSelected ? "checked" : ""}>
+        <span>Select visible</span>
+      </label>
+      <span id="bulk-selected-count" class="muted">${state.selectedClipIds.size} selected</span>
+      <label class="field">
+        <span>Visibility</span>
+        <select id="bulk-visibility">
+          <option value="private">Private</option>
+          <option value="public">Public</option>
+          <option value="unlisted">Unlisted</option>
+        </select>
+      </label>
+      <button id="bulk-visibility-button" class="btn-secondary" type="button" ${state.selectedClipIds.size ? "" : "disabled"}>${icon("globe")} Apply visibility</button>
+      <button id="bulk-delete-button" class="btn-danger" type="button" ${state.selectedClipIds.size ? "" : "disabled"}>${icon("trash")} Delete selected</button>
+    </div>
+  `;
+}
+
+function libraryResultsView(clips) {
+  if (state.libraryQuery.group !== "game") {
+    return `<div class="clip-grid">${clips.map(clipRow).join("")}</div>`;
+  }
+  const groups = new Map();
+  for (const clip of clips) {
+    const label = gameLabel(clip);
+    const group = groups.get(label) || [];
+    group.push(clip);
+    groups.set(label, group);
+  }
+  const sortedGroups = Array.from(groups.entries()).sort(([left], [right]) =>
+    left.localeCompare(right, undefined, { sensitivity: "base" })
+  );
+  return `
+    <div class="clip-groups">
+      ${sortedGroups
+        .map(
+          ([label, groupClips]) => `
+            <section class="clip-group">
+              <div class="clip-group-header">
+                <h2>${escapeHtml(label)}</h2>
+                <span class="muted">${groupClips.length} clip${groupClips.length === 1 ? "" : "s"}</span>
+              </div>
+              <div class="clip-grid">${groupClips.map(clipRow).join("")}</div>
+            </section>
+          `
+        )
+        .join("")}
+    </div>
   `;
 }
 
@@ -365,11 +458,14 @@ function clipRow(clip) {
   const publicUrl = clip.public_url || "";
   return `
     <article class="clip-row">
+      <label class="clip-select" title="Select clip">
+        <input type="checkbox" data-select-clip="${escapeAttr(clip.id)}" ${state.selectedClipIds.has(clip.id) ? "checked" : ""} aria-label="Select ${escapeAttr(clip.title)}">
+      </label>
       <img class="thumb" src="/api/v1/clips/${encodeURIComponent(clip.id)}/thumbnail" alt="">
       <div>
         <a class="clip-title" href="/clip/${encodeURIComponent(clip.id)}" data-route>${escapeHtml(clip.title)}</a>
         <div class="meta-line">
-          <span>${escapeHtml(clip.game_name || clip.game_id || "No game")}</span>
+          <span>${escapeHtml(gameLabel(clip))}</span>
           <span>${formatDuration(clip.duration_ms)}</span>
           <span>${formatBytes(clip.file_size_bytes)}</span>
         </div>
@@ -423,6 +519,116 @@ function bindLibraryEvents() {
       }
     });
   });
+  bindBulkEvents();
+}
+
+function gameLabel(clip) {
+  return clip.game_name || clip.game_id || "No game";
+}
+
+function syncSelectedClips(clips) {
+  const visibleIds = new Set(clips.map((clip) => clip.id));
+  for (const id of Array.from(state.selectedClipIds)) {
+    if (!visibleIds.has(id)) {
+      state.selectedClipIds.delete(id);
+    }
+  }
+}
+
+function selectedVisibleCount(clips) {
+  return clips.filter((clip) => state.selectedClipIds.has(clip.id)).length;
+}
+
+function selectedClipIds() {
+  return Array.from(state.selectedClipIds);
+}
+
+function bindBulkEvents() {
+  const selectVisible = document.querySelector("#select-visible-clips");
+  if (!selectVisible) {
+    return;
+  }
+  const clipCheckboxes = Array.from(document.querySelectorAll("[data-select-clip]"));
+  selectVisible.indeterminate =
+    clipCheckboxes.some((input) => input.checked) && !clipCheckboxes.every((input) => input.checked);
+  selectVisible.addEventListener("change", () => {
+    for (const input of clipCheckboxes) {
+      if (selectVisible.checked) {
+        state.selectedClipIds.add(input.dataset.selectClip);
+        input.checked = true;
+      } else {
+        state.selectedClipIds.delete(input.dataset.selectClip);
+        input.checked = false;
+      }
+    }
+    updateBulkControls();
+  });
+  for (const input of clipCheckboxes) {
+    input.addEventListener("change", () => {
+      if (input.checked) {
+        state.selectedClipIds.add(input.dataset.selectClip);
+      } else {
+        state.selectedClipIds.delete(input.dataset.selectClip);
+      }
+      updateBulkControls();
+    });
+  }
+
+  document.querySelector("#bulk-visibility-button")?.addEventListener("click", async () => {
+    const ids = selectedClipIds();
+    const visibility = document.querySelector("#bulk-visibility").value;
+    if (!ids.length) {
+      return;
+    }
+    try {
+      const result = await api("/api/v1/clips/bulk-visibility", {
+        method: "POST",
+        body: { ids, visibility },
+      });
+      state.selectedClipIds.clear();
+      flash(`Visibility updated for ${result.affected} clip${result.affected === 1 ? "" : "s"}.`);
+      renderLibrary();
+    } catch (error) {
+      flash(error.message, "error");
+      renderLibrary();
+    }
+  });
+
+  document.querySelector("#bulk-delete-button")?.addEventListener("click", async () => {
+    const ids = selectedClipIds();
+    if (!ids.length || !window.confirm(`Delete ${ids.length} selected clip${ids.length === 1 ? "" : "s"}?`)) {
+      return;
+    }
+    try {
+      const result = await api("/api/v1/clips/bulk-delete", {
+        method: "POST",
+        body: { ids },
+      });
+      state.selectedClipIds.clear();
+      flash(`Deleted ${result.affected} clip${result.affected === 1 ? "" : "s"}.`);
+      renderLibrary();
+    } catch (error) {
+      flash(error.message, "error");
+      renderLibrary();
+    }
+  });
+}
+
+function updateBulkControls() {
+  const count = state.selectedClipIds.size;
+  const countLabel = document.querySelector("#bulk-selected-count");
+  if (countLabel) {
+    countLabel.textContent = `${count} selected`;
+  }
+  document.querySelector("#bulk-visibility-button")?.toggleAttribute("disabled", count === 0);
+  document.querySelector("#bulk-delete-button")?.toggleAttribute("disabled", count === 0);
+  const clipCheckboxes = Array.from(document.querySelectorAll("[data-select-clip]"));
+  const selectVisible = document.querySelector("#select-visible-clips");
+  if (selectVisible && clipCheckboxes.length) {
+    selectVisible.checked = clipCheckboxes.every((input) => input.checked);
+    selectVisible.indeterminate =
+      clipCheckboxes.some((input) => input.checked) && !clipCheckboxes.every((input) => input.checked);
+  }
 }
 
 async function renderClipDetail(id) {
@@ -646,6 +852,152 @@ async function renderPublicShare(shareId) {
   }
 }
 
+async function renderAccount() {
+  renderShell({
+    active: "account",
+    title: "Account",
+    subtitle: "Sessions and device tokens.",
+    body: `<div class="empty-state">Loading account data...</div>`,
+  });
+
+  try {
+    const [sessions, deviceTokens] = await Promise.all([
+      api("/api/v1/auth/sessions"),
+      api("/api/v1/auth/device-tokens"),
+    ]);
+    renderShell({
+      active: "account",
+      title: "Account",
+      subtitle: "Sessions and device tokens.",
+      body: accountView(sessions, deviceTokens),
+    });
+    bindAccountEvents();
+  } catch (error) {
+    renderShell({
+      active: "account",
+      title: "Account",
+      subtitle: "Sessions and device tokens.",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function accountView(sessions, deviceTokens) {
+  return `
+    <section class="account-grid">
+      <div class="panel section">
+        <div class="section-header">
+          <h2>Browser sessions</h2>
+          <span class="muted">${sessions.length} active</span>
+        </div>
+        ${
+          sessions.length
+            ? `<div class="management-list">${sessions.map(sessionItem).join("")}</div>`
+            : `<div class="empty-state">No active sessions.</div>`
+        }
+      </div>
+      <div class="panel section">
+        <div class="section-header">
+          <h2>Device tokens</h2>
+          <span class="muted">${deviceTokens.length} total</span>
+        </div>
+        ${
+          deviceTokens.length
+            ? `<div class="management-list">${deviceTokens.map(deviceTokenItem).join("")}</div>`
+            : `<div class="empty-state">No device tokens.</div>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function sessionItem(session) {
+  return `
+    <div class="management-item">
+      <div>
+        <strong>${escapeHtml(session.user_agent || "Unknown browser")}</strong>
+        <div class="meta-line">
+          <span>${escapeHtml(session.ip_address || "Unknown IP")}</span>
+          <span>Last used ${formatDate(session.last_used_at || session.created_at)}</span>
+          <span>Expires ${formatDate(session.expires_at)}</span>
+        </div>
+      </div>
+      <div class="actions">
+        ${session.current ? `<span class="badge badge-public">Current</span>` : ""}
+        <button class="btn-danger" data-session-revoke="${escapeAttr(session.id)}" data-current="${session.current ? "true" : "false"}">${icon("x")} Revoke</button>
+      </div>
+    </div>
+  `;
+}
+
+function deviceTokenItem(token) {
+  const revoked = Boolean(token.revoked_at);
+  return `
+    <div class="management-item">
+      <div>
+        <strong>${escapeHtml(token.name)}</strong>
+        <div class="meta-line">
+          <span>Created ${formatDate(token.created_at)}</span>
+          <span>Last used ${formatDate(token.last_used_at)}</span>
+          ${token.expires_at ? `<span>Expires ${formatDate(token.expires_at)}</span>` : ""}
+          ${revoked ? `<span>Revoked ${formatDate(token.revoked_at)}</span>` : ""}
+        </div>
+      </div>
+      <div class="actions">
+        ${revoked ? `<span class="badge badge-private">Revoked</span>` : `<span class="badge badge-public">Active</span>`}
+        <button class="btn-danger" data-device-token-revoke="${escapeAttr(token.id)}" ${revoked ? "disabled" : ""}>${icon("x")} Revoke</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindAccountEvents() {
+  document.querySelectorAll("[data-session-revoke]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm("Revoke this browser session?")) {
+        return;
+      }
+      try {
+        await api(`/api/v1/auth/sessions/${encodeURIComponent(button.dataset.sessionRevoke)}`, {
+          method: "DELETE",
+          body: {},
+        });
+        if (button.dataset.current === "true") {
+          state.user = null;
+          state.csrfToken = null;
+          flash("Current session revoked.");
+          navigate("/login");
+          return;
+        }
+        flash("Session revoked.");
+        renderAccount();
+      } catch (error) {
+        flash(error.message, "error");
+        renderAccount();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-device-token-revoke]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm("Revoke this device token?")) {
+        return;
+      }
+      try {
+        await api(`/api/v1/auth/device-tokens/${encodeURIComponent(button.dataset.deviceTokenRevoke)}`, {
+          method: "DELETE",
+          body: {},
+        });
+        flash("Device token revoked.");
+        renderAccount();
+      } catch (error) {
+        flash(error.message, "error");
+        renderAccount();
+      }
+    });
+  });
+}
+
 async function renderAdmin(tab) {
   renderShell({
     active: "admin",
@@ -709,14 +1061,27 @@ function adminOverviewView(overview) {
         ${dataRow("Public URL", overview.public_url)}
         ${dataRow("Database", overview.database_backend)}
         ${dataRow("Storage", `${overview.storage_backend} - ${overview.storage_summary}`)}
+        ${dataRow("Stored clips", `${overview.total_clips} clips - ${formatBytes(overview.total_storage_bytes)}`)}
+        ${dataRow("Users", `${overview.total_users} total`)}
         ${dataRow("Max upload", formatBytes(overview.max_upload_size_bytes))}
         ${dataRow("Part size", formatBytes(overview.upload_part_size_bytes))}
         ${dataRow("Single PUT max", formatBytes(overview.single_put_max_bytes))}
+        ${dataRow("Active uploads/user", overview.max_active_upload_sessions_per_user)}
+        ${dataRow("User quota", overview.user_storage_quota_bytes ? formatBytes(overview.user_storage_quota_bytes) : "Disabled")}
+        ${dataRow("Storage warning", storageWarningLabel(overview))}
         ${dataRow("Upload TTL", `${overview.upload_session_ttl_seconds}s`)}
         ${dataRow("Public media", `${overview.public_media_mode}, ${overview.public_read_url_ttl_seconds}s TTL`)}
       </dl>
     </div>
   `;
+}
+
+function storageWarningLabel(overview) {
+  if (!overview.global_storage_warning_threshold_bytes) {
+    return "Disabled";
+  }
+  const threshold = formatBytes(overview.global_storage_warning_threshold_bytes);
+  return overview.global_storage_warning ? `At or above ${threshold}` : `Below ${threshold}`;
 }
 
 function adminUsersView(users) {
@@ -742,7 +1107,7 @@ function adminUsersView(users) {
         ${state.adminResetToken ? `<div class="notice mono">${escapeHtml(state.adminResetToken)}</div>` : ""}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead>
+            <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Storage</th><th>Last login</th><th></th></tr></thead>
             <tbody>${users.map(userRow).join("")}</tbody>
           </table>
         </div>
@@ -760,6 +1125,7 @@ function userRow(user) {
       </td>
       <td>${escapeHtml(user.role)}</td>
       <td>${user.is_disabled ? `<span class="badge badge-warn">Disabled</span>` : `<span class="badge badge-public">Active</span>`}</td>
+      <td>${formatBytes(user.storage_bytes || 0)}</td>
       <td>${formatDate(user.last_login_at)}</td>
       <td>
         <div class="actions">
@@ -906,6 +1272,15 @@ function field(label, name, type, value, placeholder) {
   `;
 }
 
+function numberField(label, name, value, placeholder, step = "1") {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input name="${escapeAttr(name)}" type="number" min="0" step="${escapeAttr(step)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder || "")}">
+    </label>
+  `;
+}
+
 function selectField(label, name, value, options) {
   return `
     <label class="field">
@@ -1021,6 +1396,30 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function setNumericParam(params, name, value) {
+  if (value != null) {
+    params.set(name, String(value));
+  }
+}
+
+function secondsToMilliseconds(value) {
+  const number = optionalNumber(value);
+  return number == null ? null : Math.round(number * 1000);
+}
+
+function mebibytesToBytes(value) {
+  const number = optionalNumber(value);
+  return number == null ? null : Math.round(number * 1024 * 1024);
+}
+
+function optionalNumber(value) {
+  if (value === "") {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function formatProgress(basisPoints) {
