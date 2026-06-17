@@ -225,8 +225,8 @@ single-PUT threshold 64 MiB; default visibility `private`.
 ### Future (not v1)
 
 Direct-to-S3 multipart via presigned part URLs is now scaffolded as the Phase-4 extension above, but
-still requires desktop-client support and end-to-end smoke coverage before doc 14 marks it shipped.
-TUS remains a possible later replacement if resumability requirements outgrow this first-party flow.
+still requires desktop-client support before doc 14 marks it shipped. TUS remains a possible later
+replacement if resumability requirements outgrow this first-party flow.
 
 ## Implementation checklist
 
@@ -245,7 +245,8 @@ TUS remains a possible later replacement if resumability requirements outgrow th
 - [x] `DELETE /uploads/{id}` aborts session + storage multipart and cleans temp parts
 - [x] Enforce per-endpoint authz (caller owns the session), session not expired, MP4-only content-type, no client paths, max-size + max-active-sessions limits
 - [x] Phase-4 scaffold: disabled-by-default direct-S3 presign + ack endpoints for chunked uploads
-- [ ] Phase-4 direct-S3 end-to-end client upload path and MinIO smoke
+- [x] Phase-4 direct-S3 MinIO smoke: presign -> PUT to S3 -> ack -> complete -> validate
+- [ ] Phase-4 direct-S3 desktop-client upload path
 
 ## Definition of done
 
@@ -277,3 +278,6 @@ TUS remains a possible later replacement if resumability requirements outgrow th
   create-response direct part templates, `POST /parts/{n}/presign`, `POST /parts/{n}/ack`, S3
   presigned `UploadPart` URL support, and docs for the integrity difference from server-proxy
   part uploads.
+- 2026-06-17: Extended the Docker MinIO smoke to enable direct-S3 uploads, force a tiny MP4 through
+  the chunked path, request a presigned part URL, PUT the part directly to MinIO, ack the S3 ETag,
+  complete the upload, and wait for the clip to validate as ready.

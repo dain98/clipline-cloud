@@ -232,9 +232,10 @@ BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 deploy/compose/
 
 By default it exercises the **default**, **MinIO**, and **Postgres** profiles: it validates the Compose
 files, starts each profile with temporary secrets, checks `/readyz`, creates an admin device token, opens
-admin diagnostics, verifies backup/restore, and confirms `/readyz` flips to not-ready when storage or the
-database is stopped. See [`deployment-operations.md`](deployment-operations.md) for `smoke.sh` variants
-(including the Caddy localhost TLS check).
+admin diagnostics, verifies backup/restore, exercises the MinIO direct-S3 upload path, and confirms
+`/readyz` flips to not-ready when storage or the database is stopped. See
+[`deployment-operations.md`](deployment-operations.md) for `smoke.sh` variants (including the Caddy
+localhost TLS check).
 
 ## Backups
 
