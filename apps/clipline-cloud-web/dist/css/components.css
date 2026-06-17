@@ -935,6 +935,16 @@ td {
   color: var(--public);
 }
 
+.badge-private {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.badge-unlisted {
+  background: rgba(47, 111, 237, 0.16);
+  color: var(--accent);
+}
+
 /* Actions cluster */
 .actions {
   display: flex;

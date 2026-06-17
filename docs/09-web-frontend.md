@@ -84,3 +84,19 @@ per-user quotas.
   `cargo test --workspace`, `cargo build --workspace`, and a local HTTP smoke covering static
   frontend routes, cookie-session + CSRF auth, admin user create/reset/disable, upload-to-library,
   clip detail media range, public share route, diagnostics endpoints, and revoke-to-404.
+- 2026-06-17 — YouTube-style redesign applied (Tasks 1–15). Summary:
+  - **Architecture (T1):** ES module split — `app.js` / `router.js` / `shell.js` / `util.js` / per-view modules under `js/views/`, shared components under `js/components/`.
+  - **Design tokens + base CSS (T2):** dark-first token sheet (`css/tokens.css`), reset + typography in `css/base.css`. All colours, spacing, radius, and typography driven by custom properties.
+  - **App shell (T3):** fixed top header with wordmark, search pill, account avatar/menu; collapsible guide rail (240 → 72 px mini → off-canvas drawer on mobile); `renderShell()` owns the persistent DOM, views mount into `.app-content`.
+  - **Login restyle (T4):** centred `.auth-card` on dark background, matching the new token palette.
+  - **Backend `has_thumbnail` (T5):** new field on the public clip JSON response (added via TDD — backend unit + integration tests green).
+  - **Card component (T6):** `.card` / `.thumb` / `.card-body` / `.card-kebab` composable; dark thumbnail placeholder with play-glyph hover; skeleton cards for loading state.
+  - **Library grid (T7):** `css/components.css` `.clip-grid` auto-fill columns; chip bar with sticky scroll, visibility/status/sort chips; collapsible filters panel (`.filters-panel`); empty and error states.
+  - **Marker timeline component (T8):** `.marker-bar` + `.tick` buttons wired to `video.currentTime`; `bindMarkerTimeline()` updates ticks on `timeupdate`; accessible (keyboard seek, focus ring).
+  - **Watch view (T9):** two-column `.watch-layout` (player+detail | up-next rail), collapsing to single column ≤ 1000 px; `.description-card` with `<details>` collapse; `.marker-section` chapter list; visibility chip actions (publish/revoke/delete) with confirm flow; `has_thumbnail` drives live thumbnail.
+  - **Up-next rail (T10):** `partitionUpNext()` sorts remaining clips into a `.up-next` aside; `.up-next-card` horizontal compact variant with `.thumb--sm`.
+  - **Backend public markers (T11):** `GET /api/v1/public/clips/{share_id}` now returns `markers: [{kind, label, timestamp_ms}]` and `has_thumbnail: bool` (TDD).
+  - **Public watch view (T12):** anonymous `.public-shell` with brand topbar; marker bar + chapter list; no owner metadata, no edit controls; public copy banner states playback is not DRM-protected.
+  - **Admin Studio (T13):** YouTube-Studio-style underline tab bar (`.studio-tabs`); Overview tab with `.metric-grid` stat cards; Users tab with `.admin-grid` (form + table); Jobs tab with `.job-list`; no cross-user clip browsing.
+  - **Responsive + a11y (T14):** guide rail goes off-canvas at ≤ 1000 px with scrim + hamburger; search pill collapses to icon; watch layout single-column at ≤ 900 px; admin grid stacks at ≤ 900 px; skip-nav link; `aria-label` on icon-only controls; `prefers-reduced-motion` disables skeleton shimmer; focus-visible rings on all interactive elements; `.badge-private` / `.badge-unlisted` use text-muted contrast-safe colours.
+  - **Cleanup (T15):** deleted legacy `src/styles.css` and its `<link>`; migrated `.badge-private`, `.badge-unlisted`, `.brand-mark`, `.boot-screen`, `.app-root` to canonical CSS files; removed dead `navLink()` export from `shell.js`; removed legacy variable alias block from `tokens.css`.

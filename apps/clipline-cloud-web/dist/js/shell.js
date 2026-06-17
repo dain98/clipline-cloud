@@ -232,11 +232,3 @@ export function renderShell({ active, body, onMount }) {
     });
   });
 }
-
-export function navLink(href, key, active, iconSvg, label) {
-  return `
-    <a class="nav-link ${active === key ? "active" : ""}" href="${escapeAttr(href)}" data-route>
-      ${iconSvg}<span>${escapeHtml(label)}</span>
-    </a>
-  `;
-}

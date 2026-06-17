@@ -131,3 +131,10 @@ Minimal S3 bucket CORS for presigned cross-origin playback:
   S3 presigned public media redirects, and configurable public media mode/TTL. Verified local
   playback and MinIO-backed S3 playback with HTTP smokes, including public revocation returning
   anonymous `404`.
+- 2026-06-17 — Extended `GET /api/v1/public/clips/{share_id}` response with two new fields:
+  - `markers`: array of `{kind: string, label: string, timestamp_ms: u64}` objects — the same
+    marker set visible to the clip owner, allowing the public watch view to render a chapter
+    timeline and seekable marker list without requiring authentication.
+  - `has_thumbnail`: boolean — `true` when a thumbnail has been generated for this clip (Phase 2
+    onwards); the public watch view uses this to decide whether to show a thumbnail or fall back
+    to the dark placeholder. Both fields are safe to expose publicly (they carry no owner PII).
