@@ -5,6 +5,12 @@
   gap: var(--space-4);
 }
 
+@media (max-width: 600px) {
+  .clip-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+}
+
 /* ── Card shell ────────────────────────────────────────────────── */
 .card {
   position: relative;
@@ -231,6 +237,11 @@
   border-color: var(--accent-hover);
 }
 
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .chip-filters-btn {
   display: inline-flex;
   align-items: center;
@@ -346,6 +357,11 @@
   cursor: not-allowed;
 }
 
+.menu__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .menu__item--danger {
   color: var(--danger);
 }
@@ -437,6 +453,11 @@
 
 .marker-row:hover {
   background: var(--surface-2);
+}
+
+.marker-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ── Watch page components ─────────────────────────────────────── */

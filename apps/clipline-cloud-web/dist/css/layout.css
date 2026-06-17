@@ -220,6 +220,88 @@
   color: var(--text);
 }
 
+/* ── Drawer scrim ───────────────────────────────────────────────── */
+.drawer-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 149;
+}
+
+.app-body.drawer-open .drawer-scrim {
+  display: block;
+}
+
+/* ── Responsive: narrow screens (<= 1000px) ─────────────────────── */
+@media (max-width: 1000px) {
+  /* Rail becomes off-canvas overlay drawer */
+  .guide-rail {
+    position: fixed;
+    top: var(--header-h);
+    left: 0;
+    bottom: 0;
+    width: var(--rail-w);
+    z-index: 150;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    background: var(--surface);
+  }
+
+  .app-body.drawer-open .guide-rail {
+    transform: translateX(0);
+  }
+
+  /* Override mini-rail behaviour — on mobile the drawer is always full-width when open */
+  .app-body.rail-mini .guide-rail {
+    width: var(--rail-w);
+  }
+
+  .app-body.rail-mini .rail-link {
+    justify-content: flex-start;
+    padding: 10px var(--space-4);
+  }
+
+  .app-body.rail-mini .rail-link span {
+    display: inline;
+  }
+
+  /* Search pill collapses to icon button */
+  .app-header__center .search-pill {
+    display: none;
+  }
+
+  .app-header__center.search-open .search-pill {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    border-radius: 0;
+    z-index: 200;
+    height: var(--header-h);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .app-header__center .search-toggle {
+    display: flex;
+  }
+
+  /* Watch layout: single column, up-next flows below */
+  .watch-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 1001px) {
+  .app-header__center .search-toggle {
+    display: none;
+  }
+}
+
 /* Auth / login layout */
 .auth-shell {
   display: grid;

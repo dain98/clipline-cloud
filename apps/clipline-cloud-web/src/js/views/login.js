@@ -6,8 +6,8 @@ const app = document.querySelector("#app");
 
 export function renderLogin(error = "") {
   app.innerHTML = `
-    <div class="auth-shell">
-      <div class="auth-card" role="main" aria-labelledby="login-title">
+    <main class="auth-shell">
+      <div class="auth-card" aria-labelledby="login-title">
         <div style="display:flex;align-items:center;gap:.625rem;margin-bottom:1.25rem">
           <span class="account-avatar" aria-hidden="true" style="width:36px;height:36px;font-size:.9rem">CL</span>
           <span class="wordmark">Clipline Cloud</span>
@@ -27,7 +27,7 @@ export function renderLogin(error = "") {
           <button class="btn btn-primary" type="submit" style="width:100%;margin-top:.25rem">${icon("lock")} Sign in</button>
         </form>
       </div>
-    </div>
+    </main>
   `;
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
