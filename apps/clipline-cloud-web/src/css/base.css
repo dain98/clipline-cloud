@@ -163,6 +163,10 @@ button:not(:disabled):active,
   color: var(--text-muted);
 }
 
+.faint {
+  color: var(--text-faint);
+}
+
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.84em;

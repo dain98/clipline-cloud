@@ -32,14 +32,14 @@ export async function renderPublicShare(shareId) {
             <video id="public-video" controls preload="metadata"${posterAttr}${mediaUrl ? ` src="${escapeAttr(mediaUrl)}"` : ""}></video>
           </div>
           <h1>${escapeHtml(clip.title)}</h1>
-          ${gameLabel ? `<p class="text-muted">${gameLabel}</p>` : ""}
-          <p class="text-faint">
+          ${gameLabel ? `<p class="muted">${gameLabel}</p>` : ""}
+          <p class="faint">
             Recorded&nbsp;${escapeHtml(formatDate(clip.recorded_at))} &middot;
             Uploaded&nbsp;${escapeHtml(formatDate(clip.uploaded_at))} &middot;
             ${escapeHtml(formatDuration(clip.duration_ms))}
           </p>
           ${markerTimelineHtml({ markers: clip.markers, durationMs: clip.duration_ms })}
-          ${clip.copy_notice ? `<p class="text-faint copy-notice">${escapeHtml(clip.copy_notice)}</p>` : ""}
+          ${clip.copy_notice ? `<p class="faint copy-notice">${escapeHtml(clip.copy_notice)}</p>` : ""}
         </main>
       </div>
     `;
