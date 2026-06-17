@@ -25,7 +25,8 @@ header, collapsible guide rail, filter chips, responsive card grid, dedicated wa
   (Revisit only if vanilla becomes genuinely painful — flag to the user if so.)
 - No light mode. **Dark-only.**
 - No new build tooling/bundler. Native ES modules served as static files.
-- No backend changes beyond exposing markers on the public clip endpoint.
+- No backend changes beyond two small additive response fields (public-clip markers +
+  `has_thumbnail` on clip responses). No new endpoints, no schema/migrations.
 - No client-side thumbnail generation. Use designed placeholders that swap to real images later.
 - No "browse everyone's clips" surface (the §22/Appendix A privacy boundary stays intact).
 
@@ -125,9 +126,15 @@ The row list becomes a YouTube-style grid.
 Each card:
 - **16:9 thumbnail**, 12px radius. Overlays: **duration** pill (bottom-right), **visibility**
   badge (top-left). Hover = subtle lift + play affordance.
-  - **Placeholder:** deterministic gradient seeded from title+game, with a faint game label /
-    play glyph. A real `<img src=…/thumbnail>` swaps in automatically when Phase-2 thumbnails
-    exist; `onerror` falls back to the placeholder.
+  - **The gradient placeholder is the default base, not a fallback.** The deterministic gradient
+    (seeded from title+game, with a faint game label / play glyph) is always rendered as the card's
+    base. A real `<img src=…/thumbnail>` is layered on top **only when
+    `status === "ready" && has_thumbnail`** (`has_thumbnail` is a new backend field — see §12).
+    `onerror` on the image still drops back to the gradient as a defensive measure.
+  - Rationale: the server returns a **successful** generic SVG for clips without a thumbnail
+    (`media.rs::placeholder_response`, HTTP 200/304), so an `onerror` fallback would never fire and
+    every Phase-1 card would show the same bland SVG. Gating on `has_thumbnail` keeps our per-clip
+    gradients in Phase 1 and swaps in real images automatically once Phase-2 generates them.
 - **Below:** title (2-line clamp, 14/600); muted meta line — game · relative recorded date
   ("3 days ago") · file size.
 - **⋮ kebab menu** (top-right of card text): Copy link · Make public/private · Delete
@@ -136,6 +143,9 @@ Each card:
 ### Non-ready clips
 Processing/uploading/failed clips show a **status overlay** on the thumb instead of a duration
 pill (spinner for processing, red for failed). Default view = ready (matches current behavior).
+The `status === "ready" && has_thumbnail` gate above means **non-ready cards never request
+`/thumbnail`** — the owned thumbnail route requires a ready clip and 404s otherwise
+(`media.rs` → `ensure_owned_ready_clip`). Non-ready cards render the gradient + status overlay only.
 
 ### States
 - **Loading:** shimmer skeleton cards.
@@ -172,9 +182,14 @@ pill (spinner for processing, red for failed). Default view = ready (matches cur
   existing `PATCH /api/v1/clips/{id}`).
 
 ### Up-next rail
-- The user's **other clips** as compact rows (small 16:9 thumb + title + meta), same-game first
-  then most recent, each linking to its watch page. Reuses the clips list API
-  (`GET /api/v1/clips`), excluding the current clip.
+- The user's **other clips** as compact rows (small 16:9 thumb + title + meta), each linking to
+  its watch page. Reuses the clips list API (`GET /api/v1/clips`).
+- **Ordering = best-effort client-side partitioning of a single page.** `list_clips` returns one
+  page under a single sort with `page_size` clamped (`clips.rs::list_clips`), so we fetch one
+  recent-sorted page (default `uploaded_at_desc`, `page_size` ~30), drop the current clip, then
+  client-side reorder: **same game first (recency preserved within), then the rest by recency**,
+  capped at ~20. No second query, no backend change. (A dedicated same-game query is a possible
+  later enhancement if a single page proves too shallow.)
 
 ---
 
@@ -183,7 +198,8 @@ pill (spinner for processing, red for failed). Default view = ready (matches cur
 A full-width dark watch page for anonymous viewers — no guide rail, no account chrome.
 
 - Slim top bar: just the Clipline mark + wordmark.
-- Centered (~1100px max): the player (using `thumbnail_url` as poster when present), title, game,
+- Centered (~1100px max): the player (using `thumbnail_url` as poster only when `has_thumbnail`,
+  so we don't show the generic SVG; the video's first frame shows otherwise), title, game,
   recorded/uploaded/duration meta.
 - **Marker timeline** (same component as the logged-in watch page), fed by the new public markers
   field. Click-to-seek works for anonymous viewers.
@@ -266,18 +282,31 @@ styles OK), `img-src 'self' data: blob:` (data-URI placeholders + real thumbnail
 
 ---
 
-## 12. Backend change (the only Rust edit)
+## 12. Backend changes (Rust — two small additive changes)
 
-**File:** `apps/clipline-cloud-server/src/media.rs`
+Touches `apps/clipline-cloud-server/src/media.rs`, the response builders in
+`apps/clipline-cloud-server/src/clips.rs`, and the types in
+`crates/clipline-cloud-api-types/src/lib.rs`.
 
-- Extend the local `PublicClipResponse` struct with `markers: Vec<PublicMarker>`, where
+### 12.1 Public clip markers
+- Extend the local `PublicClipResponse` (in `media.rs`) with `markers: Vec<PublicMarker>`, where
   `PublicMarker = { kind: String, label: Option<String>, timestamp_ms: i64 }` — a **minimal public
   shape** (no internal ids, no metadata blob) to avoid leaking internal detail.
 - In `get_public_clip`, after `load_public_clip`, load markers via
   `state.repositories.clip_markers.list_for_clip(&clip.id)` and map into `PublicMarker`
   (mirrors the owner path in `clips.rs::detail_response`).
-- No new endpoints, no DB schema/migration changes.
 - Frontend `public.js` reads the new `markers` field to render the shared marker timeline.
+
+### 12.2 `has_thumbnail` flag on clip responses
+- Add `has_thumbnail: bool` to `ClipSummaryResponse` and `ClipDetailResponse`
+  (`crates/clipline-cloud-api-types`), and to the local `PublicClipResponse` (`media.rs`).
+- Populate from `clip.thumbnail_key.is_some()` in `clip_summary_response`, `clip_detail_response`,
+  and `get_public_clip`.
+- Lets the frontend gate the real `<img>` (§6) and the public poster (§8) precisely, rather than
+  relying on an `onerror` that never fires against the server's 200/304 placeholder.
+
+Both changes are **additive** (new response fields), backward compatible, with **no new endpoints
+and no DB schema/migration changes**.
 
 ---
 
@@ -299,6 +328,8 @@ styles OK), `img-src 'self' data: blob:` (data-URI placeholders + real thumbnail
 ### Accessibility
 - aria-labeled icon buttons (already present), accent `:focus-visible` rings.
 - Keyboard navigation for the account menu, kebab menus, and chips.
+- **Marker ticks and marker-list rows are real keyboard-reachable `<button>`s** with descriptive
+  labels (e.g. "Seek to 12:34 — First Blood"), not click-only `<span>`s.
 - `prefers-reduced-motion` disables hover-lift + shimmer.
 - Maintain semantic landmarks (`header`, `nav`, `main`, `aside`).
 
@@ -309,7 +340,8 @@ styles OK), `img-src 'self' data: blob:` (data-URI placeholders + real thumbnail
 - **Frontend:** `npm run build` (regenerate `dist`), `node scripts/check-dist.mjs` (byte-match),
   `node --check` per JS module.
 - **Backend:** `cargo fmt --all --check`, `cargo test --workspace`, `cargo build --workspace`.
-- **Smoke:** update the existing public-route HTTP smoke to expect the new `markers` field.
+- **Smoke / response-shape tests:** update the existing public-route HTTP smoke (and any
+  response-shape assertions) to expect the new `markers` and `has_thumbnail` fields.
 - **Manual:** run the server and show the running pages between milestones; optionally drive
   Playwright to screenshot grid / watch / public / admin / login.
 - **Docs:** update `docs/09-web-frontend.md` progress log; note the public-markers field in
@@ -320,8 +352,11 @@ styles OK), `img-src 'self' data: blob:` (data-URI placeholders + real thumbnail
 ## 15. Milestones (show the running page between each)
 
 1. Tokens + shell (header, guide rail) + login restyle.
-2. Library grid + chips + cards + designed placeholders.
+2. Backend §12.2 (`has_thumbnail`) + library grid + chips + cards + designed placeholders.
 3. Watch page + marker timeline + up-next rail.
-4. Public page + backend markers change.
+4. Backend §12.1 (public markers) + public page (full watch experience).
 5. Admin Studio restyle.
 6. Responsive + accessibility + polish + full verification.
+
+> Backend edits are bundled into the milestone that first needs them (§12.2 → milestone 2,
+> §12.1 → milestone 4) so each milestone is independently runnable end-to-end.
