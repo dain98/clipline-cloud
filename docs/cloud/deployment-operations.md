@@ -69,6 +69,35 @@ password, for example:
 postgres://clipline:replace-with-postgres-password@postgres:5432/clipline
 ```
 
+## Process Roles And Workers
+
+The server supports three process roles:
+
+| Role | HTTP server | Job runner | Use |
+|------|-------------|------------|-----|
+| `all` | yes | yes | Default single-container deployment. |
+| `web` | yes | no | HTTP/API container when a separate worker is enabled. |
+| `worker` | no | yes | Dedicated durable-job runner container. |
+
+All Compose profiles default the `clipline-cloud` service to `all`. To split processing, set the
+web service role through the Compose helper variable and enable the `worker` profile:
+
+```sh
+CLIPLINE_WEB_PROCESS_ROLE=web docker compose --profile worker up -d
+```
+
+With an explicit profile file:
+
+```sh
+CLIPLINE_WEB_PROCESS_ROLE=web \
+docker compose -f docker-compose.postgres.yml --profile worker up -d
+```
+
+The worker starts after `clipline-cloud` is healthy, then runs cleanup, validation, thumbnail,
+poster, and probe jobs from the shared `jobs` table. Atomic job claiming and stale-lock recovery
+allow multiple workers, but start with one. If `CLIPLINE_WEB_PROCESS_ROLE` is left unset while the
+worker profile is enabled, both containers may run job loops; this is safe but redundant.
+
 ## Smoke Verification
 
 The repository includes a Docker-only smoke runner for repeatable operations checks:

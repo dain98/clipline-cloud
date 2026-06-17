@@ -15,6 +15,7 @@ use url::Url;
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_DATABASE_URL: &str = "sqlite:///data/clipline.db";
 const DEFAULT_STORAGE_BACKEND: &str = "local";
+const DEFAULT_PROCESS_ROLE: &str = "all";
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_S3_REGION: &str = "us-east-1";
 const DEFAULT_MAX_UPLOAD_SIZE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
@@ -31,6 +32,7 @@ const S3_MIN_PART_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub process_role: ProcessRole,
     pub public_url: Url,
     pub bind_addr: SocketAddr,
     pub database_url: String,
@@ -77,6 +79,31 @@ pub enum StorageConfig {
 pub enum PublicMediaMode {
     Presigned,
     Proxy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessRole {
+    All,
+    Web,
+    Worker,
+}
+
+impl ProcessRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Web => "web",
+            Self::Worker => "worker",
+        }
+    }
+
+    pub fn runs_http(self) -> bool {
+        matches!(self, Self::All | Self::Web)
+    }
+
+    pub fn runs_jobs(self) -> bool {
+        matches!(self, Self::All | Self::Worker)
+    }
 }
 
 impl PublicMediaMode {
@@ -168,6 +195,10 @@ impl Config {
     }
 
     fn from_source(source: &impl EnvSource) -> Result<Self, ConfigError> {
+        let process_role = parse_process_role(
+            optional(source, "CLIPLINE_PROCESS_ROLE")
+                .unwrap_or_else(|| DEFAULT_PROCESS_ROLE.to_string()),
+        )?;
         let public_url = required_url(source, "CLIPLINE_PUBLIC_URL")?;
         let bind_addr = parse_socket_addr(
             "CLIPLINE_BIND_ADDR",
@@ -276,6 +307,7 @@ impl Config {
         }
 
         Ok(Self {
+            process_role,
             public_url,
             bind_addr,
             database_url,
@@ -521,6 +553,19 @@ fn parse_public_media_mode(value: String) -> Result<PublicMediaMode, ConfigError
     }
 }
 
+fn parse_process_role(value: String) -> Result<ProcessRole, ConfigError> {
+    match value.as_str() {
+        "all" => Ok(ProcessRole::All),
+        "web" => Ok(ProcessRole::Web),
+        "worker" => Ok(ProcessRole::Worker),
+        other => Err(ConfigError::InvalidEnum {
+            name: "CLIPLINE_PROCESS_ROLE",
+            value: other.to_string(),
+            expected: "all, web, worker",
+        }),
+    }
+}
+
 fn parse_u64(name: &'static str, value: Option<String>, default: u64) -> Result<u64, ConfigError> {
     match value {
         Some(value) => value
@@ -608,6 +653,7 @@ mod tests {
         let config = Config::from_source(&valid_local_env()).expect("config");
 
         assert_eq!(config.bind_addr, "0.0.0.0:8080".parse().unwrap());
+        assert_eq!(config.process_role, ProcessRole::All);
         assert_eq!(config.database_url, DEFAULT_DATABASE_URL);
         assert_eq!(config.storage_backend_name(), "local");
         assert_eq!(config.max_upload_size_bytes, DEFAULT_MAX_UPLOAD_SIZE_BYTES);
@@ -646,6 +692,41 @@ mod tests {
 
         assert_eq!(config.public_media_mode, PublicMediaMode::Proxy);
         assert_eq!(config.public_read_url_ttl, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn process_role_can_split_http_and_job_runner() {
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_PROCESS_ROLE", "web".to_string());
+
+        let config = Config::from_source(&env).expect("web config");
+
+        assert_eq!(config.process_role, ProcessRole::Web);
+        assert!(config.process_role.runs_http());
+        assert!(!config.process_role.runs_jobs());
+
+        env.insert("CLIPLINE_PROCESS_ROLE", "worker".to_string());
+        let config = Config::from_source(&env).expect("worker config");
+
+        assert_eq!(config.process_role, ProcessRole::Worker);
+        assert!(!config.process_role.runs_http());
+        assert!(config.process_role.runs_jobs());
+    }
+
+    #[test]
+    fn process_role_rejects_unknown_values() {
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_PROCESS_ROLE", "scheduler".to_string());
+
+        let err = Config::from_source(&env).expect_err("invalid role should fail");
+
+        assert!(matches!(
+            err,
+            ConfigError::InvalidEnum {
+                name: "CLIPLINE_PROCESS_ROLE",
+                ..
+            }
+        ));
     }
 
     #[test]

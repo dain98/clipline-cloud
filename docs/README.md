@@ -46,8 +46,8 @@ that shows where the project stands.
 | 10 | [Desktop App Integration](10-desktop-app-integration.md) | Phase 1 | ☑ Complete |
 | 11 | [Deployment, Operations & Hardening](11-deployment-operations-and-hardening.md) | Phase 1 | ☑ Complete |
 | 12 | [Phase 2 — Processing & Reliability](12-phase2-processing-and-reliability.md) | Phase 2 | ☑ Complete |
-| 13 | [Phase 3 — Admin & Library Polish](13-phase3-admin-and-library-polish.md) | Phase 3 | ☐ Not started |
-| 14 | [Phase 4 — Optional Scale](14-phase4-optional-scale.md) | Phase 4 | ☐ Not started |
+| 13 | [Phase 3 — Admin & Library Polish](13-phase3-admin-and-library-polish.md) | Phase 3 | ☑ Complete |
+| 14 | [Phase 4 — Optional Scale](14-phase4-optional-scale.md) | Phase 4 | ◐ In progress |
 
 ## What "v1 complete" means
 

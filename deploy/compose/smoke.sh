@@ -94,6 +94,7 @@ compose() {
 
   env \
     CLIPLINE_IMAGE="$IMAGE" \
+    CLIPLINE_WEB_PROCESS_ROLE="${CLIPLINE_WEB_PROCESS_ROLE:-}" \
     CLIPLINE_COMPOSE_ADMIN_PASSWORD_FILE="$SECRET_DIR/admin_password.txt" \
     CLIPLINE_COMPOSE_SESSION_SECRET_FILE="$SECRET_DIR/session_secret.txt" \
     CLIPLINE_COMPOSE_DATABASE_URL_FILE="$SECRET_DIR/database_url.txt" \
@@ -129,6 +130,7 @@ validate_compose_configs() {
     "$SCRIPT_DIR/docker-compose.minio.yml"
   do
     compose "clipline-config-$SMOKE_ID" "$file" config --quiet
+    compose "clipline-config-worker-$SMOKE_ID" "$file" --profile worker config --quiet
   done
 }
 
