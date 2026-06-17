@@ -100,6 +100,15 @@ export function formatBytes(value) {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+export function formatRelative(v) {
+  if (!v) return "Unknown";
+  const d = new Date(v); if (Number.isNaN(d.getTime())) return "Unknown";
+  const s = Math.round((Date.now() - d.getTime()) / 1000);
+  const u = [["year",31536000],["month",2592000],["week",604800],["day",86400],["hour",3600],["minute",60]];
+  for (const [name, secs] of u) { const n = Math.floor(s / secs); if (n >= 1) return `${n} ${name}${n>1?"s":""} ago`; }
+  return "just now";
+}
+
 export function formatProgress(basisPoints) {
   return `${(basisPoints / 100).toFixed(basisPoints % 100 === 0 ? 0 : 1)}%`;
 }
