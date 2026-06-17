@@ -22,6 +22,7 @@ const DEFAULT_MAX_UPLOAD_SIZE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const DEFAULT_UPLOAD_PART_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SINGLE_PUT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_UPLOAD_SESSION_TTL_SECONDS: u64 = 24 * 60 * 60;
+const DEFAULT_DIRECT_S3_UPLOADS: bool = false;
 const DEFAULT_JOB_POLL_INTERVAL_SECONDS: u64 = 1;
 const DEFAULT_JOB_LOCK_TIMEOUT_SECONDS: u64 = 5 * 60;
 const DEFAULT_JOB_RETRY_BASE_DELAY_SECONDS: u64 = 5;
@@ -43,6 +44,7 @@ pub struct Config {
     pub upload_part_size_bytes: u64,
     pub single_put_max_bytes: u64,
     pub upload_session_ttl: Duration,
+    pub direct_s3_uploads: bool,
     pub job_poll_interval: Duration,
     pub job_lock_timeout: Duration,
     pub job_retry_base_delay: Duration,
@@ -233,6 +235,11 @@ impl Config {
             optional(source, "CLIPLINE_UPLOAD_SESSION_TTL_SECONDS"),
             DEFAULT_UPLOAD_SESSION_TTL_SECONDS,
         )?;
+        let direct_s3_uploads = parse_bool(
+            "CLIPLINE_DIRECT_S3_UPLOADS",
+            optional(source, "CLIPLINE_DIRECT_S3_UPLOADS"),
+            DEFAULT_DIRECT_S3_UPLOADS,
+        )?;
         let job_poll_interval_seconds = parse_u64(
             "CLIPLINE_JOB_POLL_INTERVAL_SECONDS",
             optional(source, "CLIPLINE_JOB_POLL_INTERVAL_SECONDS"),
@@ -297,6 +304,11 @@ impl Config {
         let log_level =
             optional(source, "CLIPLINE_LOG_LEVEL").unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
         let storage = parse_storage(source, &storage_backend, upload_part_size_bytes)?;
+        if direct_s3_uploads && !matches!(storage, StorageConfig::S3 { .. }) {
+            return Err(ConfigError::Validation(
+                "CLIPLINE_DIRECT_S3_UPLOADS requires CLIPLINE_STORAGE_BACKEND=s3".to_string(),
+            ));
+        }
         let static_dir = default_static_dir();
         let mut startup_warnings = Vec::new();
 
@@ -318,6 +330,7 @@ impl Config {
             upload_part_size_bytes,
             single_put_max_bytes,
             upload_session_ttl: Duration::from_secs(upload_session_ttl_seconds),
+            direct_s3_uploads,
             job_poll_interval: Duration::from_secs(job_poll_interval_seconds),
             job_lock_timeout: Duration::from_secs(job_lock_timeout_seconds),
             job_retry_base_delay: Duration::from_secs(job_retry_base_delay_seconds),
@@ -662,6 +675,7 @@ mod tests {
             DEFAULT_UPLOAD_PART_SIZE_BYTES
         );
         assert_eq!(config.single_put_max_bytes, DEFAULT_SINGLE_PUT_MAX_BYTES);
+        assert!(!config.direct_s3_uploads);
         assert_eq!(config.public_media_mode, PublicMediaMode::Presigned);
         assert_eq!(
             config.public_read_url_ttl,
@@ -788,6 +802,34 @@ mod tests {
                 name: "CLIPLINE_S3_BUCKET"
             }
         ));
+    }
+
+    #[test]
+    fn direct_s3_uploads_require_s3_storage() {
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_DIRECT_S3_UPLOADS", "true".to_string());
+
+        let err = Config::from_source(&env).expect_err("local direct uploads should fail");
+
+        assert!(
+            matches!(err, ConfigError::Validation(message) if message.contains("CLIPLINE_DIRECT_S3_UPLOADS"))
+        );
+    }
+
+    #[test]
+    fn direct_s3_uploads_can_be_enabled_for_s3_storage() {
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_STORAGE_BACKEND", "s3".to_string());
+        env.insert("CLIPLINE_S3_ENDPOINT", "http://localhost:9000".to_string());
+        env.insert("CLIPLINE_S3_BUCKET", "clipline".to_string());
+        env.insert("CLIPLINE_S3_ACCESS_KEY_ID", "access".to_string());
+        env.insert("CLIPLINE_S3_SECRET_ACCESS_KEY", "secret".to_string());
+        env.insert("CLIPLINE_S3_FORCE_PATH_STYLE", "true".to_string());
+        env.insert("CLIPLINE_DIRECT_S3_UPLOADS", "1".to_string());
+
+        let config = Config::from_source(&env).expect("s3 config");
+
+        assert!(config.direct_s3_uploads);
     }
 
     #[test]

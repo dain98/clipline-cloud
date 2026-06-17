@@ -26,6 +26,8 @@ pub struct DiscoveryResponse {
 pub struct DiscoveryFeatures {
     pub single_put_upload: bool,
     pub chunked_upload: bool,
+    #[serde(default)]
+    pub direct_s3_upload: bool,
     pub public_sharing: bool,
     pub clip_markers: bool,
     pub max_upload_size_bytes: u64,
@@ -125,6 +127,10 @@ pub struct CreateUploadResponse {
     pub part_size_bytes: u64,
     pub single_put_url: Option<String>,
     pub parts_url_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_part_presign_url_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_part_ack_url_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +168,30 @@ pub struct PartUploadResponse {
     pub checksum_sha256: String,
     pub etag: Option<String>,
     pub idempotent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectUploadHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectPartUploadUrlResponse {
+    pub upload_id: String,
+    pub part_number: u16,
+    pub method: String,
+    pub url: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub expected_size_bytes: u64,
+    pub headers: Vec<DirectUploadHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectPartUploadAckRequest {
+    pub size_bytes: u64,
+    pub checksum_sha256: String,
+    pub etag: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

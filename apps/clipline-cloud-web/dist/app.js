@@ -1070,6 +1070,7 @@ function adminOverviewView(overview) {
         ${dataRow("User quota", overview.user_storage_quota_bytes ? formatBytes(overview.user_storage_quota_bytes) : "Disabled")}
         ${dataRow("Storage warning", storageWarningLabel(overview))}
         ${dataRow("Upload TTL", `${overview.upload_session_ttl_seconds}s`)}
+        ${dataRow("Direct S3 uploads", overview.direct_s3_uploads ? "Enabled" : "Disabled")}
         ${dataRow("Public media", `${overview.public_media_mode}, ${overview.public_read_url_ttl_seconds}s TTL`)}
       </dl>
     </div>

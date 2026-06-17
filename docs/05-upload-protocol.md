@@ -27,6 +27,8 @@ POST   /api/v1/uploads                          create clip + session
 GET    /api/v1/uploads/{id}                      progress (received/missing parts)
 PUT    /api/v1/uploads/{id}/content              single-PUT body (small clips)
 PUT    /api/v1/uploads/{id}/parts/{part_number}  one chunk (chunked path)
+POST   /api/v1/uploads/{id}/parts/{n}/presign    optional Phase-4 direct-S3 presign
+POST   /api/v1/uploads/{id}/parts/{n}/ack        optional Phase-4 direct-S3 part ack
 POST   /api/v1/uploads/{id}/complete             finalize
 DELETE /api/v1/uploads/{id}                       abort + cleanup
 ```
@@ -97,7 +99,9 @@ The client uses the **server-returned** `part_size_bytes`, never its own local d
   "mode": "chunked",
   "part_size_bytes": 8388608,
   "single_put_url": null,
-  "parts_url_template": "/api/v1/uploads/01JZ8T2N8MM86AGD9TD98DQ1RE/parts/{part_number}"
+  "parts_url_template": "/api/v1/uploads/01JZ8T2N8MM86AGD9TD98DQ1RE/parts/{part_number}",
+  "direct_part_presign_url_template": null,
+  "direct_part_ack_url_template": null
 }
 ```
 
@@ -134,6 +138,38 @@ already-stored checksum (safe to retry on flaky connections). Re-uploading an al
 number with a **different** checksum returns **`409 Conflict`** unless the upload session is
 explicitly reset.
 
+### Optional direct-to-S3 part transport (§12 / Phase 4)
+
+When `CLIPLINE_DIRECT_S3_UPLOADS=true` and `storage_backend=s3`, the create response for chunked
+uploads also includes:
+
+```json
+{
+  "direct_part_presign_url_template": "/api/v1/uploads/01JZ8T2N8MM86AGD9TD98DQ1RE/parts/{part_number}/presign",
+  "direct_part_ack_url_template": "/api/v1/uploads/01JZ8T2N8MM86AGD9TD98DQ1RE/parts/{part_number}/ack"
+}
+```
+
+The server still owns the upload session and S3 multipart upload ID. For each missing part:
+
+1. The client calls `POST /parts/{n}/presign`.
+2. The server validates ownership/session state, then returns a short-lived S3 `UploadPart` PUT URL,
+   the expected part size, expiry, and any required headers.
+3. The client PUTs the exact part bytes to S3.
+4. The client calls `POST /parts/{n}/ack` with `size_bytes`, whole-part `checksum_sha256`, and the
+   S3 `ETag` returned by the PUT.
+5. The server stores that part record and the normal `POST /complete` path assembles the S3 multipart
+   upload with stored ETags.
+
+This is an alternate **transport** for the chunked path, not a new lifecycle. `GET /uploads/{id}`,
+`POST /complete`, and `DELETE /uploads/{id}` behave the same as server-proxy uploads.
+
+**Integrity difference:** for server-proxy `PUT /parts/{n}`, the server computes and stores each
+part checksum itself. For direct-S3 uploads, the ack endpoint stores the client-reported part
+checksum and ETag because the API server never sees the bytes. The authoritative whole-object check
+remains the asynchronous `validate_object` job after completion. Treat the ack checksum as resumable
+upload metadata, not as final proof of object integrity.
+
 ### Complete (§12)
 
 The server verifies every part is present and `Σ size == expected_size_bytes`, then calls
@@ -160,14 +196,14 @@ On POST /complete:
 Crash-then-retry is safe: either the object is there (adopt it) or it isn't (retry/fail), with no
 dependence on the consumed multipart upload ID.
 
-> **Integrity (be precise about S3):** the per-part checksum is always **server-computed**, never a
-> client claim. On **local**, `complete` also verifies whole-file SHA-256 (the server has all the
-> bytes). On **S3**, completion verifies part presence, part sizes, server-observed part checksums,
-> and S3 ETags; whole-object SHA-256 verification is **asynchronous** (a background `validate_object`
-> job streams the object — doc 06) *unless* S3 native checksums (SHA-256/CRC32 on multipart) are
-> enabled, in which case S3 verifies on `CompleteMultipartUpload`. Treat **S3 ETags as completion
-> handles, not cryptographic integrity proofs** — providers vary. The product does **not** claim
-> end-to-end hash verification at completion in S3 mode.
+> **Integrity (be precise about S3):** in the server-proxy chunked path, the per-part checksum is
+> always **server-computed**, never a client claim. On **local**, `complete` also verifies whole-file
+> SHA-256 (the server has all the bytes). On **S3**, completion verifies part presence, part sizes,
+> recorded part checksums, and S3 ETags; whole-object SHA-256 verification is **asynchronous** (a
+> background `validate_object` job streams the object — doc 06) *unless* S3 native checksums
+> (SHA-256/CRC32 on multipart) are enabled, in which case S3 verifies on `CompleteMultipartUpload`.
+> Treat **S3 ETags as completion handles, not cryptographic integrity proofs** — providers vary. The
+> product does **not** claim end-to-end hash verification at completion in S3 mode.
 
 The clip becomes viewable only after `complete` succeeds **and** processing reaches `ready` (doc
 06). `uploaded_at` is stamped **server-side** at this point — never from a client clock.
@@ -181,8 +217,9 @@ single-PUT threshold 64 MiB; default visibility `private`.
 
 ### Future (not v1)
 
-Direct-to-S3 multipart via presigned part URLs, or TUS. The first-party protocol above is enough for
-v1 and keeps tight control over the desktop UX (revisited in doc 14).
+Direct-to-S3 multipart via presigned part URLs is now scaffolded as the Phase-4 extension above, but
+still requires desktop-client support and end-to-end smoke coverage before doc 14 marks it shipped.
+TUS remains a possible later replacement if resumability requirements outgrow this first-party flow.
 
 ## Implementation checklist
 
@@ -200,6 +237,8 @@ v1 and keeps tight control over the desktop UX (revisited in doc 14).
 - [x] `uploaded_at` stamped server-side at finalize; enqueue `validate_object` (doc 06)
 - [x] `DELETE /uploads/{id}` aborts session + storage multipart and cleans temp parts
 - [x] Enforce per-endpoint authz (caller owns the session), session not expired, MP4-only content-type, no client paths, max-size + max-active-sessions limits
+- [x] Phase-4 scaffold: disabled-by-default direct-S3 presign + ack endpoints for chunked uploads
+- [ ] Phase-4 direct-S3 end-to-end client upload path and MinIO smoke
 
 ## Definition of done
 
@@ -227,3 +266,7 @@ v1 and keeps tight control over the desktop UX (revisited in doc 14).
   resumable chunked upload, duplicate/conflicting parts, abort cleanup, DB processing/jobs checks,
   and manual storage-complete/DB-crash reconciliation, plus an S3/MinIO smoke test covering
   chunked upload, non-final S3 part rejection, completion, and processing/job state.
+- 2026-06-17: Added the disabled-by-default direct-S3 upload scaffold: discovery/admin capability,
+  create-response direct part templates, `POST /parts/{n}/presign`, `POST /parts/{n}/ack`, S3
+  presigned `UploadPart` URL support, and docs for the integrity difference from server-proxy
+  part uploads.

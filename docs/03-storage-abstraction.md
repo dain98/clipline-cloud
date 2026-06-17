@@ -33,6 +33,7 @@ trait StorageBackend {
 
   create_multipart_upload(key) -> upload_id
   upload_part(upload_id, key, part_number, stream) -> PartResult { etag, size }
+  create_upload_part_url(upload_id, key, part_number, ttl) -> Option<PresignedUploadPartUrl>
   complete_multipart_upload(upload_id, key, parts[])
   abort_multipart_upload(upload_id, key)
 
@@ -50,11 +51,14 @@ the object body.**
 - **Completion is crash-safe:** validate all parts, concatenate in part-number order into
   `source.mp4.tmp`, `fsync`, then **atomically rename** to the final key. The server never exposes a
   partially assembled final object.
+- `create_upload_part_url` returns `None`, signalling direct-to-object-store upload is unavailable.
 - `create_read_url` returns `None`, signalling the caller to proxy.
 
 ### S3 adapter (§11)
 
 - Maps 1:1 to S3 multipart; `complete` passes the stored per-part ETags.
+- `create_upload_part_url` returns a short-lived presigned `UploadPart` PUT URL for the optional
+  direct-to-S3 upload path in doc 14.
 - `create_read_url` returns a presigned GET.
 - Honors `CLIPLINE_S3_ENDPOINT`, `_BUCKET`, `_REGION`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`,
   `_FORCE_PATH_STYLE`, `_PREFIX` (config from doc 01).
@@ -90,9 +94,11 @@ backend never trusts a client-supplied path.
 - [x] **Local adapter**: `put_object`, ranged `get_object`, `head_object`, `delete_object`, `object_exists`
 - [x] Local multipart: temp dir + `part_<NNNN>`, validate → concat in order → `.tmp` → `fsync` → atomic rename
 - [x] Local `create_read_url` returns `None`
+- [x] Local `create_upload_part_url` returns `None`
 - [x] Local in-progress parts live under `/data/tmp/uploads/<session>`
 - [x] **S3 adapter**: object ops + multipart mapped 1:1 to S3 (`create`/`upload_part`/`complete` with stored ETags/`abort`)
 - [x] S3 `create_read_url` returns a presigned GET; bucket stays private by default
+- [x] S3 `create_upload_part_url` returns a presigned `UploadPart` PUT URL for Phase-4 direct upload
 - [x] S3 adapter honors endpoint/bucket/region/keys/path-style/prefix config
 - [x] Backend selected at startup from `CLIPLINE_STORAGE_BACKEND`; never trusts client-supplied paths
 - [x] `/readyz` storage-reachability probe implemented (joins the doc-02 DB probe)
@@ -115,3 +121,6 @@ backend never trusts a client-supplied path.
   not-ready responses, local path traversal rejection, local object/range/delete behavior,
   crash-safe multipart completion before final rename, normal workspace build/tests, and an ignored
   MinIO S3 round-trip test run against a disposable `minio/minio` container.
+- 2026-06-17 — Added the optional storage hook for presigned S3 multipart part URLs. Local storage
+  returns `None`; S3 returns short-lived presigned `UploadPart` PUT URLs for the direct-upload
+  scaffold in doc 14.

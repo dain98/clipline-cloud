@@ -76,6 +76,7 @@ CLIPLINE_MAX_UPLOAD_SIZE_BYTES
 CLIPLINE_UPLOAD_PART_SIZE_BYTES     # must be >= 5 MiB for S3
 CLIPLINE_SINGLE_PUT_MAX_BYTES       # default 64 MiB
 CLIPLINE_UPLOAD_SESSION_TTL_SECONDS
+CLIPLINE_DIRECT_S3_UPLOADS          # optional Phase-4 direct upload; false by default, s3 only
 CLIPLINE_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER
 CLIPLINE_USER_STORAGE_QUOTA_BYTES   # optional; 0/unset disables
 CLIPLINE_GLOBAL_STORAGE_WARNING_THRESHOLD_BYTES # optional; 0/unset disables
@@ -94,6 +95,7 @@ CLIPLINE_LOG_LEVEL
   HTTP + job-runner process.
 - `local` backend requires `CLIPLINE_DATA_DIR`.
 - `s3` backend requires `CLIPLINE_S3_ENDPOINT`, `CLIPLINE_S3_BUCKET`, access key, secret key.
+- `CLIPLINE_DIRECT_S3_UPLOADS=true` requires `CLIPLINE_STORAGE_BACKEND=s3`.
 - `CLIPLINE_PUBLIC_MEDIA_MODE` must be `presigned` or `proxy`; public read URL TTL must be positive.
 - `_FILE` variants (Docker secrets) are supported for every secret and **preferred** over inline
   values — read the file contents at startup.

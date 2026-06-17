@@ -307,6 +307,7 @@ async fn discovery(State(state): State<AppState>) -> Json<DiscoveryResponse> {
         features: DiscoveryFeatures {
             single_put_upload: true,
             chunked_upload: true,
+            direct_s3_upload: state.config.direct_s3_uploads,
             public_sharing: true,
             clip_markers: true,
             max_upload_size_bytes: state.config.max_upload_size_bytes,
