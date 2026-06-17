@@ -170,3 +170,220 @@
   flex-direction: column;
   justify-content: center;
 }
+
+/* ── Library page wrapper ──────────────────────────────────────── */
+.library-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ── Chip bar ──────────────────────────────────────────────────── */
+.chip-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  position: sticky;
+  top: var(--header-h);
+  background: var(--bg);
+  z-index: 10;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-3);
+}
+
+.chip-spacer {
+  flex: 1;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  font-family: var(--font);
+  line-height: 1.4;
+}
+
+.chip:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.chip--active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.chip--active:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.chip-filters-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 13px;
+}
+
+/* ── Filters panel ─────────────────────────────────────────────── */
+.filters-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+}
+
+.filters-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+.filters-form .field {
+  min-width: 160px;
+  flex: 1;
+}
+
+.filters-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+/* ── Skeleton cards ────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 800px 100%;
+  border-radius: var(--radius-btn);
+}
+
+.skeleton-card {
+  pointer-events: none;
+}
+
+.skeleton--thumb {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+}
+
+.skeleton--title {
+  height: 1rem;
+  width: 75%;
+  margin-bottom: var(--space-2);
+}
+
+.skeleton--meta {
+  height: 0.75rem;
+  width: 55%;
+}
+
+/* ── Kebab pop-up menu ─────────────────────────────────────────── */
+.menu {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  min-width: 180px;
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.menu__item:hover {
+  background: var(--surface-3);
+}
+
+.menu__item:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+.menu__item--danger {
+  color: var(--danger);
+}
+
+.menu__item--danger:hover {
+  background: var(--danger-soft);
+}
+
+/* ── Empty state ───────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.empty-state__icon {
+  color: var(--text-faint);
+}
+
+.empty-state__icon .icon {
+  width: 48px;
+  height: 48px;
+}
+
+.empty-state__title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.empty-state__body {
+  font-size: 13px;
+  margin: 0;
+  color: var(--text-muted);
+}
