@@ -11,3 +11,20 @@
   --header-h:56px; --rail-w:240px; --rail-mini-w:72px;
   --font: system-ui, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
+
+/* Legacy aliases: bridge pre-redesign variable names used by styles.css to the
+   new dark tokens so existing rules render coherently dark during migration.
+   Removed when styles.css is deleted (final task). */
+:root {
+  --surface-subtle: var(--surface-2);
+  --surface-warm: var(--surface-2);
+  --ink: var(--text);
+  --muted: var(--text-muted);
+  --line: var(--border);
+  --accent-strong: var(--accent-hover);
+  --blue: var(--accent);
+  --blue-soft: rgba(47, 111, 237, 0.16);
+  --warning: var(--gold);
+  --warning-soft: rgba(217, 169, 63, 0.16);
+  --shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
