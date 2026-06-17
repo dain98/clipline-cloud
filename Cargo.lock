@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytes",
  "clipline-cloud-api-types",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-api-types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-db"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-storage"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "aws-config",

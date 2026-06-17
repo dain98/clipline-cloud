@@ -126,6 +126,7 @@ subnet, keep `CLIPLINE_CADDY_IP` and `CLIPLINE_APP_IP` inside that subnet so aud
 real client IP instead of the proxy IP.
 
 For production, pin `CLIPLINE_IMAGE` to a released version tag instead of relying on `:latest`.
+See [`release-process.md`](release-process.md) for the tag workflow and post-release smoke checks.
 Profiles that default to `http://localhost:8080` are local/LAN defaults; set `CLIPLINE_PUBLIC_URL` to
 an HTTPS URL behind Caddy before exposing S3 or MinIO-backed deployments to users.
 
