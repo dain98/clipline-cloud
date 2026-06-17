@@ -200,6 +200,19 @@ pub struct PartResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresignedUploadHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresignedUploadPartUrl {
+    pub url: Url,
+    pub expires_at: DateTime<Utc>,
+    pub headers: Vec<PresignedUploadHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedUploadPart {
     pub part_number: u16,
     pub etag: String,
@@ -246,6 +259,13 @@ pub trait StorageBackend: Send + Sync {
         part_number: u16,
         bytes: Bytes,
     ) -> StorageResult<PartResult>;
+    async fn create_upload_part_url(
+        &self,
+        upload_id: &str,
+        key: &ObjectKey,
+        part_number: u16,
+        ttl: Duration,
+    ) -> StorageResult<Option<PresignedUploadPartUrl>>;
     async fn complete_multipart_upload(
         &self,
         upload_id: &str,
@@ -677,6 +697,17 @@ impl StorageBackend for LocalStorage {
         })
     }
 
+    async fn create_upload_part_url(
+        &self,
+        _upload_id: &str,
+        _key: &ObjectKey,
+        part_number: u16,
+        _ttl: Duration,
+    ) -> StorageResult<Option<PresignedUploadPartUrl>> {
+        validate_part_number(part_number)?;
+        Ok(None)
+    }
+
     async fn complete_multipart_upload(
         &self,
         upload_id: &str,
@@ -1030,6 +1061,47 @@ impl StorageBackend for S3Storage {
             etag: output.e_tag().map(trim_s3_etag).unwrap_or_default(),
             size_bytes: bytes.len() as u64,
         })
+    }
+
+    async fn create_upload_part_url(
+        &self,
+        upload_id: &str,
+        key: &ObjectKey,
+        part_number: u16,
+        ttl: Duration,
+    ) -> StorageResult<Option<PresignedUploadPartUrl>> {
+        validate_part_number(part_number)?;
+        let presigned = self
+            .client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(self.physical_key(key))
+            .upload_id(upload_id)
+            .part_number(i32::from(part_number))
+            .presigned(
+                PresigningConfig::expires_in(ttl)
+                    .map_err(|error| StorageError::S3(error.to_string()))?,
+            )
+            .await
+            .map_err(s3_error)?;
+
+        let expires_at = Utc::now()
+            + chrono::Duration::from_std(ttl)
+                .map_err(|error| StorageError::S3(error.to_string()))?;
+
+        let headers = presigned
+            .headers()
+            .map(|(name, value)| PresignedUploadHeader {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+            .collect();
+
+        Ok(Some(PresignedUploadPartUrl {
+            url: Url::parse(&presigned.uri().to_string())?,
+            expires_at,
+            headers,
+        }))
     }
 
     async fn complete_multipart_upload(

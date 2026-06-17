@@ -462,6 +462,7 @@ mod tests {
             features: clipline_cloud_api_types::DiscoveryFeatures {
                 single_put_upload: true,
                 chunked_upload: true,
+                direct_s3_upload: false,
                 public_sharing: true,
                 clip_markers: true,
                 max_upload_size_bytes: 1,

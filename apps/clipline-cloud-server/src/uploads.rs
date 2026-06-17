@@ -7,7 +7,8 @@ use axum::{
 };
 use chrono::Duration as ChronoDuration;
 use clipline_cloud_api_types::{
-    CreateUploadRequest, CreateUploadResponse, PartUploadResponse, UploadProgressResponse,
+    CreateUploadRequest, CreateUploadResponse, DirectPartUploadAckRequest,
+    DirectPartUploadUrlResponse, DirectUploadHeader, PartUploadResponse, UploadProgressResponse,
 };
 use clipline_cloud_core::jobs::enqueue_validate_object;
 use clipline_cloud_db::{
@@ -32,6 +33,7 @@ const S3_MIN_PART_SIZE_BYTES: u64 = 5 * MIB;
 const MAX_MULTIPART_PARTS: u64 = 10_000;
 const PART_SHA256_HEADER: &str = "x-clipline-part-sha256";
 const STORAGE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+const DIRECT_UPLOAD_PART_URL_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 pub fn routes(max_request_body_bytes: usize) -> Router<AppState> {
     Router::new()
@@ -39,6 +41,14 @@ pub fn routes(max_request_body_bytes: usize) -> Router<AppState> {
         .route("/api/v1/uploads/{id}", get(get_upload).delete(abort_upload))
         .route("/api/v1/uploads/{id}/content", put(put_content))
         .route("/api/v1/uploads/{id}/parts/{part_number}", put(put_part))
+        .route(
+            "/api/v1/uploads/{id}/parts/{part_number}/presign",
+            post(create_direct_part_url),
+        )
+        .route(
+            "/api/v1/uploads/{id}/parts/{part_number}/ack",
+            post(ack_direct_part_upload),
+        )
         .route("/api/v1/uploads/{id}/complete", post(complete_upload))
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
 }
@@ -57,7 +67,7 @@ async fn create_upload(
         if let Some(existing_session) =
             load_existing_idempotent_session(&state, &auth.user.id, client_clip_id).await?
         {
-            return Ok(Json(create_response(&existing_session)?));
+            return Ok(Json(create_response(&state.config, &existing_session)?));
         }
     }
 
@@ -133,7 +143,7 @@ async fn create_upload(
                         load_existing_idempotent_session(&state, &auth.user.id, client_clip_id)
                             .await?
                     {
-                        return Ok(Json(create_response(&existing_session)?));
+                        return Ok(Json(create_response(&state.config, &existing_session)?));
                     }
                     return Err(ApiError::conflict(
                         "idempotent upload is being created; retry this request",
@@ -167,7 +177,7 @@ async fn create_upload(
         .create(&new_session)
         .await?;
 
-    Ok(Json(create_response(&session)?))
+    Ok(Json(create_response(&state.config, &session)?))
 }
 
 async fn get_upload(
@@ -299,6 +309,122 @@ async fn put_part(
     );
     new_part.checksum_sha256 = Some(checksum);
     new_part.etag = Some(uploaded_part.etag);
+    let part = state.repositories.upload_parts.upsert(&new_part).await?;
+    let received_size = state
+        .repositories
+        .upload_parts
+        .sum_size_for_session(&session.id)
+        .await?;
+    state
+        .repositories
+        .upload_sessions
+        .mark_uploading(&session.id, received_size)
+        .await?;
+
+    Ok(Json(part_response(&session.id, &part, false)))
+}
+
+async fn create_direct_part_url(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, part_number)): Path<(String, u16)>,
+) -> Result<Json<DirectPartUploadUrlResponse>, ApiError> {
+    let auth = auth::require_auth(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    ensure_direct_s3_uploads(&state.config)?;
+
+    let (session, _clip) = load_owned_upload(&state, &auth, &id).await?;
+    ensure_mutable_upload(&session)?;
+    let Some(storage_upload_id) = session.storage_upload_id.as_deref() else {
+        return Err(ApiError::bad_request(
+            "single PUT upload sessions cannot use direct S3 part URLs",
+        ));
+    };
+    validate_part_number_for_session(&session, part_number)?;
+    if state
+        .repositories
+        .upload_parts
+        .get(&session.id, i64::from(part_number))
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::conflict("part number is already acknowledged"));
+    }
+
+    let key = ObjectKey::parse(&session.storage_key).map_err(storage_error)?;
+    let Some(presigned) = state
+        .storage
+        .create_upload_part_url(
+            storage_upload_id,
+            &key,
+            part_number,
+            DIRECT_UPLOAD_PART_URL_TTL,
+        )
+        .await
+        .map_err(storage_error)?
+    else {
+        return Err(ApiError::bad_request(
+            "direct S3 uploads are not available for this storage backend",
+        ));
+    };
+
+    Ok(Json(DirectPartUploadUrlResponse {
+        upload_id: session.id.clone(),
+        part_number,
+        method: "PUT".to_string(),
+        url: presigned.url.to_string(),
+        expires_at: presigned.expires_at,
+        expected_size_bytes: expected_size_for_part(&session, part_number)?,
+        headers: presigned
+            .headers
+            .into_iter()
+            .map(|header| DirectUploadHeader {
+                name: header.name,
+                value: header.value,
+            })
+            .collect(),
+    }))
+}
+
+async fn ack_direct_part_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, part_number)): Path<(String, u16)>,
+    Json(request): Json<DirectPartUploadAckRequest>,
+) -> Result<Json<PartUploadResponse>, ApiError> {
+    let auth = auth::require_auth(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    ensure_direct_s3_uploads(&state.config)?;
+
+    let (session, _clip) = load_owned_upload(&state, &auth, &id).await?;
+    ensure_mutable_upload(&session)?;
+    if session.storage_upload_id.is_none() {
+        return Err(ApiError::bad_request(
+            "single PUT upload sessions cannot acknowledge direct S3 parts",
+        ));
+    }
+    validate_part_number_for_session(&session, part_number)?;
+
+    let ack = validate_direct_part_ack(&state.config, &session, part_number, &request)?;
+
+    if let Some(existing) = state
+        .repositories
+        .upload_parts
+        .get(&session.id, i64::from(part_number))
+        .await?
+    {
+        if direct_part_ack_matches_existing(&existing, &ack) {
+            return Ok(Json(part_response(&session.id, &existing, true)));
+        }
+        return Err(ApiError::conflict(
+            "part number already exists with different direct upload metadata",
+        ));
+    }
+
+    let mut new_part =
+        NewUploadPart::new(&session.id, i64::from(part_number), ack.size_bytes as i64);
+    new_part.checksum_sha256 = Some(ack.checksum_sha256);
+    new_part.etag = Some(ack.etag);
     let part = state.repositories.upload_parts.upsert(&new_part).await?;
     let received_size = state
         .repositories
@@ -576,6 +702,24 @@ async fn enforce_user_storage_quota(
     Ok(())
 }
 
+fn ensure_direct_s3_uploads(config: &Config) -> Result<(), ApiError> {
+    if direct_s3_uploads_available(config) {
+        return Ok(());
+    }
+    // Config validation rejects this at startup; keep the branch as defense-in-depth for tests and
+    // future config construction paths.
+    if config.direct_s3_uploads {
+        return Err(ApiError::bad_request(
+            "direct S3 uploads require s3 storage",
+        ));
+    }
+    Err(ApiError::bad_request("direct S3 uploads are not enabled"))
+}
+
+fn direct_s3_uploads_available(config: &Config) -> bool {
+    config.direct_s3_uploads && is_s3_storage(config)
+}
+
 fn ensure_not_expired(session: &UploadSession) -> Result<(), ApiError> {
     if session.status != "completed" && session.expires_at <= now_utc() {
         return Err(ApiError::conflict("upload session has expired"));
@@ -671,8 +815,12 @@ async fn progress_response(
     })
 }
 
-fn create_response(session: &UploadSession) -> Result<CreateUploadResponse, ApiError> {
+fn create_response(
+    config: &Config,
+    session: &UploadSession,
+) -> Result<CreateUploadResponse, ApiError> {
     let mode = upload_mode(session);
+    let direct_upload = mode == UploadMode::Chunked && direct_s3_uploads_available(config);
     Ok(CreateUploadResponse {
         clip_id: session.clip_id.clone(),
         upload_id: session.id.clone(),
@@ -682,6 +830,14 @@ fn create_response(session: &UploadSession) -> Result<CreateUploadResponse, ApiE
             .then(|| format!("/api/v1/uploads/{}/content", session.id)),
         parts_url_template: (mode == UploadMode::Chunked)
             .then(|| format!("/api/v1/uploads/{}/parts/{{part_number}}", session.id)),
+        direct_part_presign_url_template: direct_upload.then(|| {
+            format!(
+                "/api/v1/uploads/{}/parts/{{part_number}}/presign",
+                session.id
+            )
+        }),
+        direct_part_ack_url_template: direct_upload
+            .then(|| format!("/api/v1/uploads/{}/parts/{{part_number}}/ack", session.id)),
     })
 }
 
@@ -694,6 +850,36 @@ fn part_response(upload_id: &str, part: &UploadPart, idempotent: bool) -> PartUp
         etag: part.etag.clone(),
         idempotent,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectPartAck {
+    size_bytes: u64,
+    checksum_sha256: String,
+    etag: String,
+}
+
+fn validate_direct_part_ack(
+    config: &Config,
+    session: &UploadSession,
+    part_number: u16,
+    request: &DirectPartUploadAckRequest,
+) -> Result<DirectPartAck, ApiError> {
+    let checksum = request.checksum_sha256.trim().to_ascii_lowercase();
+    validate_checksum(&checksum)?;
+    validate_part_size(config, session, part_number, request.size_bytes)?;
+    let etag = normalize_direct_part_etag(&request.etag)?;
+    Ok(DirectPartAck {
+        size_bytes: request.size_bytes,
+        checksum_sha256: checksum,
+        etag,
+    })
+}
+
+fn direct_part_ack_matches_existing(part: &UploadPart, ack: &DirectPartAck) -> bool {
+    part.checksum_sha256.as_deref() == Some(ack.checksum_sha256.as_str())
+        && u64::try_from(part.size_bytes).ok() == Some(ack.size_bytes)
+        && part.etag.as_deref() == Some(ack.etag.as_str())
 }
 
 fn validate_completed_parts(
@@ -973,6 +1159,43 @@ fn optional_checksum_header(headers: &HeaderMap) -> Result<Option<String>, ApiEr
     Ok(Some(checksum))
 }
 
+fn normalize_direct_part_etag(etag: &str) -> Result<String, ApiError> {
+    let etag = etag.trim();
+    let starts_with_quote = etag.starts_with('"');
+    let ends_with_quote = etag.ends_with('"');
+    let etag = match (starts_with_quote, ends_with_quote) {
+        (true, true) if etag.len() >= 2 => &etag[1..etag.len() - 1],
+        (true, _) | (_, true) => {
+            return Err(ApiError::bad_request("etag must be an S3-style ETag"));
+        }
+        (false, false) => etag,
+    };
+
+    if !is_s3_style_etag(etag) {
+        return Err(ApiError::bad_request("etag must be an S3-style ETag"));
+    }
+    Ok(etag.to_string())
+}
+
+fn is_s3_style_etag(etag: &str) -> bool {
+    let (hex, suffix) = match etag.split_once('-') {
+        Some((hex, suffix)) if !hex.contains('-') && !suffix.contains('-') => (hex, Some(suffix)),
+        Some(_) => return false,
+        None => (etag, None),
+    };
+
+    if hex.len() != 32 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    match suffix {
+        Some(value) => {
+            !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) && value != "0"
+        }
+        None => true,
+    }
+}
+
 fn validate_checksum(checksum: &str) -> Result<(), ApiError> {
     if checksum.len() == 64 && checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Ok(());
@@ -1126,6 +1349,21 @@ mod tests {
         }
     }
 
+    fn s3_direct_config() -> Config {
+        let mut config = Config::for_tests("sqlite:///tmp/clipline-upload-test.db", "/tmp");
+        config.direct_s3_uploads = true;
+        config.storage = StorageConfig::S3 {
+            endpoint: "http://localhost:9000".to_string(),
+            bucket: "clipline".to_string(),
+            region: "us-east-1".to_string(),
+            access_key_id: "access".to_string(),
+            secret_access_key: "secret".to_string(),
+            force_path_style: true,
+            prefix: None,
+        };
+        config
+    }
+
     #[test]
     fn part_size_rounds_up_to_mib_and_respects_s3_minimum() {
         assert_eq!(choose_part_size(1, 1, false).unwrap(), MIB);
@@ -1174,6 +1412,130 @@ mod tests {
         assert_eq!(progress_basis_points("uploading", 150, 100), 10_000);
         assert_eq!(progress_basis_points("created", 0, 0), 0);
         assert_eq!(progress_basis_points("completed", 0, 100), 10_000);
+    }
+
+    #[test]
+    fn create_response_advertises_direct_s3_templates_only_when_enabled() {
+        let upload = session(4, 10);
+        let local_config = Config::for_tests("sqlite:///tmp/clipline-upload-test.db", "/tmp");
+
+        let response = create_response(&local_config, &upload).expect("local response");
+        assert!(response.direct_part_presign_url_template.is_none());
+        assert!(response.direct_part_ack_url_template.is_none());
+
+        let s3_config = s3_direct_config();
+
+        let response = create_response(&s3_config, &upload).expect("s3 response");
+        assert_eq!(
+            response.direct_part_presign_url_template.as_deref(),
+            Some("/api/v1/uploads/upload/parts/{part_number}/presign")
+        );
+        assert_eq!(
+            response.direct_part_ack_url_template.as_deref(),
+            Some("/api/v1/uploads/upload/parts/{part_number}/ack")
+        );
+    }
+
+    #[test]
+    fn direct_s3_gate_requires_enabled_s3_storage() {
+        let local_config = Config::for_tests("sqlite:///tmp/clipline-upload-test.db", "/tmp");
+        let err = ensure_direct_s3_uploads(&local_config).expect_err("disabled");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+
+        let mut invalid_config = local_config;
+        invalid_config.direct_s3_uploads = true;
+        let err = ensure_direct_s3_uploads(&invalid_config).expect_err("not s3");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+
+        assert!(ensure_direct_s3_uploads(&s3_direct_config()).is_ok());
+    }
+
+    #[test]
+    fn direct_part_ack_validation_rejects_bad_metadata() {
+        let config = s3_direct_config();
+        let upload = session(5 * MIB as i64, 5 * MIB as i64);
+        let valid_etag = "0123456789abcdef0123456789abcdef";
+        let valid = DirectPartUploadAckRequest {
+            size_bytes: 5 * MIB,
+            checksum_sha256: "a".repeat(64),
+            etag: valid_etag.to_string(),
+        };
+
+        let ack = validate_direct_part_ack(&config, &upload, 1, &valid).expect("valid ack");
+        assert_eq!(ack.size_bytes, 5 * MIB);
+        assert_eq!(ack.checksum_sha256, "a".repeat(64));
+        assert_eq!(ack.etag, valid_etag);
+
+        let mut bad_checksum = valid.clone();
+        bad_checksum.checksum_sha256 = "not-a-checksum".to_string();
+        assert!(validate_direct_part_ack(&config, &upload, 1, &bad_checksum).is_err());
+
+        let mut bad_size = valid.clone();
+        bad_size.size_bytes = 1;
+        assert!(validate_direct_part_ack(&config, &upload, 1, &bad_size).is_err());
+
+        let mut bad_etag = valid;
+        bad_etag.etag = "bad etag".to_string();
+        assert!(validate_direct_part_ack(&config, &upload, 1, &bad_etag).is_err());
+    }
+
+    #[test]
+    fn direct_part_ack_matching_detects_idempotent_and_conflicting_metadata() {
+        let etag = "0123456789abcdef0123456789abcdef";
+        let existing = UploadPart {
+            upload_session_id: "upload".to_string(),
+            part_number: 1,
+            size_bytes: 5 * MIB as i64,
+            checksum_sha256: Some("a".repeat(64)),
+            etag: Some(etag.to_string()),
+            received_at: now_utc(),
+        };
+        let ack = DirectPartAck {
+            size_bytes: 5 * MIB,
+            checksum_sha256: "a".repeat(64),
+            etag: etag.to_string(),
+        };
+
+        assert!(direct_part_ack_matches_existing(&existing, &ack));
+
+        let mut different_checksum = ack.clone();
+        different_checksum.checksum_sha256 = "b".repeat(64);
+        assert!(!direct_part_ack_matches_existing(
+            &existing,
+            &different_checksum
+        ));
+
+        let mut different_size = ack.clone();
+        different_size.size_bytes -= 1;
+        assert!(!direct_part_ack_matches_existing(
+            &existing,
+            &different_size
+        ));
+
+        let mut different_etag = ack;
+        different_etag.etag = "fedcba9876543210fedcba9876543210".to_string();
+        assert!(!direct_part_ack_matches_existing(
+            &existing,
+            &different_etag
+        ));
+    }
+
+    #[test]
+    fn direct_part_etag_normalization_accepts_s3_style_etags() {
+        assert_eq!(
+            normalize_direct_part_etag(r#" "0123456789abcdef0123456789abcdef" "#).expect("etag"),
+            "0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            normalize_direct_part_etag("0123456789ABCDEF0123456789ABCDEF-2").expect("multipart"),
+            "0123456789ABCDEF0123456789ABCDEF-2"
+        );
+        assert!(normalize_direct_part_etag("").is_err());
+        assert!(normalize_direct_part_etag("\"").is_err());
+        assert!(normalize_direct_part_etag("abc123").is_err());
+        assert!(normalize_direct_part_etag("bad\netag").is_err());
+        assert!(normalize_direct_part_etag("0123456789abcdef0123456789abcdef-0").is_err());
+        assert!(normalize_direct_part_etag("0123456789abcdef0123456789abcdef-2-3").is_err());
     }
 
     #[test]

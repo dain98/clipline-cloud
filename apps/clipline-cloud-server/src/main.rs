@@ -197,6 +197,7 @@ fn log_config_summary(config: &Config) {
         upload_part_size_bytes = config.upload_part_size_bytes,
         single_put_max_bytes = config.single_put_max_bytes,
         upload_session_ttl_seconds = config.upload_session_ttl.as_secs(),
+        direct_s3_uploads = config.direct_s3_uploads,
         job_poll_interval_seconds = config.job_poll_interval.as_secs(),
         job_lock_timeout_seconds = config.job_lock_timeout.as_secs(),
         job_retry_base_delay_seconds = config.job_retry_base_delay.as_secs(),

@@ -27,7 +27,9 @@ Notes from earlier design decisions that make these cheaper:
 - **Direct-to-S3 multipart** (§12): a future version can let the client upload parts straight to S3
   via presigned part URLs, with the backend only orchestrating — or adopt TUS. The first-party
   protocol (doc 05) was kept deliberately so v1 keeps tight control over the desktop UX; this is the
-  step that trades that for offloaded bandwidth.
+  step that trades that for offloaded bandwidth. The first scaffold keeps it disabled by default
+  (`CLIPLINE_DIRECT_S3_UPLOADS=false`) and exposes presign/ack endpoints only for S3-backed chunked
+  uploads.
 - **Dedicated worker container** (§7): the durable-job **claim mechanism** (atomic `UPDATE ...
   RETURNING` + `locked_by`/`locked_at` + stale-lock requeue, doc 06) was built so the worker split is
   **safe with no schema change.** A second process just becomes another `locked_by` runner.
@@ -39,6 +41,9 @@ Notes from earlier design decisions that make these cheaper:
 ## Implementation checklist (activate items only when demanded)
 
 - [ ] Direct-to-S3 multipart via presigned part URLs (backend orchestrates; client PUTs to S3) — or TUS
+  - [x] Server scaffold: S3-only config flag, discovery/admin capability, presigned part URL endpoint, direct part ack endpoint
+  - [ ] Desktop client direct-upload flow
+  - [ ] MinIO/direct-S3 smoke test covering presign → PUT to S3 → ack → complete → validate
 - [x] Dedicated worker container as an additional job runner (no schema change; relies on doc-06 claiming)
 - [ ] Server-side transcoding to multiple qualities (new job kinds on the runner)
 - [ ] CDN in front of public clips (extends doc-08 public-media path)
@@ -58,3 +63,7 @@ Notes from earlier design decisions that make these cheaper:
   `clipline-worker` services. The default remains the single combined process; split deployments
   set the web container to `web` and enable the worker profile so job processing runs in a separate
   container against the same database/storage state.
+- 2026-06-17: Added the direct-to-S3 server scaffold. S3 deployments can opt into
+  `CLIPLINE_DIRECT_S3_UPLOADS=true`; chunked upload creation then advertises presign/ack URL
+  templates, the API can mint short-lived S3 `UploadPart` URLs, and clients can acknowledge direct
+  parts with size/checksum/ETag metadata before the existing complete path runs.

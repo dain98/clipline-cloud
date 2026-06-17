@@ -191,6 +191,7 @@ Configure the bucket via environment variables:
 | `CLIPLINE_S3_BUCKET` | Bucket name |
 | `CLIPLINE_S3_REGION` | Bucket region |
 | `CLIPLINE_S3_FORCE_PATH_STYLE` | `true` for path-style endpoints (many non-AWS providers), else `false` |
+| `CLIPLINE_DIRECT_S3_UPLOADS` | Optional Phase-4 direct client-to-S3 uploads; defaults to `false` and requires client support |
 
 ```sh
 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 \
@@ -204,6 +205,11 @@ docker compose -f docker-compose.s3.yml up -d
 
 Use a private bucket. The `docker-compose.minio.yml` profile is for local S3 testing only — don't use it
 for production object storage.
+
+`CLIPLINE_DIRECT_S3_UPLOADS=true` is optional and S3-only. Leave it off unless the desktop client
+being tested supports the direct-upload flow; the default server-proxy upload path works for all S3
+deployments. Browser-based direct uploads also require bucket CORS that allows `PUT` and exposes
+`ETag`.
 
 ## Verify the deployment
 
