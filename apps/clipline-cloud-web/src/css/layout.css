@@ -167,9 +167,16 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  /* Override .icon-btn's fixed 40px square so the avatar + chevron fit as a pill
+     instead of squashing the avatar into a sliver. */
+  width: auto;
+  height: 40px;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
 }
 
 .account-avatar {
+  flex: 0 0 32px;
   width: 32px;
   height: 32px;
   border-radius: 50%;

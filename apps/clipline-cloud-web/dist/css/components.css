@@ -192,7 +192,10 @@
   gap: var(--space-2);
   padding: var(--space-2) 0;
   position: sticky;
-  top: var(--header-h);
+  /* Sticks to the top of .app-content (its scrollport, which already sits below
+     the header). Using --header-h here pushed it 56px past its flow position and
+     overlapped the first card row. */
+  top: 0;
   background: var(--bg);
   z-index: 10;
   border-bottom: 1px solid var(--border);
