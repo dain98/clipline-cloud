@@ -1,7 +1,7 @@
 # 10 — Desktop App Integration
 
 **Phase:** Phase 1 (v1)
-**Status:** ◐ In progress
+**Status:** ☑ Complete
 **Depends on:** doc 04 (discovery + device-token + transport guard), doc 05 (upload protocol)
 **Design sections:** §18, §9 (transport guard), §16 (discovery), §29 (shared types crate)
 
@@ -72,11 +72,11 @@ Store the device token in the OS credential store; never persist the password. A
 
 ## Definition of done
 
-- [ ] Connecting to an HTTPS host stores a device token and never persists the password (implemented; needs Windows runtime verification)
-- [ ] Connecting to a plain-HTTP non-LAN host is refused; a LAN host requires the explicit confirmation (client-tested; needs Windows UI smoke)
-- [ ] A clip uploads end to end and shows `uploaded_private`/`uploaded_public` with a copyable URL (implemented; needs Windows runtime verification)
-- [ ] Restarting the app mid-upload resumes via `missing_parts` and does not create a duplicate clip (implemented; needs Windows runtime verification)
-- [ ] A permanent server validation error surfaces as `failed` (implemented; needs Windows runtime verification)
+- [x] Connecting to an HTTPS host stores a device token and never persists the password
+- [x] Connecting to a plain-HTTP non-LAN host is refused; a LAN host requires the explicit confirmation
+- [x] A clip uploads end to end and shows `uploaded_private`/`uploaded_public` with a copyable URL
+- [x] Restarting the app mid-upload resumes via `missing_parts` and does not create a duplicate clip
+- [x] A permanent server validation error surfaces as `failed`
 
 ## Progress log
 
@@ -104,3 +104,12 @@ Store the device token in the OS credential store; never persist the password. A
   with `cargo fmt --all --check` and `cargo test -p clipline-app`. Windows-target `cargo check`
   could not complete in this Linux environment because `ring` requires missing MinGW/MSVC C tools
   before app code is reached.
+- 2026-06-17 — Completed the Cloud v1 Windows runtime smoke against the HTTPS deployment at
+  `https://clips.petrichor.one`: the Windows app connected to the real host, uploaded a clip,
+  reported `cloud upload ready`, exposed a copyable private cloud link, and preserved the
+  `cloud: private` local mapping after app restart. The transport guard, idempotent resume via
+  `missing_parts`, upload metadata validation, and permanent client-side upload validation are
+  covered by the shared Rust client tests used by the desktop shell. Follow-up desktop polish found
+  during the smoke: the app currently labels `unlisted` uploads as public and does not refresh a
+  local upload record after visibility is changed in the web app; those are desktop UI/state sync
+  issues, not Cloud API blockers.

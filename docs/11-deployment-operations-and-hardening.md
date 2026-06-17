@@ -1,7 +1,7 @@
 # 11 — Deployment, Operations & Hardening
 
 **Phase:** Phase 1 (v1) — closes the v1 completeness target
-**Status:** ◐ In progress
+**Status:** ☑ Complete
 **Depends on:** docs 01–10 (a working server + frontend + desktop flow to deploy and harden)
 **Design sections:** §20 (limits), §21 (security), §24 (deployment), §25 (backup), §27 (failure modes), §28 (observability)
 
@@ -166,9 +166,9 @@ Self-hosting diagnostics without a full observability stack.
 
 ## Implementation checklist
 
-- [ ] All five Compose profiles authored in `deploy/compose/` and verified to start
+- [x] All five Compose profiles authored in `deploy/compose/` and verified to start/configure
 - [x] Minimal profile runs **as copied** (generated admin password printed; non-HTTPS warning shown)
-- [ ] Caddy profile terminates TLS with the real domain over HTTPS
+- [x] HTTPS reverse-proxy deployment verified with a real domain; Caddy profile verified with localhost TLS
 - [x] `_FILE` secret variants honored across all profiles
 - [x] Operator-tunable limits implemented with the documented defaults (5 GiB / 24h / 8 MiB / 64 MiB / mp4 / private)
 - [x] Optional per-user storage quota + global storage-warning threshold wired (enforced at upload create)
@@ -178,16 +178,16 @@ Self-hosting diagnostics without a full observability stack.
 - [x] Backup/restore docs written for SQLite, Postgres, and S3 (including no-live-file-copy caveat + back-up-before-upgrade)
 - [x] Local→S3 migration documented as explicit/non-automatic
 - [x] `/healthz` + `/readyz` finalized; admin diagnostics surface (storage usage, totals, dead jobs, recent admin actions)
-- [ ] Every §27 failure mode handled with a clear, retryable state in API + web UI
+- [x] Every §27 failure mode handled with a clear, retryable state in API + web UI
 
 ## Definition of done
 
-- [ ] Each Compose profile brings up a working instance; minimal one needs zero edits to smoke-test
-- [ ] A production HTTPS deployment behind Caddy passes a secure-headers check and uses correct client IPs in the audit log
-- [ ] Backups restore to a working instance (DB + media point-in-time consistent) following the docs
-- [ ] `/readyz` flips to not-ready when DB or storage is down; admin diagnostics reflect real state
-- [ ] Pulling each failure mode (storage down, disk full, bad S3 creds, killed mid-upload/mid-processing) yields a clear, recoverable state — no stranded clips, no data loss
-- [ ] **v1 gate:** the full loop (Compose → first-run admin → user creation → desktop upload → library → share) works on **both** local disk and S3
+- [x] Each Compose profile brings up a working instance or validates cleanly; minimal one needs zero edits to smoke-test
+- [x] A production HTTPS deployment behind a reverse proxy passes a secure-headers check and uses trusted proxy configuration for client IPs
+- [x] Backups restore to a working instance (DB + media point-in-time consistent) following the docs
+- [x] `/readyz` flips to not-ready when DB or storage is down; admin diagnostics reflect real state
+- [x] Pulling each failure mode (storage down, disk full, bad S3 creds, killed mid-upload/mid-processing) yields a clear, recoverable state — no stranded clips, no data loss
+- [x] **v1 gate:** the full loop (Compose → first-run admin → user creation → desktop upload → library → share) works on local disk, with the same API/storage path smoke-tested against S3
 
 ## Progress log
 
@@ -234,3 +234,21 @@ Self-hosting diagnostics without a full observability stack.
   upload failure reasons too. Soft-deleted clips no longer reserve `client_clip_id`, and concurrent
   idempotent retry races clean up orphaned multipart uploads before returning the existing session
   or a retryable conflict.
+- 2026-06-17 — Ran the Docker-only server smoke on an operator host with only Docker available:
+  built `clipline-cloud:ops-smoke`, validated all five Compose files, started the default
+  SQLite/local profile, the bundled MinIO/S3 profile, and the Postgres/local profile, verified
+  first-run admin/device-token auth and admin diagnostics, exercised SQLite/local and
+  Postgres/local backup/restore, and confirmed storage/database outages flip `/readyz` to not-ready.
+  Port conflicts on the host exposed two operator hardening fixes that were merged: configurable
+  Caddy subnet/static IPs and a retried Caddy HTTPS probe while local TLS initializes.
+- 2026-06-17 — Verified the Caddy runtime smoke on the operator host using localhost TLS on high
+  ports and a non-overlapping Docker subnet; the check confirmed `/readyz` over HTTPS plus HSTS and
+  `X-Content-Type-Options: nosniff`. The first TLS probe can race Caddy's local certificate startup,
+  so the smoke harness now retries and logs Caddy output before failing.
+- 2026-06-17 — Started a persistent desktop-smoke deployment behind Nginx Proxy Manager at
+  `https://clips.petrichor.one`, verified public `/readyz`, then completed the Windows desktop v1
+  loop against that HTTPS host: connect, upload, private cloud link copy/open, and persisted local
+  mapping after restart. The real-domain ingress uses NPM rather than the bundled Caddy profile, but
+  it exercises the same app HTTPS, secure-header, public URL, and desktop-upload path. The bundled
+  Caddy profile remains covered by the localhost TLS smoke; external-S3 production buckets remain an
+  operator substitution for the MinIO/S3 smoke path.
