@@ -360,7 +360,7 @@ Expected: the new test passes, all existing tests pass, build OK, fmt clean.
 **Files:** Create: `src/js/components/card.js`; Create `src/css/components.css` (link in `index.html`).
 
 **Interfaces:**
-- Produces: `clipCard(clip)`, `upNextCard(clip)`, `gradientFor(seed)` (Task 10 reuses `upNextCard`).
+- Produces: `clipCard(clip)`, `upNextCard(clip)`, `gradientFor(seed)`, `bindThumbFallback(root)` (Task 10 reuses `upNextCard`; Tasks 7/9/10 call `bindThumbFallback`).
 
 - [ ] **Step 1: Implement `gradientFor(seed)`** — deterministic, no RNG:
 ```js
@@ -380,9 +380,10 @@ export function clipCard(clip) {
   const showImg = ready && clip.has_thumbnail;            // <-- the gate (spec §6)
   const seed = `${clip.title}|${clip.game_name || clip.game_id || ""}`;
   const thumb = showImg
-    ? `<img class="thumb-img" loading="lazy" alt="" src="/api/v1/clips/${encodeURIComponent(clip.id)}/thumbnail"
-         onerror="this.remove()">`                         // defensive only; gate already prevents non-ready/no-thumb
-    : "";
+    ? `<img class="thumb-img" loading="lazy" alt=""
+         src="/api/v1/clips/${encodeURIComponent(clip.id)}/thumbnail">`
+    : "";   // NB: no inline onerror — CSP script-src 'self' blocks inline handlers.
+            // The defensive error fallback is bound in JS via bindThumbFallback (below).
   const overlay = ready
     ? `<span class="thumb-duration">${escapeHtml(formatDuration(clip.duration_ms))}</span>`
     : `<span class="thumb-status status-${escapeAttr(clip.status)}">${escapeHtml(clip.status)}</span>`;
@@ -423,6 +424,16 @@ export function formatRelative(v) {
 
 - [ ] **Step 4: Implement `upNextCard(clip)`** — compact horizontal variant (small `.thumb` ~168px + title + meta), same gating logic, linking to `/clip/{id}`.
 
+- [ ] **Step 4b: Implement `bindThumbFallback(root)`** (CSP-safe defensive fallback — no inline `onerror`):
+```js
+export function bindThumbFallback(root) {
+  root.querySelectorAll(".thumb-img").forEach((img) => {
+    img.addEventListener("error", () => img.remove());  // gradient base shows through
+  });
+}
+```
+Library (Task 7) and watch/up-next (Tasks 9–10) call `bindThumbFallback(contentRoot)` in their `onMount`.
+
 - [ ] **Step 5: Write `components.css`** card rules: `.clip-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:var(--space-4)}`, `.card`, `.thumb{position:relative;aspect-ratio:16/9;border-radius:var(--radius-card);overflow:hidden;display:block}`, `.thumb-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}`, `.thumb-duration/.thumb-status` (bottom-right pill), `.thumb-badges` (top-left), `.thumb-glyph` (centered, opacity 0 → .9 on `.card:hover`), `.card-title` (2-line clamp via `-webkit-line-clamp`), `.card-meta` (muted 13px), `.card-kebab`, hover lift `.card:hover .thumb{transform:translateY(-2px)}`. Link `components.css` in `index.html`.
 
 - [ ] **Step 6: Build + check + lint** (`node --check src/js/components/card.js src/js/util.js`).
@@ -437,7 +448,7 @@ export function formatRelative(v) {
 - Consumes: `clipCard` from `components/card.js`; `renderShell` (Task 3); `state.libraryQuery`.
 - Produces: kebab-menu behaviour (copy link / toggle visibility / delete) reused conceptually by watch actions.
 
-- [ ] **Step 1: Rewrite `renderLibrary()`** to call `renderShell({ active, body, onMount })` where `active` reflects `state.libraryQuery.visibility` (`"library"` when empty). `body` = a page-heading row + `chipBar(clips)` + (`clips.length ? '<div class="clip-grid">'+clips.map(clipCard).join("")+'</div>' : emptyState)`. While loading, render the shell with **skeleton cards** (`'<div class="clip-grid">'+Array(8).fill(skeletonCard()).join("")+'</div>'`). `onMount` binds: chip clicks (set `state.libraryQuery.game`, re-render), the Filters/Sort panel, the header isn't re-bound here (shell owns it), and the card kebab menu.
+- [ ] **Step 1: Rewrite `renderLibrary()`** to call `renderShell({ active, body, onMount })` where `active` reflects `state.libraryQuery.visibility` (`"library"` when empty). `body` = a page-heading row + `chipBar(clips)` + (`clips.length ? '<div class="clip-grid">'+clips.map(clipCard).join("")+'</div>' : emptyState)`. While loading, render the shell with **skeleton cards** (`'<div class="clip-grid">'+Array(8).fill(skeletonCard()).join("")+'</div>'`). `onMount` binds: chip clicks (set `state.libraryQuery.game`, re-render), the Filters/Sort panel, the card kebab menu, and `bindThumbFallback(contentRoot)` (the header is owned by the shell, not re-bound here).
 
 - [ ] **Step 2: Implement `chipBar(clips)`** — `All` chip + a chip per distinct `game_name||game_id` present in `clips` (dedupe, cap ~12, `data-game`), active state from `state.libraryQuery.game`; a right-aligned `Filters` button `#filters-btn` toggling a `.filters-panel` containing the existing sort/status/date controls (port `selectField`/`field` markup; keep the current `from`/`to` date inputs and the sort options list verbatim). Applying the panel sets the `state.libraryQuery` fields and re-renders.
 
@@ -519,7 +530,7 @@ export function bindMarkerTimeline(root, videoEl) {
 
 - [ ] **Step 2: Main column markup** — `.player-frame > video#player` (controls, preload metadata, `src=/api/v1/clips/{id}/media`); `<h1 class="watch-title">`; `.watch-actions` pill cluster: **Share** (`#share-btn`, copies `public_url` if set else triggers publish via visibility POST then copy), **Visibility** (`#visibility-btn` cycling/۲setting via a small inline select keeping current POST `/visibility` logic), **Edit** (`#edit-btn` toggles the metadata form), **Delete** (`#delete-btn`, confirm → DELETE → `navigate("/")`); a `.watch-meta` line (recorded/uploaded/duration/size + visibility badge). Then a `.description-card` (collapsible `<details>`-style) containing the technical metadata grid (port `dataRow` rows: dimensions, fps, container, codecs, checksum) + `markerTimelineHtml({markers, durationMs:clip.duration_ms})`. The **Edit** form (hidden until toggled) ports the current PATCH form (title/game_name/game_id/duration_ms → `PATCH /api/v1/clips/{id}`).
 
-- [ ] **Step 3: `onMount`** — grab `videoEl=#player`; `bindMarkerTimeline(contentRoot, videoEl)`; bind Share/Visibility/Edit/Delete and the edit-form submit (port the exact `api()` calls + `flash` + re-render from the old `bindClipDetailEvents`). Call the Task-10 `loadUpNext(clip)`.
+- [ ] **Step 3: `onMount`** — grab `videoEl=#player`; `bindMarkerTimeline(contentRoot, videoEl)`; `bindThumbFallback(contentRoot)`; bind Share/Visibility/Edit/Delete and the edit-form submit (port the exact `api()` calls + `flash` + re-render from the old `bindClipDetailEvents`). Call the Task-10 `loadUpNext(clip)`.
 
 - [ ] **Step 4: CSS** — `.watch-layout{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:var(--space-6);align-items:start}`, `.player-frame{background:#000;border-radius:var(--radius-card);overflow:hidden}`, `video#player{width:100%;aspect-ratio:16/9;display:block}`, `.watch-actions{display:flex;flex-wrap:wrap;gap:var(--space-2)}`, `.description-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-card);padding:var(--space-4)}`, plus the metadata grid. Also set the watch page to **force rail-mini** (add a body/shell flag so `renderShell` applies `.rail-mini` on the watch route).
 
@@ -547,7 +558,7 @@ function partitionUpNext(clips, current) {
 }
 ```
 
-- [ ] **Step 2: Implement `loadUpNext(current)`** — `const data = await api("/api/v1/clips?sort=uploaded_at_desc&page_size=30")`; `document.querySelector("#up-next").innerHTML = '<h2 class="up-next-head">Up next</h2>' + partitionUpNext(data.clips, current).map(upNextCard).join("")`. Wrap in try/catch → on error leave the rail empty (non-fatal). Import `upNextCard`.
+- [ ] **Step 2: Implement `loadUpNext(current)`** — `const data = await api("/api/v1/clips?sort=uploaded_at_desc&page_size=30")`; set `const rail = document.querySelector("#up-next"); rail.innerHTML = '<h2 class="up-next-head">Up next</h2>' + partitionUpNext(data.clips, current).map(upNextCard).join("")`; then `bindThumbFallback(rail)` (cards injected after the watch `onMount` ran, so bind here). Wrap in try/catch → on error leave the rail empty (non-fatal). Import `upNextCard` and `bindThumbFallback`.
 
 - [ ] **Step 3: CSS** — `.up-next{display:grid;gap:var(--space-3)}` and the compact `upNextCard` row styles (small thumb 168px + title clamp + meta) in `components.css`.
 
