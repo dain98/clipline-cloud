@@ -49,6 +49,11 @@
   letter-spacing: -0.02em;
 }
 
+/* Search toggle: hidden by default; shown at mobile breakpoint */
+.search-toggle {
+  display: none;
+}
+
 /* Search pill */
 .search-pill {
   display: flex;
@@ -293,12 +298,6 @@
   /* Watch layout: single column, up-next flows below */
   .watch-layout {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (min-width: 1001px) {
-  .app-header__center .search-toggle {
-    display: none;
   }
 }
 

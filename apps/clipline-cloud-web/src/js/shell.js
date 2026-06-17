@@ -157,17 +157,6 @@ export function renderShell({ active, body, onMount }) {
     }
   });
 
-  accountBtn.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (accountMenu.hidden) {
-        openAccountMenu();
-      } else {
-        closeAccountMenu();
-      }
-    }
-  });
-
   // Sign out
   document.querySelector("#sign-out-btn").addEventListener("click", logout);
 
