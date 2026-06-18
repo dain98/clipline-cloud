@@ -28,6 +28,7 @@ const PLACEHOLDER_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/c/{share_id}", get(get_public_share_page))
         .route("/api/v1/clips/{id}/media", get(get_owned_media))
         .route("/api/v1/clips/{id}/thumbnail", get(get_owned_thumbnail))
         .route("/api/v1/clips/{id}/poster", get(get_owned_poster))
@@ -61,6 +62,22 @@ struct PublicClipResponse {
 enum CacheScope {
     Owner,
     Public,
+}
+
+async fn get_public_share_page(
+    State(state): State<AppState>,
+    Path(share_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let Some(clip) = state
+        .repositories
+        .clips
+        .get_by_public_share_id(&share_id)
+        .await?
+    else {
+        return Ok(public_share_unavailable_response(&state, &share_id));
+    };
+
+    Ok(public_share_page_response(&state, &share_id, &clip))
 }
 
 async fn get_owned_media(
@@ -495,6 +512,191 @@ fn insert_header_str(headers: &mut HeaderMap, name: HeaderName, value: impl AsRe
     }
 }
 
+fn public_share_page_response(state: &AppState, share_id: &str, clip: &Clip) -> Response {
+    let title = public_share_title(clip);
+    let description = public_share_description(clip);
+    let share_url = absolute_url(state, &format!("c/{share_id}"));
+    let media_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/media"));
+    let thumbnail_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/thumbnail"));
+    let width = clip.width.unwrap_or(1280).max(1);
+    let height = clip.height.unwrap_or(720).max(1);
+    let html = public_share_html(PublicShareHtml {
+        title: &title,
+        description: &description,
+        share_url: &share_url,
+        media_url: &media_url,
+        thumbnail_url: &thumbnail_url,
+        width,
+        height,
+        status_message: "Loading public clip...",
+    });
+    html_response(StatusCode::OK, html)
+}
+
+fn public_share_unavailable_response(state: &AppState, share_id: &str) -> Response {
+    let title = "Clip unavailable";
+    let description = "This Clipline public link is no longer active.";
+    let share_url = absolute_url(state, &format!("c/{share_id}"));
+    let html = public_share_html(PublicShareHtml {
+        title,
+        description,
+        share_url: &share_url,
+        media_url: "",
+        thumbnail_url: "",
+        width: 1280,
+        height: 720,
+        status_message: "Clip unavailable",
+    });
+    html_response(StatusCode::NOT_FOUND, html)
+}
+
+struct PublicShareHtml<'a> {
+    title: &'a str,
+    description: &'a str,
+    share_url: &'a str,
+    media_url: &'a str,
+    thumbnail_url: &'a str,
+    width: i64,
+    height: i64,
+    status_message: &'a str,
+}
+
+fn public_share_html(data: PublicShareHtml<'_>) -> String {
+    let title = escape_html(data.title);
+    let description = escape_html(data.description);
+    let share_url = escape_html(data.share_url);
+    let media_url = escape_html(data.media_url);
+    let thumbnail_url = escape_html(data.thumbnail_url);
+    let status_message = escape_html(data.status_message);
+    let image_meta = if data.thumbnail_url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"
+    <meta property="og:image" content="{thumbnail_url}">
+    <meta property="og:image:secure_url" content="{thumbnail_url}">
+    <meta property="og:image:type" content="image/jpeg">
+    <meta name="twitter:image" content="{thumbnail_url}">"#
+        )
+    };
+    let video_meta = if data.media_url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"
+    <meta property="og:video" content="{media_url}">
+    <meta property="og:video:secure_url" content="{media_url}">
+    <meta property="og:video:type" content="video/mp4">
+    <meta property="og:video:width" content="{width}">
+    <meta property="og:video:height" content="{height}">"#,
+            width = data.width,
+            height = data.height
+        )
+    };
+
+    format!(
+        r##"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#2563eb">
+    <title>{title}</title>
+    <meta name="description" content="{description}">
+    <meta property="og:site_name" content="Clipline Cloud">
+    <meta property="og:type" content="video.other">
+    <meta property="og:title" content="{title}">
+    <meta property="og:description" content="{description}">
+    <meta property="og:url" content="{share_url}">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{title}">
+    <meta name="twitter:description" content="{description}">{image_meta}{video_meta}
+    <link rel="canonical" href="{share_url}">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app-root">
+      <main class="boot-screen">
+        <div class="brand-mark" aria-hidden="true">CL</div>
+        <p>{status_message}</p>
+      </main>
+    </div>
+  </body>
+</html>
+"##
+    )
+}
+
+fn html_response(status: StatusCode, html: String) -> Response {
+    let mut response = Response::builder()
+        .status(status)
+        .body(Body::from(html))
+        .expect("HTML response should be valid");
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, no-cache"),
+    );
+    response
+}
+
+fn public_share_title(clip: &Clip) -> String {
+    let title = clip.title.trim();
+    if title.is_empty() {
+        "Clipline clip".to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn public_share_description(clip: &Clip) -> String {
+    let mut parts = Vec::new();
+    if let Some(game) = clip
+        .game_name
+        .as_deref()
+        .or(clip.game_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(game.to_string());
+    }
+    if let Some(duration_ms) = clip.duration_ms.filter(|value| *value >= 0) {
+        parts.push(format_duration(duration_ms));
+    }
+    if parts.is_empty() {
+        "Shared Clipline clip".to_string()
+    } else {
+        format!("Shared Clipline clip - {}", parts.join(" - "))
+    }
+}
+
+fn format_duration(duration_ms: i64) -> String {
+    let total_seconds = duration_ms / 1000;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes}:{seconds:02}")
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 fn absolute_url(state: &AppState, path: &str) -> String {
     state
         .config
@@ -574,9 +776,77 @@ mod tests {
         assert!(!etag_matches(&headers, Some("abc123")));
     }
 
+    #[test]
+    fn public_share_html_escapes_metadata_and_includes_video_tags() {
+        let html = public_share_html(PublicShareHtml {
+            title: "Clip <one> \"win\"",
+            description: "A&B's clip",
+            share_url: "https://clips.example.com/c/share",
+            media_url: "https://clips.example.com/api/v1/public/clips/share/media",
+            thumbnail_url: "https://clips.example.com/api/v1/public/clips/share/thumbnail",
+            width: 1920,
+            height: 1080,
+            status_message: "Loading <clip>",
+        });
+
+        assert!(html.contains("Clip &lt;one&gt; &quot;win&quot;"));
+        assert!(html.contains("A&amp;B&#39;s clip"));
+        assert!(html.contains(r#"<meta property="og:video:type" content="video/mp4">"#));
+        assert!(html.contains(r#"<meta property="og:video:width" content="1920">"#));
+        assert!(html.contains(r#"<meta property="og:image:type" content="image/jpeg">"#));
+        assert!(!html.contains("Loading <clip>"));
+    }
+
+    #[test]
+    fn public_share_description_uses_game_and_duration() {
+        let clip = test_clip_with_metadata(Some("Renata Glasc"), Some(65_500));
+        assert_eq!(
+            public_share_description(&clip),
+            "Shared Clipline clip - Renata Glasc - 1:05"
+        );
+
+        let clip = test_clip_with_metadata(None, None);
+        assert_eq!(public_share_description(&clip), "Shared Clipline clip");
+    }
+
     fn headers_with_range(value: &'static str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static(value));
         headers
+    }
+
+    fn test_clip_with_metadata(game_name: Option<&str>, duration_ms: Option<i64>) -> Clip {
+        let now = Utc::now();
+        Clip {
+            id: "clip".to_string(),
+            owner_user_id: "owner".to_string(),
+            client_clip_id: None,
+            title: "title".to_string(),
+            game_name: game_name.map(ToOwned::to_owned),
+            game_id: None,
+            game_executable: None,
+            source_type: None,
+            recorded_at: None,
+            uploaded_at: Some(now),
+            duration_ms,
+            file_size_bytes: None,
+            width: None,
+            height: None,
+            fps: None,
+            container: None,
+            video_codec: None,
+            audio_codec: None,
+            checksum_sha256: None,
+            visibility: "unlisted".to_string(),
+            status: "ready".to_string(),
+            storage_backend: "local".to_string(),
+            storage_key: None,
+            poster_key: None,
+            thumbnail_key: None,
+            public_share_id: Some("share".to_string()),
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }
     }
 }
