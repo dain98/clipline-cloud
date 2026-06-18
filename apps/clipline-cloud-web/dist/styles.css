@@ -635,9 +635,11 @@ a:hover {
   z-index: 2;
 }
 
-.clip-player.is-playing:not(:focus-within) .clip-player-stage:not(:hover) .clip-player-overlay,
-.clip-player.is-playing:not(:focus-within) .clip-player-stage:not(:hover) .clip-player-note {
+.clip-player:not(:hover):not(:focus-within) .clip-player-overlay,
+.clip-player:not(:hover):not(:focus-within) .clip-player-note,
+.clip-player:not(:hover):not(:focus-within) .clip-player-deck {
   opacity: 0;
+  pointer-events: none;
 }
 
 .clip-player-transport {
@@ -667,11 +669,15 @@ a:hover {
   border: 0;
   border-radius: 7px;
   color: #f0f2f6;
+  display: grid;
   flex: 0 0 auto;
+  gap: 0;
   height: 2.15rem;
+  line-height: 0;
   min-height: 0;
   min-width: 0;
   padding: 0.42rem;
+  place-items: center;
   width: 2.15rem;
 }
 
@@ -681,6 +687,12 @@ a:hover {
 
 .player-icon .icon {
   height: 100%;
+  width: 100%;
+}
+
+.player-icon span {
+  height: 100%;
+  place-items: center;
   width: 100%;
 }
 
@@ -695,15 +707,19 @@ a:hover {
   display: none;
 }
 
+.player-play-icon,
+.player-volume-icon {
+  display: grid;
+}
+
 .clip-player.is-playing .player-play-icon,
 .clip-player.is-muted .player-volume-icon {
   display: none;
 }
 
 .clip-player.is-playing .player-pause-icon,
-.clip-player.is-muted .player-muted-icon,
-.player-volume-icon {
-  display: inline-flex;
+.clip-player.is-muted .player-muted-icon {
+  display: grid;
 }
 
 .player-time,
@@ -751,6 +767,7 @@ a:hover {
   display: grid;
   gap: 0.45rem;
   padding: 0.72rem 0.8rem 0.8rem;
+  transition: opacity 180ms ease;
 }
 
 .clip-player-timeline {
