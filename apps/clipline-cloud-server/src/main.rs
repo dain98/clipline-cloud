@@ -288,6 +288,7 @@ fn router(
         .route("/", get(spa_index))
         .route("/login", get(spa_index))
         .route("/public", get(spa_index))
+        .route("/library", get(spa_index))
         .route("/admin", get(spa_index))
         .route("/account", get(spa_index))
         .route("/clip/{*path}", get(spa_index))

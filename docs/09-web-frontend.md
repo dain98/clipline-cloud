@@ -24,12 +24,14 @@ Four areas.
 **Login** — username/password, clear errors, **no self-registration** unless an admin enables it
 (omitted from v1).
 
-**Library** — the owner's clips, with sort (newest/oldest, game, recorded/uploaded date, duration)
-and filters (game, visibility, status). Fields: thumbnail, title, game, duration, recorded date,
-upload date, visibility badge, file size. Actions: view, copy link, toggle public/private, delete.
+**Public** — the main homepage at `/` (with `/public` kept as an alias) for anonymous and signed-in
+discovery of clips explicitly marked public. It supports search, game filtering, sorting, and links
+into the public share page. Unlisted clips do not appear.
 
-**Public** — anonymous and signed-in discovery for clips explicitly marked public. It supports
-search, game filtering, sorting, and links into the public share page. Unlisted clips do not appear.
+**Library** — the authenticated owner's clips at `/library`, with sort (newest/oldest, game,
+recorded/uploaded date, duration) and filters (game, visibility, status). Fields: thumbnail, title,
+game, duration, recorded date, upload date, visibility badge, file size. Actions: view, copy link,
+toggle public/private, delete.
 
 > *Phase-1 note: thumbnails are generated in Phase 2 (doc 12), so the Phase-1 library renders
 > placeholders — intentional.*
@@ -56,6 +58,7 @@ per-user quotas.
 
 - [x] Frontend project scaffolded in `apps/clipline-cloud-web`; build output served by the backend (doc 01)
 - [x] **Login** page: username/password, clear errors; respects cookie-session + CSRF (doc 04); no self-registration
+- [x] `/` and `/public` render public discovery; `/library` renders the owner library after auth
 - [x] **Library** view: lists owner clips with the documented sort + filters; shows the listed fields; placeholder thumbnails
 - [x] Library actions: view, copy link, toggle public/private, delete (wired to doc 07/08 endpoints)
 - [x] **Public** view: lists anonymous discoverable public clips without owner/edit controls
@@ -68,9 +71,9 @@ per-user quotas.
 
 ## Definition of done
 
-- [x] A user logs in, sees their library, sorts/filters it, opens a clip, and plays it with working seek
+- [x] A user logs in, sees `/library`, sorts/filters it, opens a clip, and plays it with working seek
 - [x] Toggling public shows a copyable share link; the public page (doc 08) opens without login
-- [x] Public clips appear in `/public`; unlisted/private clips do not
+- [x] Public clips appear on `/` and `/public`; unlisted/private clips do not
 - [x] An admin creates/disables a user and resets a password (re-auth enforced) entirely from the UI
 - [x] Failed uploads and dead jobs are visible to the admin
 - [x] No UI path exposes another user's private clips
