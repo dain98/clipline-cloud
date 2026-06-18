@@ -24,7 +24,8 @@ claim mechanism so the future worker-container split (doc 14) needs **no schema 
 
 Clipline already produces playable MP4, so **no server-side transcoding in v1.** After finalize
 (doc 05), a durable `validate_object` job confirms the stored object exists and matches expected
-size, then transitions the clip to `ready`.
+size, then transitions the clip to `ready`. Post-v1 video optimization/compression, if enabled, is
+a doc-14 job layered on top of this lifecycle and must never make a validated upload unplayable.
 
 > Thumbnail/poster generation and ffprobe metadata backfill are **Phase 2** jobs (doc 12) — so the
 > Phase-1 library shows placeholders, intentionally.
