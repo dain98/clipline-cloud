@@ -666,11 +666,13 @@ function publicLibraryView(clips) {
 function publicClipCard(clip) {
   const sharePath = `/c/${encodeURIComponent(clip.share_id)}`;
   const thumbnailPath = `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
+  const authorName = publicAuthorName(clip);
   return `
     <a class="public-clip-card" href="${escapeAttr(sharePath)}" data-route>
       <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
       <div class="public-clip-body">
         <h2>${escapeHtml(clip.title)}</h2>
+        <p class="public-author">by ${escapeHtml(authorName)}</p>
         <div class="meta-line">
           <span>${escapeHtml(gameLabel(clip))}</span>
           <span>${formatDuration(clip.duration_ms)}</span>
@@ -696,6 +698,10 @@ function bindPublicLibraryEvents() {
 
 function gameLabel(clip) {
   return clip.game_name || clip.game_id || "No game";
+}
+
+function publicAuthorName(clip) {
+  return clip.author_name || "Unknown creator";
 }
 
 function syncSelectedClips(clips) {
@@ -1324,13 +1330,14 @@ async function renderPublicShare(shareId) {
     const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
     const mediaUrl = safeMediaUrl(clip.media_url);
     const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
+    const authorName = publicAuthorName(clip);
     app.innerHTML = `
       <main class="public-shell">
         <section class="public-panel" aria-labelledby="public-title">
           <div>
             <div class="brand-mark" aria-hidden="true">CL</div>
             <h1 id="public-title">${escapeHtml(clip.title)}</h1>
-            <p>${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
+            <p>by ${escapeHtml(authorName)} - ${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
           </div>
           ${clipPlayerView({
             playerId: `public-${clip.share_id}`,
@@ -1340,6 +1347,7 @@ async function renderPublicShare(shareId) {
           })}
           <div class="panel">
             <dl class="data-list">
+              ${dataRow("Author", authorName)}
               ${dataRow("Recorded", formatDate(clip.recorded_at))}
               ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
               ${dataRow("Duration", formatDuration(clip.duration_ms))}
