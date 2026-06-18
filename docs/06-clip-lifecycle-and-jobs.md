@@ -43,8 +43,8 @@ are nullable so periodic sweeps (expired-session and orphaned-part cleanup — d
 table.
 
 `kind` values seen across phases: `validate_object` (Phase 1) | `thumbnail` | `poster` |
-`probe_metadata` | `cleanup_session` | `cleanup_clip` (Phase 2). `status`: `pending` | `running` |
-`succeeded` | `failed` | `dead`.
+`probe_metadata` | `cleanup_session` | `cleanup_clip` (Phase 2) | `optimize_video` (optional
+Phase 4). `status`: `pending` | `running` | `succeeded` | `failed` | `dead`.
 
 ### Claiming and stale-lock recovery (§7) — required (round-3 edit)
 

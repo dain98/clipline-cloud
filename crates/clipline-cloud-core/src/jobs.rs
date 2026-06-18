@@ -2,7 +2,9 @@ use std::{collections::HashSet, time::Duration};
 
 use chrono::Duration as ChronoDuration;
 use clipline_cloud_db::{now_utc, Clip, Job, NewJob, Repositories, UploadSession};
-use clipline_cloud_storage::{ObjectKey, SharedStorageBackend, StorageError};
+use clipline_cloud_storage::{
+    ByteRange, ObjectKey, PutObjectMetadata, SharedStorageBackend, StorageError,
+};
 use rand::{rngs::OsRng, Rng};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -11,10 +13,12 @@ use tracing::{debug, error, info, warn};
 
 use crate::media_processing::{
     media_keys_for_clip, MediaProcessingError, MediaProcessor, ValidatedMediaMetadata,
+    VideoOptimizationSettings,
 };
 
 pub const VALIDATE_OBJECT_KIND: &str = "validate_object";
 pub const PROBE_METADATA_KIND: &str = "probe_metadata";
+pub const OPTIMIZE_VIDEO_KIND: &str = "optimize_video";
 pub const THUMBNAIL_KIND: &str = "thumbnail";
 pub const POSTER_KIND: &str = "poster";
 pub const CLEANUP_SESSION_KIND: &str = "cleanup_session";
@@ -33,6 +37,26 @@ pub struct JobRunnerConfig {
     pub lock_timeout: Duration,
     pub retry_base_delay: Duration,
     pub retry_max_delay: Duration,
+    pub video_optimization: VideoOptimizationConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoOptimizationConfig {
+    pub enabled: bool,
+    pub settings: VideoOptimizationSettings,
+    pub min_savings_percent: u8,
+    pub keep_original: bool,
+}
+
+impl Default for VideoOptimizationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            settings: VideoOptimizationSettings::default(),
+            min_savings_percent: 5,
+            keep_original: false,
+        }
+    }
 }
 
 impl Default for JobRunnerConfig {
@@ -43,6 +67,7 @@ impl Default for JobRunnerConfig {
             lock_timeout: Duration::from_secs(5 * 60),
             retry_base_delay: Duration::from_secs(5),
             retry_max_delay: Duration::from_secs(5 * 60),
+            video_optimization: VideoOptimizationConfig::default(),
         }
     }
 }
@@ -73,6 +98,13 @@ pub async fn enqueue_probe_metadata(
     clip_id: impl Into<String>,
 ) -> Result<Job, JobRunnerError> {
     enqueue_clip_job(repositories, PROBE_METADATA_KIND, clip_id.into()).await
+}
+
+pub async fn enqueue_optimize_video(
+    repositories: &Repositories,
+    clip_id: impl Into<String>,
+) -> Result<Job, JobRunnerError> {
+    enqueue_clip_job(repositories, OPTIMIZE_VIDEO_KIND, clip_id.into()).await
 }
 
 pub async fn enqueue_thumbnail(
@@ -257,6 +289,7 @@ impl JobRunner {
         let result = match job.kind.as_str() {
             VALIDATE_OBJECT_KIND => self.validate_object(&job).await,
             PROBE_METADATA_KIND => self.probe_metadata(&job).await,
+            OPTIMIZE_VIDEO_KIND => self.optimize_video(&job).await,
             THUMBNAIL_KIND => self.generate_thumbnail(&job).await,
             POSTER_KIND => self.generate_poster(&job).await,
             CLEANUP_SESSION_KIND => self.cleanup_sessions(&job).await,
@@ -431,6 +464,9 @@ impl JobRunner {
     }
 
     async fn enqueue_media_processing_jobs(&self, clip_id: &str) -> Result<(), JobRunnerError> {
+        if self.config.video_optimization.enabled {
+            enqueue_optimize_video(&self.repositories, clip_id).await?;
+        }
         enqueue_probe_metadata(&self.repositories, clip_id).await?;
         enqueue_thumbnail(&self.repositories, clip_id).await?;
         enqueue_poster(&self.repositories, clip_id).await?;
@@ -447,6 +483,163 @@ impl JobRunner {
             .probe_metadata(&self.storage, &source_key)
             .await?;
         self.update_probe_metadata(&clip, metadata).await
+    }
+
+    async fn optimize_video(&self, job: &Job) -> Result<(), JobRunnerError> {
+        if !self.config.video_optimization.enabled {
+            return Ok(());
+        }
+        let Some(clip) = self.load_ready_clip(job, OPTIMIZE_VIDEO_KIND).await? else {
+            return Ok(());
+        };
+        let source_key = clip_source_key(&clip)?;
+        let source_metadata = self.storage.head_object(&source_key).await?;
+        if let Some(db_size) = clip.file_size_bytes {
+            if u64::try_from(db_size).ok() != Some(source_metadata.size_bytes) {
+                self.refresh_source_metadata_from_storage(
+                    &clip,
+                    &source_key,
+                    source_metadata.size_bytes,
+                )
+                .await?;
+                info!(
+                    event = "jobs.optimize_video.reconciled",
+                    clip_id = %clip.id,
+                    source_size_bytes = source_metadata.size_bytes,
+                );
+                return Ok(());
+            }
+        }
+        let candidate_key = optimized_candidate_key(&source_key)?;
+        let original_key = original_source_key(&source_key)?;
+        let candidate = self
+            .media_processor
+            .optimize_video(
+                &self.storage,
+                &source_key,
+                &self.config.video_optimization.settings,
+            )
+            .await?;
+        let candidate_size = candidate.bytes.len() as u64;
+        let candidate_checksum = sha256_hex(&candidate.bytes);
+        let mut candidate_metadata = PutObjectMetadata::new("video/mp4");
+        candidate_metadata.checksum_sha256 = Some(candidate_checksum.clone());
+        self.storage
+            .put_object(&candidate_key, candidate.bytes.clone(), candidate_metadata)
+            .await?;
+        let stored_candidate = self.storage.head_object(&candidate_key).await?;
+        if stored_candidate.size_bytes != candidate_size {
+            return Err(JobRunnerError::Validation(format!(
+                "optimized candidate size mismatch: expected {}, got {}",
+                candidate_size, stored_candidate.size_bytes
+            )));
+        }
+        self.storage
+            .get_object(&candidate_key, Some(ByteRange::new(0, Some(0))))
+            .await?;
+
+        if !is_meaningfully_smaller(
+            candidate_size,
+            source_metadata.size_bytes,
+            self.config.video_optimization.min_savings_percent,
+        ) {
+            delete_if_present(&self.storage, &candidate_key).await?;
+            info!(
+                event = "jobs.optimize_video.skipped",
+                clip_id = %clip.id,
+                original_size_bytes = source_metadata.size_bytes,
+                candidate_size_bytes = candidate_size,
+                min_savings_percent = self.config.video_optimization.min_savings_percent,
+            );
+            return Ok(());
+        }
+
+        if self.config.video_optimization.keep_original {
+            let original = self.storage.get_object(&source_key, None).await?;
+            let mut metadata = PutObjectMetadata::new(source_metadata.content_type.clone());
+            metadata.checksum_sha256 = source_metadata
+                .checksum_sha256
+                .clone()
+                .or_else(|| clip.checksum_sha256.clone())
+                .or_else(|| Some(sha256_hex(&original.bytes)));
+            self.storage
+                .put_object(&original_key, original.bytes, metadata)
+                .await?;
+        }
+
+        let mut source_put_metadata = PutObjectMetadata::new("video/mp4");
+        source_put_metadata.checksum_sha256 = Some(candidate_checksum.clone());
+        self.storage
+            .put_object(&source_key, candidate.bytes, source_put_metadata)
+            .await?;
+        let stored_source = self.storage.head_object(&source_key).await?;
+        if stored_source.size_bytes != candidate_size {
+            return Err(JobRunnerError::Validation(format!(
+                "optimized source size mismatch: expected {}, got {}",
+                candidate_size, stored_source.size_bytes
+            )));
+        }
+        self.repositories
+            .clips
+            .update_source_metadata(
+                &clip.id,
+                i64::try_from(candidate_size).map_err(|_| {
+                    JobRunnerError::Validation("optimized source is too large".to_string())
+                })?,
+                &candidate_checksum,
+                Some("mp4"),
+                candidate.metadata.duration_ms,
+                candidate.metadata.width,
+                candidate.metadata.height,
+                candidate.metadata.fps,
+                candidate.metadata.video_codec.as_deref(),
+                candidate.metadata.audio_codec.as_deref(),
+            )
+            .await?;
+        delete_if_present(&self.storage, &candidate_key).await?;
+        enqueue_probe_metadata(&self.repositories, &clip.id).await?;
+        enqueue_thumbnail(&self.repositories, &clip.id).await?;
+        enqueue_poster(&self.repositories, &clip.id).await?;
+        info!(
+            event = "jobs.optimize_video.replaced",
+            clip_id = %clip.id,
+            original_size_bytes = source_metadata.size_bytes,
+            optimized_size_bytes = candidate_size,
+            checksum_sha256 = %candidate_checksum,
+        );
+        Ok(())
+    }
+
+    async fn refresh_source_metadata_from_storage(
+        &self,
+        clip: &Clip,
+        source_key: &ObjectKey,
+        source_size_bytes: u64,
+    ) -> Result<(), JobRunnerError> {
+        let object = self.storage.get_object(source_key, None).await?;
+        let checksum = sha256_hex(&object.bytes);
+        let metadata = self
+            .media_processor
+            .probe_metadata(&self.storage, source_key)
+            .await?;
+        self.repositories
+            .clips
+            .update_source_metadata(
+                &clip.id,
+                i64::try_from(source_size_bytes).map_err(|_| {
+                    JobRunnerError::Validation("source object is too large".to_string())
+                })?,
+                &checksum,
+                Some("mp4"),
+                metadata.duration_ms,
+                metadata.width,
+                metadata.height,
+                metadata.fps,
+                metadata.video_codec.as_deref(),
+                metadata.audio_codec.as_deref(),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn update_probe_metadata(
@@ -655,6 +848,16 @@ impl JobRunner {
         {
             keys.insert(key.to_string());
         }
+        if let Some(storage_key) = clip.storage_key.as_deref() {
+            if let Ok(source_key) = ObjectKey::parse(storage_key) {
+                if let Ok(key) = optimized_candidate_key(&source_key) {
+                    keys.insert(key.as_str().to_string());
+                }
+                if let Ok(key) = original_source_key(&source_key) {
+                    keys.insert(key.as_str().to_string());
+                }
+            }
+        }
 
         for key in keys {
             let key = ObjectKey::parse(key)?;
@@ -722,6 +925,14 @@ impl JobRunner {
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
+        let mut active_references = active_references;
+        for key in active_references.clone() {
+            if let Ok(source_key) = ObjectKey::parse(&key) {
+                if let Ok(original_key) = original_source_key(&source_key) {
+                    active_references.insert(original_key.as_str().to_string());
+                }
+            }
+        }
         let objects = self.storage.list_objects(MEDIA_OBJECT_PREFIX).await?;
         for object in objects {
             if active_references.contains(object.key.as_str()) {
@@ -775,6 +986,44 @@ fn clip_source_key(clip: &Clip) -> Result<ObjectKey, JobRunnerError> {
         .as_deref()
         .ok_or_else(|| JobRunnerError::Validation("clip is missing storage_key".to_string()))?;
     ObjectKey::parse(storage_key).map_err(Into::into)
+}
+
+fn optimized_candidate_key(source_key: &ObjectKey) -> Result<ObjectKey, JobRunnerError> {
+    media_token_derivative_key(source_key, "optimized-candidate.mp4")
+}
+
+fn original_source_key(source_key: &ObjectKey) -> Result<ObjectKey, JobRunnerError> {
+    media_token_derivative_key(source_key, "original-source.mp4")
+}
+
+fn media_token_derivative_key(
+    source_key: &ObjectKey,
+    filename: &str,
+) -> Result<ObjectKey, JobRunnerError> {
+    let keys = media_keys_for_clip(source_key)?;
+    ObjectKey::parse(format!("objects/media/{}/{filename}", keys.media_token)).map_err(Into::into)
+}
+
+fn is_meaningfully_smaller(
+    candidate_size: u64,
+    original_size: u64,
+    min_savings_percent: u8,
+) -> bool {
+    if original_size == 0 || candidate_size >= original_size {
+        return false;
+    }
+    let saved_bytes = original_size - candidate_size;
+    saved_bytes.saturating_mul(100) >= original_size.saturating_mul(u64::from(min_savings_percent))
+}
+
+async fn delete_if_present(
+    storage: &SharedStorageBackend,
+    key: &ObjectKey,
+) -> Result<(), JobRunnerError> {
+    match storage.delete_object(key).await {
+        Ok(()) | Err(StorageError::NotFound(_)) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn chrono_duration(duration: Duration) -> ChronoDuration {
@@ -861,6 +1110,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
         assert!(runner.run_once().await.expect("run once"));
@@ -892,6 +1142,72 @@ mod tests {
         assert_eq!(
             queued_kinds,
             vec![
+                POSTER_KIND.to_string(),
+                PROBE_METADATA_KIND.to_string(),
+                THUMBNAIL_KIND.to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_object_enqueues_optimize_video_when_enabled() {
+        let (temp_dir, repositories) = sqlite_repositories().await;
+        let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
+        storage.probe().await.expect("probe");
+        let user = repositories
+            .users
+            .create(&NewUser::new("admin", "hash", "admin"))
+            .await
+            .expect("user");
+        let keys = MediaObjectKeys::generate().expect("keys");
+        let bytes = bytes::Bytes::from_static(b"ready-object");
+        storage
+            .put_object(
+                &keys.source,
+                bytes.clone(),
+                PutObjectMetadata::new("video/mp4"),
+            )
+            .await
+            .expect("put object");
+        let mut clip = NewClip::new(&user.id, "ready clip", "local");
+        clip.status = "processing".to_string();
+        clip.file_size_bytes = Some(bytes.len() as i64);
+        clip.storage_key = Some(keys.source.as_str().to_string());
+        let clip = repositories.clips.create(&clip).await.expect("clip");
+        enqueue_validate_object(&repositories, &clip.id)
+            .await
+            .expect("enqueue");
+
+        let runner = JobRunner::new(
+            repositories.clone(),
+            storage,
+            JobRunnerConfig {
+                runner_id: "test-runner".to_string(),
+                poll_interval: Duration::from_millis(10),
+                lock_timeout: Duration::from_secs(60),
+                retry_base_delay: Duration::from_millis(1),
+                retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig {
+                    enabled: true,
+                    ..VideoOptimizationConfig::default()
+                },
+            },
+        );
+        assert!(runner.run_once().await.expect("run once"));
+
+        let mut queued_kinds = repositories
+            .jobs
+            .list_due(now_utc() + chrono::Duration::seconds(1), 10)
+            .await
+            .expect("due jobs")
+            .into_iter()
+            .map(|job| job.kind)
+            .collect::<Vec<_>>();
+        queued_kinds.sort();
+        assert_eq!(
+            queued_kinds,
+            vec![
+                OPTIMIZE_VIDEO_KIND.to_string(),
                 POSTER_KIND.to_string(),
                 PROBE_METADATA_KIND.to_string(),
                 THUMBNAIL_KIND.to_string()
@@ -944,6 +1260,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
         assert!(runner.run_once().await.expect("run once"));
@@ -1044,6 +1361,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
         assert!(runner.run_once().await.expect("run once"));
@@ -1137,6 +1455,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
         assert!(runner.run_once().await.expect("run once"));
@@ -1184,6 +1503,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
 
@@ -1315,6 +1635,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
         assert!(runner.run_once().await.expect("run once"));
@@ -1389,6 +1710,7 @@ mod tests {
                 lock_timeout: Duration::from_secs(60),
                 retry_base_delay: Duration::from_millis(1),
                 retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
             },
         );
         let handle = tokio::spawn(runner.run_until_shutdown(receiver));

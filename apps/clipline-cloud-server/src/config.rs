@@ -9,6 +9,9 @@ use std::{
 #[cfg(test)]
 use std::collections::BTreeMap;
 
+use clipline_cloud_core::{
+    jobs::VideoOptimizationConfig, media_processing::VideoOptimizationSettings,
+};
 use thiserror::Error;
 use url::Url;
 
@@ -27,6 +30,12 @@ const DEFAULT_JOB_POLL_INTERVAL_SECONDS: u64 = 1;
 const DEFAULT_JOB_LOCK_TIMEOUT_SECONDS: u64 = 5 * 60;
 const DEFAULT_JOB_RETRY_BASE_DELAY_SECONDS: u64 = 5;
 const DEFAULT_JOB_RETRY_MAX_DELAY_SECONDS: u64 = 5 * 60;
+const DEFAULT_VIDEO_OPTIMIZATION_CRF: u64 = 26;
+const DEFAULT_VIDEO_OPTIMIZATION_PRESET: &str = "veryfast";
+const DEFAULT_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT: u64 = 5;
+const MIN_VIDEO_OPTIMIZATION_CRF: u64 = 18;
+const MAX_VIDEO_OPTIMIZATION_CRF: u64 = 35;
+const MAX_VIDEO_OPTIMIZATION_WIDTH: u64 = 7680;
 const DEFAULT_PUBLIC_READ_URL_TTL_SECONDS: u64 = 5 * 60;
 const DEFAULT_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER: u64 = 16;
 const S3_MIN_PART_SIZE_BYTES: u64 = 5 * 1024 * 1024;
@@ -49,6 +58,7 @@ pub struct Config {
     pub job_lock_timeout: Duration,
     pub job_retry_base_delay: Duration,
     pub job_retry_max_delay: Duration,
+    pub video_optimization: VideoOptimizationConfig,
     pub public_media_mode: PublicMediaMode,
     pub public_read_url_ttl: Duration,
     pub max_active_upload_sessions_per_user: i64,
@@ -260,6 +270,30 @@ impl Config {
             optional(source, "CLIPLINE_JOB_RETRY_MAX_DELAY_SECONDS"),
             DEFAULT_JOB_RETRY_MAX_DELAY_SECONDS,
         )?;
+        let video_optimization_enabled = parse_video_optimization_mode(
+            optional(source, "CLIPLINE_VIDEO_OPTIMIZATION").unwrap_or_else(|| "off".to_string()),
+        )?;
+        let video_optimization_crf = parse_u64(
+            "CLIPLINE_VIDEO_OPTIMIZATION_CRF",
+            optional(source, "CLIPLINE_VIDEO_OPTIMIZATION_CRF"),
+            DEFAULT_VIDEO_OPTIMIZATION_CRF,
+        )?;
+        let video_optimization_preset = optional(source, "CLIPLINE_VIDEO_OPTIMIZATION_PRESET")
+            .unwrap_or_else(|| DEFAULT_VIDEO_OPTIMIZATION_PRESET.to_string());
+        let video_optimization_max_width = parse_optional_u64(
+            "CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH",
+            optional(source, "CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH"),
+        )?;
+        let video_optimization_min_savings_percent = parse_u64(
+            "CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT",
+            optional(source, "CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT"),
+            DEFAULT_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT,
+        )?;
+        let video_optimization_keep_original = parse_bool(
+            "CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL",
+            optional(source, "CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL"),
+            false,
+        )?;
         let public_media_mode = parse_public_media_mode(
             optional(source, "CLIPLINE_PUBLIC_MEDIA_MODE")
                 .unwrap_or_else(|| "presigned".to_string()),
@@ -298,6 +332,12 @@ impl Config {
             job_retry_base_delay_seconds,
             job_retry_max_delay_seconds,
         )?;
+        validate_video_optimization_limits(
+            video_optimization_crf,
+            &video_optimization_preset,
+            video_optimization_max_width,
+            video_optimization_min_savings_percent,
+        )?;
         validate_public_media_limits(public_read_url_ttl_seconds)?;
 
         let session_secret = secret(source, "CLIPLINE_SESSION_SECRET")?;
@@ -335,6 +375,20 @@ impl Config {
             job_lock_timeout: Duration::from_secs(job_lock_timeout_seconds),
             job_retry_base_delay: Duration::from_secs(job_retry_base_delay_seconds),
             job_retry_max_delay: Duration::from_secs(job_retry_max_delay_seconds),
+            video_optimization: VideoOptimizationConfig {
+                enabled: video_optimization_enabled,
+                settings: VideoOptimizationSettings {
+                    crf: u8::try_from(video_optimization_crf)
+                        .expect("validated optimization CRF fits u8"),
+                    preset: video_optimization_preset,
+                    max_width: video_optimization_max_width.map(|value| {
+                        u32::try_from(value).expect("validated optimization max width fits u32")
+                    }),
+                },
+                min_savings_percent: u8::try_from(video_optimization_min_savings_percent)
+                    .expect("validated optimization savings percent fits u8"),
+                keep_original: video_optimization_keep_original,
+            },
             public_media_mode,
             public_read_url_ttl: Duration::from_secs(public_read_url_ttl_seconds),
             max_active_upload_sessions_per_user: i64::try_from(max_active_upload_sessions_per_user)
@@ -544,6 +598,41 @@ fn validate_job_limits(
     Ok(())
 }
 
+fn validate_video_optimization_limits(
+    crf: u64,
+    preset: &str,
+    max_width: Option<u64>,
+    min_savings_percent: u64,
+) -> Result<(), ConfigError> {
+    if !(MIN_VIDEO_OPTIMIZATION_CRF..=MAX_VIDEO_OPTIMIZATION_CRF).contains(&crf) {
+        return Err(ConfigError::Validation(format!(
+            "CLIPLINE_VIDEO_OPTIMIZATION_CRF must be between {MIN_VIDEO_OPTIMIZATION_CRF} and {MAX_VIDEO_OPTIMIZATION_CRF}"
+        )));
+    }
+    if !is_valid_ffmpeg_preset(preset) {
+        return Err(ConfigError::InvalidEnum {
+            name: "CLIPLINE_VIDEO_OPTIMIZATION_PRESET",
+            value: preset.to_string(),
+            expected:
+                "ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow",
+        });
+    }
+    if let Some(max_width) = max_width {
+        if max_width == 0 || max_width > MAX_VIDEO_OPTIMIZATION_WIDTH {
+            return Err(ConfigError::Validation(format!(
+                "CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH must be between 1 and {MAX_VIDEO_OPTIMIZATION_WIDTH}, or unset/0 to disable"
+            )));
+        }
+    }
+    if min_savings_percent > 100 {
+        return Err(ConfigError::Validation(
+            "CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT cannot exceed 100".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_public_media_limits(public_read_url_ttl_seconds: u64) -> Result<(), ConfigError> {
     if public_read_url_ttl_seconds == 0 {
         return Err(ConfigError::Validation(
@@ -552,6 +641,18 @@ fn validate_public_media_limits(public_read_url_ttl_seconds: u64) -> Result<(), 
     }
 
     Ok(())
+}
+
+fn parse_video_optimization_mode(value: String) -> Result<bool, ConfigError> {
+    match value.as_str() {
+        "off" => Ok(false),
+        "on" => Ok(true),
+        other => Err(ConfigError::InvalidEnum {
+            name: "CLIPLINE_VIDEO_OPTIMIZATION",
+            value: other.to_string(),
+            expected: "off, on",
+        }),
+    }
 }
 
 fn parse_public_media_mode(value: String) -> Result<PublicMediaMode, ConfigError> {
@@ -577,6 +678,21 @@ fn parse_process_role(value: String) -> Result<ProcessRole, ConfigError> {
             expected: "all, web, worker",
         }),
     }
+}
+
+fn is_valid_ffmpeg_preset(value: &str) -> bool {
+    matches!(
+        value,
+        "ultrafast"
+            | "superfast"
+            | "veryfast"
+            | "faster"
+            | "fast"
+            | "medium"
+            | "slow"
+            | "slower"
+            | "veryslow"
+    )
 }
 
 fn parse_u64(name: &'static str, value: Option<String>, default: u64) -> Result<u64, ConfigError> {
@@ -676,6 +792,13 @@ mod tests {
         );
         assert_eq!(config.single_put_max_bytes, DEFAULT_SINGLE_PUT_MAX_BYTES);
         assert!(!config.direct_s3_uploads);
+        assert!(!config.video_optimization.enabled);
+        assert_eq!(
+            config.video_optimization.settings,
+            VideoOptimizationSettings::default()
+        );
+        assert_eq!(config.video_optimization.min_savings_percent, 5);
+        assert!(!config.video_optimization.keep_original);
         assert_eq!(config.public_media_mode, PublicMediaMode::Presigned);
         assert_eq!(
             config.public_read_url_ttl,
@@ -753,6 +876,64 @@ mod tests {
         assert!(
             matches!(err, ConfigError::Validation(message) if message.contains("CLIPLINE_PUBLIC_READ_URL_TTL_SECONDS"))
         );
+    }
+
+    #[test]
+    fn video_optimization_can_be_enabled_with_tuning() {
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION", "on".to_string());
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION_CRF", "28".to_string());
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION_PRESET", "fast".to_string());
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH", "1280".to_string());
+        env.insert(
+            "CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT",
+            "10".to_string(),
+        );
+        env.insert(
+            "CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL",
+            "true".to_string(),
+        );
+
+        let config = Config::from_source(&env).expect("config");
+
+        assert!(config.video_optimization.enabled);
+        assert_eq!(config.video_optimization.settings.crf, 28);
+        assert_eq!(config.video_optimization.settings.preset, "fast");
+        assert_eq!(config.video_optimization.settings.max_width, Some(1280));
+        assert_eq!(config.video_optimization.min_savings_percent, 10);
+        assert!(config.video_optimization.keep_original);
+    }
+
+    #[test]
+    fn video_optimization_rejects_unsafe_values() {
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION", "true".to_string());
+        let err = Config::from_source(&env).expect_err("invalid mode should fail");
+        assert!(matches!(
+            err,
+            ConfigError::InvalidEnum {
+                name: "CLIPLINE_VIDEO_OPTIMIZATION",
+                ..
+            }
+        ));
+
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION_CRF", "12".to_string());
+        let err = Config::from_source(&env).expect_err("invalid crf should fail");
+        assert!(
+            matches!(err, ConfigError::Validation(message) if message.contains("CLIPLINE_VIDEO_OPTIMIZATION_CRF"))
+        );
+
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_VIDEO_OPTIMIZATION_PRESET", "turbo".to_string());
+        let err = Config::from_source(&env).expect_err("invalid preset should fail");
+        assert!(matches!(
+            err,
+            ConfigError::InvalidEnum {
+                name: "CLIPLINE_VIDEO_OPTIMIZATION_PRESET",
+                ..
+            }
+        ));
     }
 
     #[test]

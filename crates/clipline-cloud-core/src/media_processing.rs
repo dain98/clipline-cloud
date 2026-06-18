@@ -60,6 +60,29 @@ pub struct ValidatedMediaMetadata {
     pub audio_codec: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoOptimizationSettings {
+    pub crf: u8,
+    pub preset: String,
+    pub max_width: Option<u32>,
+}
+
+impl Default for VideoOptimizationSettings {
+    fn default() -> Self {
+        Self {
+            crf: 26,
+            preset: "veryfast".to_string(),
+            max_width: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptimizedVideoCandidate {
+    pub bytes: Bytes,
+    pub metadata: ValidatedMediaMetadata,
+}
+
 #[derive(Debug, Error)]
 pub enum MediaProcessingError {
     #[error(transparent)]
@@ -101,24 +124,77 @@ impl MediaProcessor {
         let input_path = scratch.path().join("source.mp4");
         write_source_object(storage, source_key, &input_path).await?;
 
-        let output = self
-            .run_media_command(
-                &self.config.ffprobe_bin,
-                vec![
-                    os("-v"),
-                    os("error"),
-                    os("-protocol_whitelist"),
-                    os("file,pipe"),
-                    os("-print_format"),
-                    os("json"),
-                    os("-show_format"),
-                    os("-show_streams"),
-                    input_path.as_os_str().to_os_string(),
-                ],
-            )
+        self.probe_file(&input_path).await
+    }
+
+    pub async fn optimize_video(
+        &self,
+        storage: &SharedStorageBackend,
+        source_key: &ObjectKey,
+        settings: &VideoOptimizationSettings,
+    ) -> Result<OptimizedVideoCandidate, MediaProcessingError> {
+        let scratch = ScratchDir::create().await?;
+        let input_path = scratch.path().join("source.mp4");
+        let output_path = scratch.path().join("optimized.mp4");
+        write_source_object(storage, source_key, &input_path).await?;
+
+        let mut args = vec![
+            os("-v"),
+            os("error"),
+            os("-nostdin"),
+            os("-protocol_whitelist"),
+            os("file,pipe"),
+            os("-i"),
+            input_path.as_os_str().to_os_string(),
+            os("-map"),
+            os("0:v:0"),
+            os("-map"),
+            os("0:a?"),
+            os("-c:v"),
+            os("libx264"),
+            os("-preset"),
+            os(&settings.preset),
+            os("-crf"),
+            os(&settings.crf.to_string()),
+            os("-pix_fmt"),
+            os("yuv420p"),
+        ];
+        if let Some(max_width) = settings.max_width {
+            args.extend([
+                os("-vf"),
+                os(&format!(
+                    "scale=min({max_width}\\,iw):-2:force_original_aspect_ratio=decrease"
+                )),
+            ]);
+        }
+        args.extend([
+            os("-c:a"),
+            os("aac"),
+            os("-b:a"),
+            os("128k"),
+            os("-movflags"),
+            os("+faststart"),
+            os("-threads"),
+            os("1"),
+            output_path.as_os_str().to_os_string(),
+        ]);
+
+        self.run_media_command(&self.config.ffmpeg_bin, args)
             .await?;
-        let parsed = serde_json::from_slice::<FfprobeOutput>(&output.stdout)?;
-        validate_probe_output(parsed)
+
+        let bytes = fs::read(&output_path).await?;
+        if bytes.is_empty() {
+            return Err(MediaProcessingError::Validation(
+                "video optimization produced an empty file".to_string(),
+            ));
+        }
+        let metadata = self.probe_file(&output_path).await?;
+        validate_optimized_candidate(&metadata)?;
+
+        Ok(OptimizedVideoCandidate {
+            bytes: Bytes::from(bytes),
+            metadata,
+        })
     }
 
     pub async fn generate_thumbnail(
@@ -203,6 +279,30 @@ impl MediaProcessor {
         args: Vec<OsString>,
     ) -> Result<std::process::Output, MediaProcessingError> {
         run_media_command(&self.config, program, args).await
+    }
+
+    async fn probe_file(
+        &self,
+        path: &Path,
+    ) -> Result<ValidatedMediaMetadata, MediaProcessingError> {
+        let output = self
+            .run_media_command(
+                &self.config.ffprobe_bin,
+                vec![
+                    os("-v"),
+                    os("error"),
+                    os("-protocol_whitelist"),
+                    os("file,pipe"),
+                    os("-print_format"),
+                    os("json"),
+                    os("-show_format"),
+                    os("-show_streams"),
+                    path.as_os_str().to_os_string(),
+                ],
+            )
+            .await?;
+        let parsed = serde_json::from_slice::<FfprobeOutput>(&output.stdout)?;
+        validate_probe_output(parsed)
     }
 }
 
@@ -583,6 +683,31 @@ fn validate_probe_output(
             .map(validate_codec)
             .transpose()?,
     })
+}
+
+fn validate_optimized_candidate(
+    metadata: &ValidatedMediaMetadata,
+) -> Result<(), MediaProcessingError> {
+    if metadata.duration_ms.is_none() || metadata.width.is_none() || metadata.height.is_none() {
+        return Err(MediaProcessingError::Validation(
+            "optimized video is missing required probe metadata".to_string(),
+        ));
+    }
+    if metadata.video_codec.as_deref() != Some("h264") {
+        return Err(MediaProcessingError::Validation(format!(
+            "optimized video codec is {:?}, expected h264",
+            metadata.video_codec
+        )));
+    }
+    if let Some(audio_codec) = metadata.audio_codec.as_deref() {
+        if audio_codec != "aac" {
+            return Err(MediaProcessingError::Validation(format!(
+                "optimized audio codec is {audio_codec:?}, expected aac"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_duration_ms(value: Option<&str>) -> Option<i64> {

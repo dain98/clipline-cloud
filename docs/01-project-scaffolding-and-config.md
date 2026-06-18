@@ -77,6 +77,12 @@ CLIPLINE_UPLOAD_PART_SIZE_BYTES     # must be >= 5 MiB for S3
 CLIPLINE_SINGLE_PUT_MAX_BYTES       # default 64 MiB
 CLIPLINE_UPLOAD_SESSION_TTL_SECONDS
 CLIPLINE_DIRECT_S3_UPLOADS          # optional Phase-4 direct upload; false by default, s3 only
+CLIPLINE_VIDEO_OPTIMIZATION         # off (default) | on; optional lossy source optimization
+CLIPLINE_VIDEO_OPTIMIZATION_CRF     # default 26; valid 18..35
+CLIPLINE_VIDEO_OPTIMIZATION_PRESET  # default veryfast; x264 preset
+CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH # optional; 0/unset disables resize
+CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT # default 5
+CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL # false; stores original-source.mp4 for active clips
 CLIPLINE_MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER
 CLIPLINE_USER_STORAGE_QUOTA_BYTES   # optional; 0/unset disables
 CLIPLINE_GLOBAL_STORAGE_WARNING_THRESHOLD_BYTES # optional; 0/unset disables
@@ -96,6 +102,8 @@ CLIPLINE_LOG_LEVEL
 - `local` backend requires `CLIPLINE_DATA_DIR`.
 - `s3` backend requires `CLIPLINE_S3_ENDPOINT`, `CLIPLINE_S3_BUCKET`, access key, secret key.
 - `CLIPLINE_DIRECT_S3_UPLOADS=true` requires `CLIPLINE_STORAGE_BACKEND=s3`.
+- `CLIPLINE_VIDEO_OPTIMIZATION` must be `off` or `on`; CRF must be 18..35; preset must be a valid
+  x264 preset; max width is optional; min savings must be 0..100.
 - `CLIPLINE_PUBLIC_MEDIA_MODE` must be `presigned` or `proxy`; public read URL TTL must be positive.
 - `_FILE` variants (Docker secrets) are supported for every secret and **preferred** over inline
   values — read the file contents at startup.

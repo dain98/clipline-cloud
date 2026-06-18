@@ -80,12 +80,12 @@ already playable MP4s, so optimization must be optional, conservative, and loss-
   - [x] MinIO/direct-S3 smoke test covering presign → PUT to S3 → ack → complete → validate
 - [x] Dedicated worker container as an additional job runner (no schema change; relies on doc-06 claiming)
 - [ ] Single-output video optimization/compression for browser serving
-  - [ ] Config gate: disabled by default, with CRF/preset/max-width/min-savings/keep-original controls
-  - [ ] `optimize_video` job uses the hardened media-processing harness and never blocks ready playback
-  - [ ] Candidate object generation and validation before activation
-  - [ ] Safe replacement of canonical `source.mp4`; failed/skipped optimization leaves original intact
-  - [ ] DB metadata update for active optimized media plus artifact/probe refresh where needed
-  - [ ] Cleanup deletes candidates and, by default, originals after successful replacement
+  - [x] Config gate: disabled by default, with CRF/preset/max-width/min-savings/keep-original controls
+  - [x] `optimize_video` job uses the hardened media-processing harness and never blocks ready playback
+  - [x] Candidate object generation and validation before activation
+  - [x] Safe replacement of canonical `source.mp4`; failed/skipped optimization leaves original intact
+  - [x] DB metadata update for active optimized media plus artifact/probe refresh where needed
+  - [x] Cleanup deletes candidates and, by default, originals after successful replacement
   - [ ] Local and S3 smoke coverage proves optimized media serves correctly and saves bytes on a fixture
 - [ ] CDN in front of public clips (extends doc-08 public-media path)
 - [ ] Invite links (self-service onboarding without full self-registration)
@@ -115,3 +115,7 @@ already playable MP4s, so optimization must be optional, conservative, and loss-
   optimization/compression. The intended feature is an optional, conservative `optimize_video` job
   that reduces storage and browser bandwidth by replacing `source.mp4` only after a validated
   smaller candidate exists; it is not a multi-quality ladder.
+- 2026-06-18: Implemented the disabled-by-default `optimize_video` job. It creates a validated
+  H.264/AAC candidate, requires the configured byte-savings threshold, replaces canonical
+  `source.mp4`, refreshes active media metadata/artifact jobs, and deletes temporary candidates.
+  Full local/S3 smoke coverage with an ffmpeg-equipped runtime remains open.
