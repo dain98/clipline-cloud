@@ -636,8 +636,7 @@ a:hover {
 }
 
 .clip-player:not(:hover):not(:focus-within) .clip-player-overlay,
-.clip-player:not(:hover):not(:focus-within) .clip-player-note,
-.clip-player:not(:hover):not(:focus-within) .clip-player-deck {
+.clip-player:not(:hover):not(:focus-within) .clip-player-note {
   opacity: 0;
   pointer-events: none;
 }
@@ -767,7 +766,6 @@ a:hover {
   display: grid;
   gap: 0.45rem;
   padding: 0.72rem 0.8rem 0.8rem;
-  transition: opacity 180ms ease;
 }
 
 .clip-player-timeline {
