@@ -109,7 +109,8 @@ ln -s /mnt/core/cldata data
 mkdir -p secrets
 openssl rand -base64 32 > secrets/session_secret.txt
 chmod 700 secrets
-chmod 600 secrets/session_secret.txt
+chown 10001:10001 secrets/session_secret.txt
+chmod 400 secrets/session_secret.txt
 chown -R 10001:10001 /mnt/core/cldata
 
 curl -fsSLo docker-compose.yml \
@@ -123,11 +124,14 @@ Edit `.env` before starting:
 ```text
 CLIPLINE_PUBLIC_URL=https://clips.example.com
 CLIPLINE_HTTP_PORT=8080
+CLIPLINE_TRUSTED_PROXY_HOPS=
 CLIPLINE_VIDEO_OPTIMIZATION=off
 ```
 
 For an existing reverse proxy such as Nginx Proxy Manager, keep `CLIPLINE_PUBLIC_URL` set to the public
-`https://` URL and forward the proxy host to `http://<host-ip>:<CLIPLINE_HTTP_PORT>`.
+`https://` URL and forward the proxy host to `http://<host-ip>:<CLIPLINE_HTTP_PORT>`. If the proxy has
+a stable source IP and you want audit logs and rate limits to use real client IPs, set
+`CLIPLINE_TRUSTED_PROXY_HOPS` to that proxy IP or CIDR.
 
 Then start the app:
 
