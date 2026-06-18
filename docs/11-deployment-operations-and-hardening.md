@@ -252,3 +252,7 @@ Self-hosting diagnostics without a full observability stack.
   it exercises the same app HTTPS, secure-header, public URL, and desktop-upload path. The bundled
   Caddy profile remains covered by the localhost TLS smoke; external-S3 production buckets remain an
   operator substitution for the MinIO/S3 smoke path.
+- 2026-06-18 — Added an opt-in external-S3 smoke path for `deploy/compose/smoke.sh`. The S3 profile
+  now requires `RUN_EXTERNAL_S3=1`, real bucket credentials, and a smoke/test prefix by default,
+  then verifies `/readyz`, server-proxy upload to S3, validation to `ready`, owner media range
+  reads, generated thumbnail/poster artifacts, and public share media behavior against the provider.

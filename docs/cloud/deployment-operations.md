@@ -127,6 +127,32 @@ RUN_DIRECT_S3=0 RUN_PROFILES=minio deploy/compose/smoke.sh
 RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
 ```
 
+External S3 is intentionally opt-in because it writes to a real bucket. Use a disposable bucket or a
+smoke/test prefix:
+
+```sh
+BUILD_IMAGE=0 \
+RUN_PROFILES=s3 \
+RUN_EXTERNAL_S3=1 \
+CLIPLINE_HTTP_PORT=18080 \
+CLIPLINE_S3_ENDPOINT=https://s3.example.com \
+CLIPLINE_S3_BUCKET=clipline \
+CLIPLINE_S3_REGION=us-east-1 \
+CLIPLINE_S3_FORCE_PATH_STYLE=false \
+CLIPLINE_S3_PREFIX=clipline-smoke/$(date +%Y%m%d%H%M%S) \
+CLIPLINE_SMOKE_S3_ACCESS_KEY_ID=... \
+CLIPLINE_SMOKE_S3_SECRET_ACCESS_KEY=... \
+deploy/compose/smoke.sh
+```
+
+The external S3 smoke starts `docker-compose.s3.yml`, verifies `/readyz`, uploads a generated MP4
+through the normal server-proxy path, waits for the clip to reach `ready`, checks owner media range
+reads, waits for generated thumbnail/poster JPEGs, verifies public share data, and follows the
+public media path. It soft-deletes the smoke clip at the end, but object cleanup is asynchronous, so
+keep the prefix easy to remove after failed or interrupted runs. The command refuses to run the S3
+profile unless `RUN_EXTERNAL_S3=1` and real S3 credentials are supplied through
+`CLIPLINE_SMOKE_S3_*` values or the `CLIPLINE_COMPOSE_S3_*_FILE` secret-file variables.
+
 `RUN_CADDY=1` checks localhost TLS plus secure headers through Caddy on host ports `8081`/`8443` by
 default. Override `CLIPLINE_CADDY_HTTP_PORT` and `CLIPLINE_CADDY_HTTPS_PORT` when those ports are
 busy or when rehearsing production-style `80`/`443` bindings. If Docker reports that the Caddy

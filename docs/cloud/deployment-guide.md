@@ -191,6 +191,7 @@ Configure the bucket via environment variables:
 | `CLIPLINE_S3_BUCKET` | Bucket name |
 | `CLIPLINE_S3_REGION` | Bucket region |
 | `CLIPLINE_S3_FORCE_PATH_STYLE` | `true` for path-style endpoints (many non-AWS providers), else `false` |
+| `CLIPLINE_S3_PREFIX` | Optional object-key prefix; recommended for tests and shared buckets |
 | `CLIPLINE_DIRECT_S3_UPLOADS` | Optional Phase-4 direct client-to-S3 uploads; defaults to `false` and requires client support |
 
 ```sh
@@ -200,6 +201,7 @@ CLIPLINE_S3_ENDPOINT=https://s3.example.com \
 CLIPLINE_S3_BUCKET=clipline \
 CLIPLINE_S3_REGION=us-east-1 \
 CLIPLINE_S3_FORCE_PATH_STYLE=false \
+CLIPLINE_S3_PREFIX=clipline-prod \
 docker compose -f docker-compose.s3.yml up -d
 ```
 
@@ -210,6 +212,28 @@ for production object storage.
 being tested supports the direct-upload flow; the default server-proxy upload path works for all S3
 deployments. Browser-based direct uploads also require bucket CORS that allows `PUT` and exposes
 `ETag`.
+
+To smoke-test the external S3 profile against a real bucket, use a disposable bucket or a
+smoke/test prefix. This check uploads a generated MP4 through the normal server-proxy path, waits
+for validation and media-processing jobs, checks owner/public media reads, and then soft-deletes the
+clip. Object cleanup is asynchronous, so keep the prefix easy to remove manually if a run is
+interrupted.
+
+```sh
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 \
+BUILD_IMAGE=0 \
+RUN_PROFILES=s3 \
+RUN_EXTERNAL_S3=1 \
+CLIPLINE_HTTP_PORT=18080 \
+CLIPLINE_S3_ENDPOINT=https://s3.example.com \
+CLIPLINE_S3_BUCKET=clipline \
+CLIPLINE_S3_REGION=us-east-1 \
+CLIPLINE_S3_FORCE_PATH_STYLE=false \
+CLIPLINE_S3_PREFIX=clipline-smoke/$(date +%Y%m%d%H%M%S) \
+CLIPLINE_SMOKE_S3_ACCESS_KEY_ID=... \
+CLIPLINE_SMOKE_S3_SECRET_ACCESS_KEY=... \
+deploy/compose/smoke.sh
+```
 
 ## Verify the deployment
 
