@@ -10,6 +10,9 @@ BUILD_IMAGE="${BUILD_IMAGE:-1}"
 RUN_PROFILES="${RUN_PROFILES-default minio postgres}"
 RUN_CADDY="${RUN_CADDY:-0}"
 RUN_DIRECT_S3="${RUN_DIRECT_S3:-1}"
+RUN_EXTERNAL_S3="${RUN_EXTERNAL_S3:-0}"
+ALLOW_EXTERNAL_S3_NO_PREFIX="${ALLOW_EXTERNAL_S3_NO_PREFIX:-0}"
+ALLOW_EXTERNAL_S3_NON_SMOKE_PREFIX="${ALLOW_EXTERNAL_S3_NON_SMOKE_PREFIX:-0}"
 CONFIG_ONLY="${CONFIG_ONLY:-0}"
 KEEP="${KEEP:-0}"
 ISSUED_DEVICE_TOKEN=""
@@ -73,8 +76,34 @@ make_secrets() {
   printf 'clipline-smoke-session-secret-0123456789abcdef\n' > "$SECRET_DIR/session_secret.txt"
   printf 'clipline-smoke-postgres-password\n' > "$SECRET_DIR/postgres_password.txt"
   printf 'postgres://clipline:clipline-smoke-postgres-password@postgres:5432/clipline\n' > "$SECRET_DIR/database_url.txt"
-  printf 'cliplinesmokeaccesskey\n' > "$SECRET_DIR/s3_access_key_id.txt"
-  printf 'clipline-smoke-s3-secret-0123456789abcdef\n' > "$SECRET_DIR/s3_secret_access_key.txt"
+  write_secret_from_env_or_file \
+    "$SECRET_DIR/s3_access_key_id.txt" \
+    "CLIPLINE_SMOKE_S3_ACCESS_KEY_ID" \
+    "CLIPLINE_COMPOSE_S3_ACCESS_KEY_ID_FILE" \
+    "cliplinesmokeaccesskey"
+  write_secret_from_env_or_file \
+    "$SECRET_DIR/s3_secret_access_key.txt" \
+    "CLIPLINE_SMOKE_S3_SECRET_ACCESS_KEY" \
+    "CLIPLINE_COMPOSE_S3_SECRET_ACCESS_KEY_FILE" \
+    "clipline-smoke-s3-secret-0123456789abcdef"
+}
+
+write_secret_from_env_or_file() {
+  local target="$1"
+  local value_var="$2"
+  local file_var="$3"
+  local fallback="$4"
+  local value="${!value_var-}"
+  local source_file="${!file_var-}"
+
+  if [ -n "$value" ]; then
+    printf '%s\n' "$value" > "$target"
+  elif [ -n "$source_file" ]; then
+    [ -r "$source_file" ] || die "$file_var points to an unreadable file: $source_file"
+    cp "$source_file" "$target"
+  else
+    printf '%s\n' "$fallback" > "$target"
+  fi
 }
 
 compose_file_for_profile() {
@@ -119,6 +148,7 @@ compose() {
     CLIPLINE_S3_BUCKET="${CLIPLINE_S3_BUCKET:-}" \
     CLIPLINE_S3_REGION="${CLIPLINE_S3_REGION:-}" \
     CLIPLINE_S3_FORCE_PATH_STYLE="${CLIPLINE_S3_FORCE_PATH_STYLE:-}" \
+    CLIPLINE_S3_PREFIX="${CLIPLINE_S3_PREFIX:-}" \
     docker compose -p "$project" -f "$file" "$@"
 }
 
@@ -259,6 +289,239 @@ assert_admin_overview() {
   done
 
   die "admin overview response missing storage_backend for $project"
+}
+
+require_external_s3_config() {
+  [ "$RUN_EXTERNAL_S3" = "1" ] || die "RUN_PROFILES=s3 requires RUN_EXTERNAL_S3=1 because it writes to a real external bucket"
+  [ -n "${CLIPLINE_S3_ENDPOINT:-}" ] || die "CLIPLINE_S3_ENDPOINT is required for RUN_PROFILES=s3"
+  [ -n "${CLIPLINE_S3_BUCKET:-}" ] || die "CLIPLINE_S3_BUCKET is required for RUN_PROFILES=s3"
+  [ -n "${CLIPLINE_SMOKE_S3_ACCESS_KEY_ID:-}${CLIPLINE_COMPOSE_S3_ACCESS_KEY_ID_FILE:-}" ] \
+    || die "provide CLIPLINE_SMOKE_S3_ACCESS_KEY_ID or CLIPLINE_COMPOSE_S3_ACCESS_KEY_ID_FILE for RUN_PROFILES=s3"
+  [ -n "${CLIPLINE_SMOKE_S3_SECRET_ACCESS_KEY:-}${CLIPLINE_COMPOSE_S3_SECRET_ACCESS_KEY_FILE:-}" ] \
+    || die "provide CLIPLINE_SMOKE_S3_SECRET_ACCESS_KEY or CLIPLINE_COMPOSE_S3_SECRET_ACCESS_KEY_FILE for RUN_PROFILES=s3"
+
+  if [ -z "${CLIPLINE_S3_PREFIX:-}" ] && [ "$ALLOW_EXTERNAL_S3_NO_PREFIX" != "1" ]; then
+    die "CLIPLINE_S3_PREFIX is required for external S3 smoke; use a disposable prefix such as clipline-smoke/$SMOKE_ID"
+  fi
+
+  case "${CLIPLINE_S3_PREFIX:-}" in
+    *smoke*|*test*|"") ;;
+    *)
+      [ "$ALLOW_EXTERNAL_S3_NON_SMOKE_PREFIX" = "1" ] \
+        || die "CLIPLINE_S3_PREFIX should contain 'smoke' or 'test' for external S3 smoke; set ALLOW_EXTERNAL_S3_NON_SMOKE_PREFIX=1 to override"
+      ;;
+  esac
+}
+
+preflight_runtime_profiles() {
+  local profile
+  for profile in $RUN_PROFILES; do
+    if [ "$profile" = "s3" ]; then
+      require_external_s3_config
+    fi
+  done
+}
+
+smoke_external_s3_upload() {
+  local project="$1"
+  local file="$2"
+  local token="$3"
+
+  log "Smoke-testing external S3 server-proxy upload and media reads"
+  compose "$project" "$file" exec -T -e SMOKE_TOKEN="$token" clipline-cloud sh -s <<'SCRIPT'
+set -eu
+
+api="http://127.0.0.1:8080"
+clip="/tmp/clipline-external-s3-smoke.mp4"
+headers="/tmp/clipline-external-s3-headers.txt"
+body="/tmp/clipline-external-s3-body.out"
+trap 'rm -f "$clip" "$headers" "$body"' EXIT
+
+# The runtime image intentionally omits jq; these parsers assume serde's compact JSON output.
+json_string() {
+  field="$1"
+  sed -n "s/.*\"$field\":\"\([^\"]*\)\".*/\1/p"
+}
+
+require_json_string() {
+  field="$1"
+  value="$(printf '%s' "$2" | json_string "$field")"
+  [ -n "$value" ] || {
+    printf 'missing JSON string field %s in: %s\n' "$field" "$2" >&2
+    exit 1
+  }
+  printf '%s' "$value"
+}
+
+wait_for_ready_clip() {
+  clip_id="$1"
+  for _ in $(seq 1 120); do
+    if clip_response="$(curl -fsS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/clips/$clip_id" 2>/dev/null)"; then
+      printf '%s' "$clip_response" | grep -q '"status":"ready"' && return 0
+    fi
+    sleep 2
+  done
+
+  printf 'external S3 uploaded clip %s did not become ready\n' "$clip_id" >&2
+  curl -sS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/admin/jobs/recent-errors" >&2 || true
+  return 1
+}
+
+wait_for_jpeg() {
+  clip_id="$1"
+  endpoint="$2"
+  label="$3"
+
+  for _ in $(seq 1 120); do
+    code="$(curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      "$api/api/v1/clips/$clip_id/$endpoint")"
+    if [ "$code" = "200" ] && grep -qi '^content-type: image/jpeg' "$headers"; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  printf '%s did not become a generated JPEG for clip %s\n' "$label" "$clip_id" >&2
+  cat "$headers" >&2 || true
+  curl -sS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/admin/jobs/recent-errors" >&2 || true
+  return 1
+}
+
+ffmpeg -hide_banner -loglevel error -nostdin -y \
+  -f lavfi -i testsrc2=size=160x90:rate=15 \
+  -t 1 \
+  -c:v mpeg4 \
+  -pix_fmt yuv420p \
+  -movflags +faststart \
+  "$clip"
+
+size="$(wc -c < "$clip" | tr -d ' ')"
+checksum="$(sha256sum "$clip" | awk '{print $1}')"
+client_clip_id="$(printf 'external-s3-smoke-%s-%s' "$(date +%s)" "$$")"
+payload="$(printf '{"client_clip_id":"%s","title":"External S3 smoke","source_type":"deployment_smoke","duration_ms":1000,"file_size_bytes":%s,"checksum_sha256":"%s","container":"mp4","video_codec":"mpeg4","width":160,"height":90,"fps":15,"visibility":"private"}' "$client_clip_id" "$size" "$checksum")"
+
+create_response="$(curl -fsS \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "$payload" \
+  "$api/api/v1/uploads")"
+
+clip_id="$(require_json_string clip_id "$create_response")"
+upload_id="$(require_json_string upload_id "$create_response")"
+mode="$(require_json_string mode "$create_response")"
+
+case "$mode" in
+  single_put)
+    content_path="$(require_json_string single_put_url "$create_response")"
+    upload_response="$(curl -fsS \
+      -X PUT \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      -H 'Content-Type: video/mp4' \
+      --data-binary "@$clip" \
+      "$api$content_path")"
+    printf '%s' "$upload_response" | grep -q '"status":"completed"' || {
+      printf 'single PUT response did not complete upload %s: %s\n' "$upload_id" "$upload_response" >&2
+      exit 1
+    }
+    ;;
+  chunked)
+    parts_template="$(require_json_string parts_url_template "$create_response")"
+    part_path="$(printf '%s' "$parts_template" | sed 's/{part_number}/1/g')"
+    part_response="$(curl -fsS \
+      -X PUT \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      -H "X-Clipline-Part-SHA256: $checksum" \
+      --data-binary "@$clip" \
+      "$api$part_path")"
+    printf '%s' "$part_response" | grep -q "\"upload_id\":\"$upload_id\"" || {
+      printf 'part response did not reference upload_id %s: %s\n' "$upload_id" "$part_response" >&2
+      exit 1
+    }
+    curl -fsS \
+      -X POST \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      "$api/api/v1/uploads/$upload_id/complete" >/dev/null
+    ;;
+  *)
+    printf 'unexpected upload mode %s in: %s\n' "$mode" "$create_response" >&2
+    exit 1
+    ;;
+esac
+
+wait_for_ready_clip "$clip_id"
+
+owner_media_code="$(curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Range: bytes=0-15' \
+  "$api/api/v1/clips/$clip_id/media")"
+[ "$owner_media_code" = "206" ] || {
+  printf 'owner media range request returned %s, expected 206\n' "$owner_media_code" >&2
+  cat "$headers" >&2 || true
+  exit 1
+}
+grep -qi '^content-range: bytes 0-15/' "$headers" || {
+  printf 'owner media response missing expected Content-Range\n' >&2
+  cat "$headers" >&2 || true
+  exit 1
+}
+
+wait_for_jpeg "$clip_id" thumbnail thumbnail
+wait_for_jpeg "$clip_id" poster poster
+
+visibility_response="$(curl -fsS \
+  -X POST \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"visibility":"unlisted"}' \
+  "$api/api/v1/clips/$clip_id/visibility")"
+share_id="$(require_json_string public_share_id "$visibility_response")"
+public_response="$(curl -fsS "$api/api/v1/public/clips/$share_id")"
+printf '%s' "$public_response" | grep -q "\"share_id\":\"$share_id\"" || {
+  printf 'public clip response did not reference share_id %s: %s\n' "$share_id" "$public_response" >&2
+  exit 1
+}
+
+public_probe_code="$(curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
+  "$api/api/v1/public/clips/$share_id/media")"
+case "$public_probe_code" in
+  307)
+    grep -qi '^location:' "$headers" || {
+      printf 'public presigned media redirect was missing Location\n' >&2
+      cat "$headers" >&2 || true
+      exit 1
+    }
+    public_follow_code="$(curl -L -sS -D "$headers" -o "$body" -w "%{http_code}" \
+      -H 'Range: bytes=0-15' \
+      "$api/api/v1/public/clips/$share_id/media")"
+    [ "$public_follow_code" = "206" ] || {
+      printf 'public presigned media range request returned %s, expected 206\n' "$public_follow_code" >&2
+      cat "$headers" >&2 || true
+      exit 1
+    }
+    ;;
+  200|206)
+    public_proxy_code="$(curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
+      -H 'Range: bytes=0-15' \
+      "$api/api/v1/public/clips/$share_id/media")"
+    [ "$public_proxy_code" = "206" ] || {
+      printf 'public proxy media range request returned %s, expected 206\n' "$public_proxy_code" >&2
+      cat "$headers" >&2 || true
+      exit 1
+    }
+    ;;
+  *)
+    printf 'public media returned %s, expected 307/200/206\n' "$public_probe_code" >&2
+    cat "$headers" >&2 || true
+    exit 1
+    ;;
+esac
+
+curl -fsS \
+  -X DELETE \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  "$api/api/v1/clips/$clip_id" >/dev/null || true
+SCRIPT
 }
 
 smoke_direct_s3_upload() {
@@ -521,6 +784,10 @@ run_profile() {
   project="clipline-smoke-$profile-$SMOKE_ID"
   register_cleanup "$project" "$file"
 
+  if [ "$profile" = "s3" ]; then
+    require_external_s3_config
+  fi
+
   if [ "$profile" = "minio" ] && [ "$RUN_DIRECT_S3" = "1" ]; then
     CLIPLINE_DIRECT_S3_UPLOADS="${CLIPLINE_DIRECT_S3_UPLOADS:-true}"
     CLIPLINE_SINGLE_PUT_MAX_BYTES="${CLIPLINE_SINGLE_PUT_MAX_BYTES:-1}"
@@ -561,6 +828,12 @@ run_profile() {
       compose "$project" "$file" start postgres >/dev/null
       wait_healthy "$project" "$file" postgres
       wait_ready "$project" "$file"
+      ;;
+    s3)
+      smoke_external_s3_upload "$project" "$file" "$token"
+      if [ "$RUN_DIRECT_S3" = "1" ] && [ "${CLIPLINE_DIRECT_S3_UPLOADS:-}" = "true" ]; then
+        smoke_direct_s3_upload "$project" "$file" "$token"
+      fi
       ;;
   esac
 
@@ -618,6 +891,7 @@ main() {
     return
   fi
 
+  preflight_runtime_profiles
   build_image
 
   local profile
