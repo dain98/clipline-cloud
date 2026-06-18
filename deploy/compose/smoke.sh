@@ -164,6 +164,7 @@ validate_compose_configs() {
   local file
   for file in \
     "$SCRIPT_DIR/docker-compose.yml" \
+    "$SCRIPT_DIR/docker-compose.standalone.yml" \
     "$SCRIPT_DIR/docker-compose.caddy.yml" \
     "$SCRIPT_DIR/docker-compose.postgres.yml" \
     "$SCRIPT_DIR/docker-compose.s3.yml" \

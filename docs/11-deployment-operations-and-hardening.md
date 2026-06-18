@@ -14,7 +14,7 @@
 
 ## Goal
 
-The five Compose profiles, production hardening (secure headers, proxy-hop `X-Forwarded-For` trust,
+The core Compose profiles, production hardening (secure headers, proxy-hop `X-Forwarded-For` trust,
 HTTPS warnings), the operator-tunable limits with their defaults, backup/restore documentation per
 backend, the observability surface (`/healthz`, `/readyz`, structured logs, admin diagnostics), and
 graceful handling of the §27 failure modes.
@@ -166,7 +166,7 @@ Self-hosting diagnostics without a full observability stack.
 
 ## Implementation checklist
 
-- [x] All five Compose profiles authored in `deploy/compose/` and verified to start/configure
+- [x] Core Compose profiles authored in `deploy/compose/` and verified to start/configure
 - [x] Minimal profile runs **as copied** (generated admin password printed; non-HTTPS warning shown)
 - [x] HTTPS reverse-proxy deployment verified with a real domain; Caddy profile verified with localhost TLS
 - [x] `_FILE` secret variants honored across all profiles
@@ -260,3 +260,6 @@ Self-hosting diagnostics without a full observability stack.
   The harness enables optimization with smoke-specific settings, uploads a compressible fixture,
   verifies the optimized source is smaller and range-readable, then waits for regenerated
   thumbnail/poster artifacts.
+- 2026-06-18 — Added `docker-compose.standalone.yml` for no-clone single-host deployments. It uses
+  relative `./data` and `./secrets` paths, reads an operator-created session secret file instead of
+  running the local-test `clipline-secrets` helper, and is covered by smoke config validation.

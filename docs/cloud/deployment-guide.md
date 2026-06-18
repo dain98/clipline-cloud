@@ -29,6 +29,7 @@ The app listens on port `8080` inside the container.
 | File | Database | Storage | Use |
 |------|----------|---------|-----|
 | `docker-compose.yml` | SQLite | Local disk | Default; local/LAN test |
+| `docker-compose.standalone.yml` | SQLite | Local disk | No-clone single-host deployment |
 | `docker-compose.postgres.yml` | Postgres | Local disk | Postgres deployments |
 | `docker-compose.s3.yml` | SQLite | External S3 | S3-backed media |
 | `docker-compose.caddy.yml` | SQLite | Local disk | Single-host HTTPS via Caddy |
@@ -93,6 +94,54 @@ Log in, change the password, and create users. To set a fixed bootstrap password
 instead of the generated one, set `CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD` inline before first boot, then rotate
 it after first login. (The default `docker-compose.yml` does not read an `admin_password.txt` secret — that
 file is used by the Caddy, Postgres, and S3 profiles below.)
+
+## No-clone standalone deployment
+
+Use `docker-compose.standalone.yml` when you want a single copyable Compose file instead of a git clone.
+It uses relative host paths (`./data` and `./secrets`) and expects one operator-created
+`./secrets/session_secret.txt` file instead of running the local-test `clipline-secrets` helper
+container.
+
+```sh
+mkdir -p /opt/cl-cloud /mnt/core/cldata
+cd /opt/cl-cloud
+ln -s /mnt/core/cldata data
+mkdir -p secrets
+openssl rand -base64 32 > secrets/session_secret.txt
+chmod 700 secrets
+chown 10001:10001 secrets/session_secret.txt
+chmod 400 secrets/session_secret.txt
+chown -R 10001:10001 /mnt/core/cldata
+
+curl -fsSLo docker-compose.yml \
+  https://raw.githubusercontent.com/dain98/clipline-cloud/main/deploy/compose/docker-compose.standalone.yml
+curl -fsSLo .env \
+  https://raw.githubusercontent.com/dain98/clipline-cloud/main/deploy/compose/standalone.env.example
+```
+
+Edit `.env` before starting:
+
+```text
+CLIPLINE_PUBLIC_URL=https://clips.example.com
+CLIPLINE_HTTP_PORT=8080
+CLIPLINE_TRUSTED_PROXY_HOPS=
+CLIPLINE_VIDEO_OPTIMIZATION=off
+```
+
+For an existing reverse proxy such as Nginx Proxy Manager, keep `CLIPLINE_PUBLIC_URL` set to the public
+`https://` URL and forward the proxy host to `http://<host-ip>:<CLIPLINE_HTTP_PORT>`. If the proxy has
+a stable source IP and you want audit logs and rate limits to use real client IPs, set
+`CLIPLINE_TRUSTED_PROXY_HOPS` to that proxy IP or CIDR.
+
+Then start the app:
+
+```sh
+docker compose up -d
+docker compose logs -f clipline-cloud
+```
+
+On first boot the app prints a generated one-time admin password to the logs. Store it, log in as
+`admin`, change the password, and create normal users.
 
 ## Production behind a reverse proxy (Nginx Proxy Manager)
 

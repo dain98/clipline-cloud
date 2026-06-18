@@ -51,6 +51,11 @@ app at your server URL (`https://your-domain` in production).
 Compose profiles for the common combinations live in [`deploy/compose/`](deploy/compose/). The
 [deployment guide](docs/cloud/deployment-guide.md) covers each one.
 
+For a no-clone single-host deployment, use
+[`docker-compose.standalone.yml`](deploy/compose/docker-compose.standalone.yml). It pins the released
+image and uses relative `./data` and `./secrets` paths so the Compose file can live in a directory such
+as `/opt/cl-cloud`.
+
 ## Production note
 
 This is self-hosted software. For any real use, run it behind HTTPS — either an existing reverse proxy
