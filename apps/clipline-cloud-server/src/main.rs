@@ -169,6 +169,7 @@ async fn start_job_runner(
             lock_timeout: config.job_lock_timeout,
             retry_base_delay: config.job_retry_base_delay,
             retry_max_delay: config.job_retry_max_delay,
+            video_optimization: config.video_optimization.clone(),
         },
     );
     Ok((
@@ -202,6 +203,12 @@ fn log_config_summary(config: &Config) {
         job_lock_timeout_seconds = config.job_lock_timeout.as_secs(),
         job_retry_base_delay_seconds = config.job_retry_base_delay.as_secs(),
         job_retry_max_delay_seconds = config.job_retry_max_delay.as_secs(),
+        video_optimization_enabled = config.video_optimization.enabled,
+        video_optimization_crf = config.video_optimization.settings.crf,
+        video_optimization_preset = %config.video_optimization.settings.preset.as_str(),
+        video_optimization_max_width = ?config.video_optimization.settings.max_width,
+        video_optimization_min_savings_percent = config.video_optimization.min_savings_percent,
+        video_optimization_keep_original = config.video_optimization.keep_original,
         public_media_mode = config.public_media_mode.as_str(),
         public_read_url_ttl_seconds = config.public_read_url_ttl.as_secs(),
         max_active_upload_sessions_per_user = config.max_active_upload_sessions_per_user,

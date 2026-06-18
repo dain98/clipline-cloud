@@ -213,6 +213,25 @@ being tested supports the direct-upload flow; the default server-proxy upload pa
 deployments. Browser-based direct uploads also require bucket CORS that allows `PUT` and exposes
 `ETag`.
 
+### Optional video optimization
+
+Video optimization is disabled by default. When enabled, completed uploads remain playable as soon as
+they pass validation, then an `optimize_video` job tries to create a single smaller browser MP4. It
+only replaces `source.mp4` after the candidate validates and meets the configured savings threshold.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `CLIPLINE_VIDEO_OPTIMIZATION` | `off` | Set to `on` to enable lossy H.264/AAC optimization jobs |
+| `CLIPLINE_VIDEO_OPTIMIZATION_CRF` | `26` | x264 CRF; valid `18`-`35`; larger means smaller/lower quality |
+| `CLIPLINE_VIDEO_OPTIMIZATION_PRESET` | `veryfast` | x264 preset; slower presets spend more CPU |
+| `CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH` | `0` | Optional max width; `0`/unset keeps source resolution |
+| `CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT` | `5` | Candidate must save at least this percentage before replacement |
+| `CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL` | `false` | Store `original-source.mp4` under the clip media token for early testing |
+
+Only enable this on a deployment with enough worker CPU headroom. The default retention path deletes
+the uploaded original after successful replacement; use `KEEP_ORIGINAL=true` temporarily while
+evaluating quality/storage tradeoffs.
+
 To smoke-test the external S3 profile against a real bucket, use a disposable bucket or a
 smoke/test prefix. This check uploads a generated MP4 through the normal server-proxy path, waits
 for validation and media-processing jobs, checks owner/public media reads, and then soft-deletes the
