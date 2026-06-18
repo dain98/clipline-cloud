@@ -321,6 +321,15 @@ impl JobRunner {
                             .await?;
                         }
                     }
+                    if job.kind == OPTIMIZE_VIDEO_KIND {
+                        if let Some(clip_id) = job.target_id.as_deref() {
+                            self.enqueue_media_refresh_jobs_best_effort(
+                                clip_id,
+                                "jobs.optimize_video.refresh_enqueue_failed_after_dead",
+                            )
+                            .await;
+                        }
+                    }
                     if self
                         .enqueue_next_cleanup_sweep_for_kind(&job.kind, now_utc())
                         .await?
@@ -466,11 +475,27 @@ impl JobRunner {
     async fn enqueue_media_processing_jobs(&self, clip_id: &str) -> Result<(), JobRunnerError> {
         if self.config.video_optimization.enabled {
             enqueue_optimize_video(&self.repositories, clip_id).await?;
+        } else {
+            self.enqueue_media_refresh_jobs(clip_id).await?;
         }
+        Ok(())
+    }
+
+    async fn enqueue_media_refresh_jobs(&self, clip_id: &str) -> Result<(), JobRunnerError> {
         enqueue_probe_metadata(&self.repositories, clip_id).await?;
         enqueue_thumbnail(&self.repositories, clip_id).await?;
         enqueue_poster(&self.repositories, clip_id).await?;
         Ok(())
+    }
+
+    async fn enqueue_media_refresh_jobs_best_effort(&self, clip_id: &str, event: &'static str) {
+        if let Err(error) = self.enqueue_media_refresh_jobs(clip_id).await {
+            warn!(
+                event = %event,
+                clip_id = %clip_id,
+                error = %error,
+            );
+        }
     }
 
     async fn probe_metadata(&self, job: &Job) -> Result<(), JobRunnerError> {
@@ -486,12 +511,13 @@ impl JobRunner {
     }
 
     async fn optimize_video(&self, job: &Job) -> Result<(), JobRunnerError> {
-        if !self.config.video_optimization.enabled {
-            return Ok(());
-        }
         let Some(clip) = self.load_ready_clip(job, OPTIMIZE_VIDEO_KIND).await? else {
             return Ok(());
         };
+        if !self.config.video_optimization.enabled {
+            self.enqueue_media_refresh_jobs(&clip.id).await?;
+            return Ok(());
+        }
         let source_key = clip_source_key(&clip)?;
         let source_metadata = self.storage.head_object(&source_key).await?;
         if let Some(db_size) = clip.file_size_bytes {
@@ -507,6 +533,11 @@ impl JobRunner {
                     clip_id = %clip.id,
                     source_size_bytes = source_metadata.size_bytes,
                 );
+                self.enqueue_media_refresh_jobs_best_effort(
+                    &clip.id,
+                    "jobs.optimize_video.refresh_enqueue_failed_after_reconcile",
+                )
+                .await;
                 return Ok(());
             }
         }
@@ -551,6 +582,7 @@ impl JobRunner {
                 candidate_size_bytes = candidate_size,
                 min_savings_percent = self.config.video_optimization.min_savings_percent,
             );
+            self.enqueue_media_refresh_jobs(&clip.id).await?;
             return Ok(());
         }
 
@@ -596,10 +628,19 @@ impl JobRunner {
                 candidate.metadata.audio_codec.as_deref(),
             )
             .await?;
-        delete_if_present(&self.storage, &candidate_key).await?;
-        enqueue_probe_metadata(&self.repositories, &clip.id).await?;
-        enqueue_thumbnail(&self.repositories, &clip.id).await?;
-        enqueue_poster(&self.repositories, &clip.id).await?;
+        if let Err(error) = delete_if_present(&self.storage, &candidate_key).await {
+            warn!(
+                event = "jobs.optimize_video.candidate_cleanup_failed_after_activation",
+                clip_id = %clip.id,
+                candidate_key = %candidate_key,
+                error = %error,
+            );
+        }
+        self.enqueue_media_refresh_jobs_best_effort(
+            &clip.id,
+            "jobs.optimize_video.refresh_enqueue_failed_after_activation",
+        )
+        .await;
         info!(
             event = "jobs.optimize_video.replaced",
             clip_id = %clip.id,
@@ -926,10 +967,12 @@ impl JobRunner {
             .into_iter()
             .collect::<HashSet<_>>();
         let mut active_references = active_references;
-        for key in active_references.clone() {
-            if let Ok(source_key) = ObjectKey::parse(&key) {
-                if let Ok(original_key) = original_source_key(&source_key) {
-                    active_references.insert(original_key.as_str().to_string());
+        if self.config.video_optimization.keep_original {
+            for key in active_references.clone() {
+                if let Ok(source_key) = ObjectKey::parse(&key) {
+                    if let Ok(original_key) = original_source_key(&source_key) {
+                        active_references.insert(original_key.as_str().to_string());
+                    }
                 }
             }
         }
@@ -1204,10 +1247,118 @@ mod tests {
             .map(|job| job.kind)
             .collect::<Vec<_>>();
         queued_kinds.sort();
+        assert_eq!(queued_kinds, vec![OPTIMIZE_VIDEO_KIND.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn disabled_optimize_video_job_enqueues_refresh_jobs() {
+        let (temp_dir, repositories) = sqlite_repositories().await;
+        let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
+        let user = repositories
+            .users
+            .create(&NewUser::new("admin", "hash", "admin"))
+            .await
+            .expect("user");
+        let mut clip = NewClip::new(&user.id, "ready clip", "local");
+        clip.status = "ready".to_string();
+        let clip = repositories.clips.create(&clip).await.expect("clip");
+        let job = enqueue_optimize_video(&repositories, &clip.id)
+            .await
+            .expect("enqueue optimize");
+
+        let runner = JobRunner::new(
+            repositories.clone(),
+            storage,
+            JobRunnerConfig {
+                runner_id: "test-runner".to_string(),
+                poll_interval: Duration::from_millis(10),
+                lock_timeout: Duration::from_secs(60),
+                retry_base_delay: Duration::from_millis(1),
+                retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
+            },
+        );
+        assert!(runner.run_once().await.expect("run once"));
+
+        let job = repositories
+            .jobs
+            .get(&job.id)
+            .await
+            .expect("get job")
+            .expect("job exists");
+        assert_eq!(job.status, "succeeded");
+        let mut queued_kinds = repositories
+            .jobs
+            .list_due(now_utc() + chrono::Duration::seconds(1), 10)
+            .await
+            .expect("due jobs")
+            .into_iter()
+            .map(|job| job.kind)
+            .collect::<Vec<_>>();
+        queued_kinds.sort();
         assert_eq!(
             queued_kinds,
             vec![
-                OPTIMIZE_VIDEO_KIND.to_string(),
+                POSTER_KIND.to_string(),
+                PROBE_METADATA_KIND.to_string(),
+                THUMBNAIL_KIND.to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_optimize_video_job_enqueues_refresh_jobs() {
+        let (temp_dir, repositories) = sqlite_repositories().await;
+        let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
+        let user = repositories
+            .users
+            .create(&NewUser::new("admin", "hash", "admin"))
+            .await
+            .expect("user");
+        let mut clip = NewClip::new(&user.id, "ready clip", "local");
+        clip.status = "ready".to_string();
+        let clip = repositories.clips.create(&clip).await.expect("clip");
+        let mut job = NewJob::new(OPTIMIZE_VIDEO_KIND, now_utc());
+        job.target_id = Some(clip.id.clone());
+        job.max_attempts = 1;
+        let job = repositories.jobs.create(&job).await.expect("job");
+
+        let runner = JobRunner::new(
+            repositories.clone(),
+            storage,
+            JobRunnerConfig {
+                runner_id: "test-runner".to_string(),
+                poll_interval: Duration::from_millis(10),
+                lock_timeout: Duration::from_secs(60),
+                retry_base_delay: Duration::from_millis(1),
+                retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig {
+                    enabled: true,
+                    ..VideoOptimizationConfig::default()
+                },
+            },
+        );
+        assert!(runner.run_once().await.expect("run once"));
+
+        let job = repositories
+            .jobs
+            .get(&job.id)
+            .await
+            .expect("get job")
+            .expect("job exists");
+        assert_eq!(job.status, "dead");
+        let mut queued_kinds = repositories
+            .jobs
+            .list_due(now_utc() + chrono::Duration::seconds(1), 10)
+            .await
+            .expect("due jobs")
+            .into_iter()
+            .map(|job| job.kind)
+            .collect::<Vec<_>>();
+        queued_kinds.sort();
+        assert_eq!(
+            queued_kinds,
+            vec![
                 POSTER_KIND.to_string(),
                 PROBE_METADATA_KIND.to_string(),
                 THUMBNAIL_KIND.to_string()
