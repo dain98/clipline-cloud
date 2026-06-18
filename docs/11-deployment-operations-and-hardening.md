@@ -256,3 +256,7 @@ Self-hosting diagnostics without a full observability stack.
   now requires `RUN_EXTERNAL_S3=1`, real bucket credentials, and a smoke/test prefix by default,
   then verifies `/readyz`, server-proxy upload to S3, validation to `ready`, owner media range
   reads, generated thumbnail/poster artifacts, and public share media behavior against the provider.
+- 2026-06-18 — Added `RUN_VIDEO_OPTIMIZATION=1` smoke coverage for the optional optimization path.
+  The harness enables optimization with smoke-specific settings, uploads a compressible fixture,
+  verifies the optimized source is smaller and range-readable, then waits for regenerated
+  thumbnail/poster artifacts.
