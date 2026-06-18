@@ -43,10 +43,10 @@ private/public, and shares public clips via non-guessable URLs. Storage works id
 disk or S3.
 
 **Explicitly out of scope for v1:** public discovery feed; likes/comments/follows/subscriptions/
-recommendations; a central Clipline account system; federation; server-side transcoding to multiple
-resolutions; mobile apps; real-time chat; end-to-end encrypted media; multi-tenant commercial
-hosting; OAuth/OIDC login (Discord/Google/Steam). Revisitable later; v1 focuses on reliable upload,
-private library management, and shareable links.
+recommendations; a central Clipline account system; federation; server-side video
+optimization/transcoding; mobile apps; real-time chat; end-to-end encrypted media; multi-tenant
+commercial hosting; OAuth/OIDC login (Discord/Google/Steam). Revisitable later; v1 focuses on
+reliable upload, private library management, and shareable links.
 
 ## 3. Design Principles
 
