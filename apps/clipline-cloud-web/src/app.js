@@ -71,7 +71,7 @@ async function route() {
 
   if (current.name === "login") {
     if (state.user) {
-      navigate("/");
+      navigate("/library");
       return;
     }
     renderLogin();
@@ -91,7 +91,7 @@ async function route() {
   } else if (current.name === "admin") {
     if (state.user.role !== "admin") {
       flash("Admin access is required.", "error");
-      navigate("/");
+      navigate("/library");
       return;
     }
     await renderAdmin(current.tab);
@@ -107,8 +107,11 @@ function currentRoute() {
   if (path.startsWith("/c/")) {
     return { name: "public", shareId: decodeURIComponent(path.slice(3)) };
   }
-  if (path === "/public") {
+  if (path === "/" || path === "/public") {
     return { name: "publicLibrary" };
+  }
+  if (path === "/library") {
+    return { name: "library" };
   }
   if (path.startsWith("/clip/")) {
     return { name: "clip", clipId: decodeURIComponent(path.slice(6)) };
@@ -125,7 +128,7 @@ function currentRoute() {
   if (path === "/login") {
     return { name: "login" };
   }
-  return { name: "library" };
+  return { name: "publicLibrary" };
 }
 
 function navigate(path) {
@@ -228,7 +231,7 @@ function renderLogin(error = "") {
       });
       state.user = data.user;
       state.csrfToken = data.csrf_token;
-      navigate("/");
+      navigate("/library");
     } catch (loginError) {
       renderLogin(loginError.message);
     }
@@ -251,8 +254,8 @@ function renderShell({ active, title, subtitle, body }) {
           </div>
         </div>
         <nav class="nav-stack" aria-label="Primary">
-          ${navLink("/", "library", active, icon("library"), "Library")}
-          ${navLink("/public", "public", active, icon("globe"), "Public")}
+          ${navLink("/", "public", active, icon("globe"), "Public")}
+          ${navLink("/library", "library", active, icon("library"), "Library")}
           ${navLink("/account", "account", active, icon("user"), "Account")}
           ${adminLink}
         </nav>
@@ -576,7 +579,7 @@ function renderPublicLibraryPage({ title, subtitle, body }) {
   app.innerHTML = `
     <main class="public-browse-shell">
       <header class="public-browse-topbar">
-        <a class="sidebar-brand" href="/public" data-route>
+        <a class="sidebar-brand" href="/" data-route>
           <div class="brand-mark" aria-hidden="true">CL</div>
           <div>
             <strong>Clipline</strong>
@@ -922,7 +925,7 @@ function bindClipDetailEvents(clip) {
     try {
       await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, { method: "DELETE", body: {} });
       flash("Clip deleted.");
-      navigate("/");
+      navigate("/library");
     } catch (error) {
       flash(error.message, "error");
       renderClipDetail(clip.id);
