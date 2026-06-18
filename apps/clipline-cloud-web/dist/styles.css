@@ -670,6 +670,85 @@ video {
   width: min(100%, 72rem);
 }
 
+.public-browse-shell {
+  min-height: 100vh;
+}
+
+.public-browse-topbar {
+  align-items: center;
+  background: #111720;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  min-height: 4.25rem;
+  padding: 0.8rem 1.25rem;
+}
+
+.public-browse-topbar .sidebar-brand {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.public-browse-content {
+  display: grid;
+  gap: 1rem;
+  margin: 0 auto;
+  max-width: 82rem;
+  padding: 1.25rem;
+}
+
+.public-browse-content h1 {
+  font-size: 1.35rem;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.public-browse-content p {
+  color: var(--muted);
+  margin: 0.2rem 0 0;
+}
+
+.public-clip-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+}
+
+.public-clip-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  overflow: hidden;
+  text-decoration: none;
+}
+
+.public-clip-card:hover {
+  background: #18202d;
+  border-color: #31405a;
+  text-decoration: none;
+}
+
+.public-clip-card .thumb {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.public-clip-body {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.72rem;
+}
+
+.public-clip-body h2 {
+  font-size: 0.95rem;
+  line-height: 1.3;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .public-copy {
   background: var(--surface-warm);
   border: 1px solid rgba(224, 177, 74, 0.26);
@@ -769,7 +848,7 @@ th {
   }
 
   .nav-stack {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
   }
 
   .nav-link {

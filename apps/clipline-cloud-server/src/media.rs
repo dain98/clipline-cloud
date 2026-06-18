@@ -1,17 +1,17 @@
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use clipline_cloud_db::Clip;
+use clipline_cloud_db::{Clip, ClipSort, PublicClipListParams};
 use clipline_cloud_storage::{
     ByteRange, ContentRange, ObjectKey, ObjectMetadata, StorageError, StoredObject,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 use url::Url;
 
@@ -25,6 +25,9 @@ const COPY_NOTICE: &str =
     "Public clips are not DRM-protected. Anyone who can view this clip can copy the media.";
 const PLACEHOLDER_ETAG: &str = "clipline-placeholder-v1";
 const PLACEHOLDER_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-label="Clip preview placeholder"><rect width="640" height="360" fill="#161a1d"/><rect x="268" y="128" width="104" height="104" rx="8" fill="#2f3940"/><path d="M307 153v54l45-27z" fill="#d9e2e7"/><text x="320" y="276" fill="#a9b6bd" font-family="Arial, sans-serif" font-size="22" text-anchor="middle">Preview processing</text></svg>"##;
+const DEFAULT_PUBLIC_PAGE: i64 = 1;
+const DEFAULT_PUBLIC_PAGE_SIZE: i64 = 48;
+const MAX_PUBLIC_PAGE_SIZE: i64 = 100;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -32,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/clips/{id}/media", get(get_owned_media))
         .route("/api/v1/clips/{id}/thumbnail", get(get_owned_thumbnail))
         .route("/api/v1/clips/{id}/poster", get(get_owned_poster))
+        .route("/api/v1/public/clips", get(list_public_clips))
         .route("/api/v1/public/clips/{share_id}", get(get_public_clip))
         .route(
             "/api/v1/public/clips/{share_id}/media",
@@ -41,6 +45,35 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/public/clips/{share_id}/thumbnail",
             get(get_public_thumbnail),
         )
+}
+
+#[derive(Debug, Deserialize)]
+struct PublicClipListQuery {
+    sort: Option<String>,
+    game: Option<String>,
+    q: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicClipListResponse {
+    page: i64,
+    page_size: i64,
+    clips: Vec<PublicClipSummaryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicClipSummaryResponse {
+    share_id: String,
+    title: String,
+    game_name: Option<String>,
+    game_id: Option<String>,
+    recorded_at: Option<DateTime<Utc>>,
+    uploaded_at: Option<DateTime<Utc>>,
+    duration_ms: Option<i64>,
+    thumbnail_url: String,
+    share_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,6 +111,38 @@ async fn get_public_share_page(
     };
 
     Ok(public_share_page_response(&state, &share_id, &clip))
+}
+
+async fn list_public_clips(
+    State(state): State<AppState>,
+    Query(query): Query<PublicClipListQuery>,
+) -> Result<Json<PublicClipListResponse>, ApiError> {
+    let page = query.page.unwrap_or(DEFAULT_PUBLIC_PAGE).max(1);
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_PUBLIC_PAGE_SIZE)
+        .clamp(1, MAX_PUBLIC_PAGE_SIZE);
+    let params = PublicClipListParams {
+        game: normalized_optional(query.game),
+        query: normalized_optional(query.q),
+        sort: parse_public_sort(query.sort.as_deref())?,
+        limit: page_size,
+        offset: (page - 1) * page_size,
+    };
+    let clips = state
+        .repositories
+        .clips
+        .list_public(&params)
+        .await?
+        .into_iter()
+        .filter_map(|clip| public_clip_summary_response(&state, clip))
+        .collect();
+
+    Ok(Json(PublicClipListResponse {
+        page,
+        page_size,
+        clips,
+    }))
 }
 
 async fn get_owned_media(
@@ -150,6 +215,21 @@ async fn get_public_clip(
         share_url: absolute_url(&state, &format!("c/{share_id}")),
         copy_notice: COPY_NOTICE,
     }))
+}
+
+fn public_clip_summary_response(state: &AppState, clip: Clip) -> Option<PublicClipSummaryResponse> {
+    let share_id = clip.public_share_id?;
+    Some(PublicClipSummaryResponse {
+        thumbnail_url: absolute_url(state, &format!("api/v1/public/clips/{share_id}/thumbnail")),
+        share_url: absolute_url(state, &format!("c/{share_id}")),
+        share_id,
+        title: clip.title,
+        game_name: clip.game_name,
+        game_id: clip.game_id,
+        recorded_at: clip.recorded_at,
+        uploaded_at: clip.uploaded_at,
+        duration_ms: clip.duration_ms,
+    })
 }
 
 async fn get_public_media(
@@ -695,6 +775,30 @@ fn escape_html(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn normalized_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_public_sort(value: Option<&str>) -> Result<ClipSort, ApiError> {
+    match value.unwrap_or("uploaded_at_desc") {
+        "recorded_at_desc" => Ok(ClipSort::RecordedAtDesc),
+        "recorded_at_asc" => Ok(ClipSort::RecordedAtAsc),
+        "uploaded_at_desc" => Ok(ClipSort::UploadedAtDesc),
+        "uploaded_at_asc" => Ok(ClipSort::UploadedAtAsc),
+        "created_at_desc" => Ok(ClipSort::CreatedAtDesc),
+        "created_at_asc" => Ok(ClipSort::CreatedAtAsc),
+        "updated_at_desc" => Ok(ClipSort::UpdatedAtDesc),
+        "updated_at_asc" => Ok(ClipSort::UpdatedAtAsc),
+        "duration_desc" => Ok(ClipSort::DurationDesc),
+        "duration_asc" => Ok(ClipSort::DurationAsc),
+        "title_asc" => Ok(ClipSort::TitleAsc),
+        "title_desc" => Ok(ClipSort::TitleDesc),
+        _ => Err(ApiError::bad_request("invalid sort")),
+    }
 }
 
 fn absolute_url(state: &AppState, path: &str) -> String {
