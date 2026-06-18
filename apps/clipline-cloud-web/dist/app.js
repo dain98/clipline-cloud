@@ -20,6 +20,11 @@ const state = {
     max_size_mib: "",
     group: "none",
   },
+  publicQuery: {
+    sort: "uploaded_at_desc",
+    game: "",
+    q: "",
+  },
   adminResetToken: null,
 };
 
@@ -54,6 +59,13 @@ async function route() {
   const current = currentRoute();
   if (current.name === "public") {
     await renderPublicShare(current.shareId);
+    return;
+  }
+  if (current.name === "publicLibrary") {
+    if (!state.user) {
+      await refreshSession();
+    }
+    await renderPublicLibrary();
     return;
   }
 
@@ -94,6 +106,9 @@ function currentRoute() {
   const path = window.location.pathname;
   if (path.startsWith("/c/")) {
     return { name: "public", shareId: decodeURIComponent(path.slice(3)) };
+  }
+  if (path === "/public") {
+    return { name: "publicLibrary" };
   }
   if (path.startsWith("/clip/")) {
     return { name: "clip", clipId: decodeURIComponent(path.slice(6)) };
@@ -237,6 +252,7 @@ function renderShell({ active, title, subtitle, body }) {
         </div>
         <nav class="nav-stack" aria-label="Primary">
           ${navLink("/", "library", active, icon("library"), "Library")}
+          ${navLink("/public", "public", active, icon("globe"), "Public")}
           ${navLink("/account", "account", active, icon("user"), "Account")}
           ${adminLink}
         </nav>
@@ -520,6 +536,137 @@ function bindLibraryEvents() {
     });
   });
   bindBulkEvents();
+}
+
+async function renderPublicLibrary() {
+  renderPublicLibraryPage({
+    title: "Public",
+    subtitle: "Public clips from this instance.",
+    body: `<div class="empty-state">Loading public clips...</div>`,
+  });
+
+  try {
+    const data = await api(`/api/v1/public/clips?${publicLibraryParams().toString()}`);
+    renderPublicLibraryPage({
+      title: "Public",
+      subtitle: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"} in this view.`,
+      body: publicLibraryView(data.clips),
+    });
+    bindPublicLibraryEvents();
+  } catch (error) {
+    renderPublicLibraryPage({
+      title: "Public",
+      subtitle: "Public clips from this instance.",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function renderPublicLibraryPage({ title, subtitle, body }) {
+  if (state.user) {
+    renderShell({
+      active: "public",
+      title,
+      subtitle,
+      body,
+    });
+    return;
+  }
+
+  app.innerHTML = `
+    <main class="public-browse-shell">
+      <header class="public-browse-topbar">
+        <a class="sidebar-brand" href="/public" data-route>
+          <div class="brand-mark" aria-hidden="true">CL</div>
+          <div>
+            <strong>Clipline</strong>
+            <span>Public</span>
+          </div>
+        </a>
+        <a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>
+      </header>
+      <section class="public-browse-content">
+        <div>
+          <h1>${escapeHtml(title)}</h1>
+          <p>${escapeHtml(subtitle || "")}</p>
+        </div>
+        ${renderFlash()}
+        ${body}
+      </section>
+    </main>
+  `;
+}
+
+function publicLibraryParams() {
+  const params = new URLSearchParams();
+  params.set("sort", state.publicQuery.sort);
+  params.set("page_size", "60");
+  for (const key of ["game", "q"]) {
+    if (state.publicQuery[key]) {
+      params.set(key, state.publicQuery[key]);
+    }
+  }
+  return params;
+}
+
+function publicLibraryView(clips) {
+  return `
+    <section class="section">
+      <form id="public-filter-form" class="panel toolbar">
+        ${field("Search", "q", "search", state.publicQuery.q, "Title or game")}
+        ${selectField("Sort", "sort", state.publicQuery.sort, [
+          ["uploaded_at_desc", "Uploaded newest"],
+          ["uploaded_at_asc", "Uploaded oldest"],
+          ["recorded_at_desc", "Recorded newest"],
+          ["recorded_at_asc", "Recorded oldest"],
+          ["created_at_desc", "Created newest"],
+          ["created_at_asc", "Created oldest"],
+          ["duration_desc", "Duration longest"],
+          ["duration_asc", "Duration shortest"],
+          ["title_asc", "Title A-Z"],
+          ["title_desc", "Title Z-A"],
+        ])}
+        ${field("Game", "game", "text", state.publicQuery.game, "Name or ID")}
+        <button class="btn-primary" type="submit">${icon("search")} Apply</button>
+      </form>
+      ${
+        clips.length
+          ? `<div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>`
+          : `<div class="empty-state">No public clips match this view.</div>`
+      }
+    </section>
+  `;
+}
+
+function publicClipCard(clip) {
+  const sharePath = `/c/${encodeURIComponent(clip.share_id)}`;
+  const thumbnailPath = `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
+  return `
+    <a class="public-clip-card" href="${escapeAttr(sharePath)}" data-route>
+      <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
+      <div class="public-clip-body">
+        <h2>${escapeHtml(clip.title)}</h2>
+        <div class="meta-line">
+          <span>${escapeHtml(gameLabel(clip))}</span>
+          <span>${formatDuration(clip.duration_ms)}</span>
+        </div>
+        <div class="meta-line">
+          <span>Uploaded ${formatDate(clip.uploaded_at)}</span>
+        </div>
+      </div>
+    </a>
+  `;
+}
+
+function bindPublicLibraryEvents() {
+  document.querySelector("#public-filter-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    for (const key of Object.keys(state.publicQuery)) {
+      state.publicQuery[key] = String(form.get(key) || "");
+    }
+    renderPublicLibrary();
+  });
 }
 
 function gameLabel(clip) {

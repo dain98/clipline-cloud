@@ -47,6 +47,15 @@ pub struct ClipListParams {
 }
 
 #[derive(Debug, Clone)]
+pub struct PublicClipListParams {
+    pub game: Option<String>,
+    pub query: Option<String>,
+    pub sort: ClipSort,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct BulkVisibilityUpdate {
     pub clip_id: String,
     pub public_share_id: Option<String>,
@@ -828,6 +837,31 @@ impl ClipRepository {
         }
     }
 
+    pub async fn list_public(&self, params: &PublicClipListParams) -> DbResult<Vec<Clip>> {
+        match &self.database {
+            Database::Sqlite(pool) => {
+                let mut builder = QueryBuilder::<Sqlite>::new(CLIP_SELECT_SQL);
+                push_public_clip_list_filters_sqlite(&mut builder, params);
+                builder.push(clip_order_by(params.sort));
+                builder.push(" LIMIT ");
+                builder.push_bind(params.limit);
+                builder.push(" OFFSET ");
+                builder.push_bind(params.offset);
+                Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
+            }
+            Database::Postgres(pool) => {
+                let mut builder = QueryBuilder::<Postgres>::new(CLIP_SELECT_SQL);
+                push_public_clip_list_filters_postgres(&mut builder, params);
+                builder.push(clip_order_by(params.sort));
+                builder.push(" LIMIT ");
+                builder.push_bind(params.limit);
+                builder.push(" OFFSET ");
+                builder.push_bind(params.offset);
+                Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
+            }
+        }
+    }
+
     pub async fn list_ready_with_storage_key(&self, limit: i64) -> DbResult<Vec<Clip>> {
         Ok(db_fetch_all!(
             &self.database,
@@ -1149,6 +1183,32 @@ fn push_clip_list_filters_postgres(
     push_clip_optional_filters_postgres(builder, params);
 }
 
+fn push_public_clip_list_filters_sqlite(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    params: &PublicClipListParams,
+) {
+    builder.push(
+        " WHERE visibility = 'public'
+          AND status = 'ready'
+          AND deleted_at IS NULL
+          AND public_share_id IS NOT NULL",
+    );
+    push_public_clip_optional_filters_sqlite(builder, params);
+}
+
+fn push_public_clip_list_filters_postgres(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    params: &PublicClipListParams,
+) {
+    builder.push(
+        " WHERE visibility = 'public'
+          AND status = 'ready'
+          AND deleted_at IS NULL
+          AND public_share_id IS NOT NULL",
+    );
+    push_public_clip_optional_filters_postgres(builder, params);
+}
+
 fn push_bulk_clip_filters_sqlite(
     builder: &mut QueryBuilder<'_, Sqlite>,
     owner_user_id: &str,
@@ -1297,6 +1357,52 @@ fn push_clip_optional_filters_postgres(
     if let Some(max_size_bytes) = params.max_size_bytes {
         builder.push(" AND file_size_bytes <= ");
         builder.push_bind(max_size_bytes);
+    }
+    if let Some(query) = &params.query {
+        let pattern = escaped_like_pattern(query);
+        builder.push(" AND (LOWER(title) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push_bind(pattern);
+        builder.push(" ESCAPE '\\')");
+    }
+}
+
+fn push_public_clip_optional_filters_sqlite(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    params: &PublicClipListParams,
+) {
+    if let Some(game) = &params.game {
+        builder.push(" AND (game_id = ");
+        builder.push_bind(game.clone());
+        builder.push(" OR game_name = ");
+        builder.push_bind(game.clone());
+        builder.push(")");
+    }
+    if let Some(query) = &params.query {
+        let pattern = escaped_like_pattern(query);
+        builder.push(" AND (LOWER(title) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push_bind(pattern);
+        builder.push(" ESCAPE '\\')");
+    }
+}
+
+fn push_public_clip_optional_filters_postgres(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    params: &PublicClipListParams,
+) {
+    if let Some(game) = &params.game {
+        builder.push(" AND (game_id = ");
+        builder.push_bind(game.clone());
+        builder.push(" OR game_name = ");
+        builder.push_bind(game.clone());
+        builder.push(")");
     }
     if let Some(query) = &params.query {
         let pattern = escaped_like_pattern(query);

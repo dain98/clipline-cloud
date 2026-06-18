@@ -1123,6 +1123,20 @@ mod tests {
         assert_clip_query_filters_source_duration_size_and_sorts_size(database).await;
     }
 
+    #[tokio::test]
+    async fn sqlite_public_clip_query_discovers_only_public_ready_clips() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_public_clip_query_discovers_only_public_ready_clips(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_public_clip_query_discovers_only_public_ready_clips() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_public_clip_query_discovers_only_public_ready_clips(database).await;
+    }
+
     async fn assert_clip_query_filters_source_duration_size_and_sorts_size(database: Database) {
         let repos = Repositories::new(database);
         let user = repos
@@ -1202,6 +1216,98 @@ mod tests {
                 .map(|clip| clip.title.as_str())
                 .collect::<Vec<_>>(),
             vec!["Large match", "Small match"]
+        );
+    }
+
+    async fn assert_public_clip_query_discovers_only_public_ready_clips(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(format!("owner-{test_id}"), "hash", "user"))
+            .await
+            .expect("create user");
+
+        let mut public = NewClip::new(&user.id, "public Renata clip", "local");
+        public.status = "ready".to_string();
+        public.visibility = "public".to_string();
+        public.public_share_id = Some(format!("public-{test_id}"));
+        public.game_name = Some("Renata Glasc".to_string());
+        repos.clips.create(&public).await.expect("public clip");
+
+        let mut unlisted = NewClip::new(&user.id, "unlisted clip", "local");
+        unlisted.status = "ready".to_string();
+        unlisted.visibility = "unlisted".to_string();
+        unlisted.public_share_id = Some(format!("unlisted-{test_id}"));
+        repos.clips.create(&unlisted).await.expect("unlisted clip");
+
+        let mut private = NewClip::new(&user.id, "private clip", "local");
+        private.status = "ready".to_string();
+        private.visibility = "private".to_string();
+        repos.clips.create(&private).await.expect("private clip");
+
+        let mut processing = NewClip::new(&user.id, "processing public clip", "local");
+        processing.status = "processing".to_string();
+        processing.visibility = "public".to_string();
+        processing.public_share_id = Some(format!("processing-{test_id}"));
+        repos
+            .clips
+            .create(&processing)
+            .await
+            .expect("processing clip");
+
+        let mut no_share = NewClip::new(&user.id, "public without share id", "local");
+        no_share.status = "ready".to_string();
+        no_share.visibility = "public".to_string();
+        repos.clips.create(&no_share).await.expect("no-share clip");
+
+        let mut deleted = NewClip::new(&user.id, "deleted public clip", "local");
+        deleted.status = "ready".to_string();
+        deleted.visibility = "public".to_string();
+        deleted.public_share_id = Some(format!("deleted-{test_id}"));
+        let deleted = repos.clips.create(&deleted).await.expect("deleted clip");
+        repos
+            .clips
+            .soft_delete(&deleted.id)
+            .await
+            .expect("soft delete clip");
+
+        let mut params = PublicClipListParams {
+            game: None,
+            query: None,
+            sort: ClipSort::UploadedAtDesc,
+            limit: 10,
+            offset: 0,
+        };
+        let clips = repos
+            .clips
+            .list_public(&params)
+            .await
+            .expect("list public clips");
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].title, "public Renata clip");
+
+        params.query = Some("renata".to_string());
+        assert_eq!(
+            repos
+                .clips
+                .list_public(&params)
+                .await
+                .expect("search public clips")
+                .len(),
+            1
+        );
+
+        params.query = None;
+        params.game = Some("Renata Glasc".to_string());
+        assert_eq!(
+            repos
+                .clips
+                .list_public(&params)
+                .await
+                .expect("filter public clips")
+                .len(),
+            1
         );
     }
 

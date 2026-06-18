@@ -57,6 +57,8 @@ Each clip has a `visibility` and, when shared, a `public_share_id`.
   form `https://clips.example.com/c/{share_id}`.
 - The public page (no login) shows player, title, game, date, duration. It exposes **no owner
   metadata, no edit/delete controls.**
+- Public clips appear in the anonymous public library; unlisted clips remain link-only and never
+  appear in discovery views.
 - Reverting to private makes the public page return **404 (not 403)** for anonymous users — 403 would
   confirm the clip exists.
 - Public links are **stable until revoked**; expiring links are a future feature.
@@ -108,6 +110,8 @@ Minimal S3 bucket CORS for presigned cross-origin playback:
 - [x] Local: range slicing from disk. S3 private: backend proxy forwarding `Range` to S3
 - [x] `ETag`/conditional handling for media; cache headers for thumbnail/poster (placeholders in Phase 1)
 - [x] Random `public_share_id` generator (`c_` + 22 base62); minted on visibility→public, cleared on →private
+- [x] `GET /public/clips` — anonymous discovery list for ready `public` clips only; excludes
+      unlisted/private/deleted/processing clips
 - [x] `GET /public/clips/{share_id}` — public page data (player/title/game/date/duration); **no owner metadata, no controls**
 - [x] `GET /public/clips/{share_id}/media` — public playback; S3 → short-lived presigned GET with `Content-Disposition: inline`, `Content-Type: video/mp4`, `Accept-Ranges`
 - [x] Reverting to private → public endpoints return **404** for anonymous callers
