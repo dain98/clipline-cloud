@@ -35,7 +35,7 @@ Notes from earlier design decisions that make these cheaper:
   **safe with no schema change.** A second process just becomes another `locked_by` runner.
 - **CDN for public clips**: extends the presigned/proxy public-media path (doc 08).
 - **OIDC / invite links / federation**: all explicitly **out of scope for v1** (§2); revisit here.
-- **Video optimization / compression**: §13 commits to *no* server-side transcoding in v1, but the
+- **Video optimization / compression**: doc 06 commits to *no* server-side transcoding in v1, but the
   browser-serving path benefits from smaller, fast-start MP4s. This is not a multi-quality ladder.
   The first version should produce at most one optimized browser MP4, keep the upload playable if
   optimization fails, and only replace the active media object when the optimized result is valid
