@@ -839,6 +839,43 @@ mod tests {
         assert!(validate_probe_output(output).is_err());
     }
 
+    #[test]
+    fn validates_optimized_candidate_metadata() {
+        let valid = ValidatedMediaMetadata {
+            duration_ms: Some(10_000),
+            width: Some(1280),
+            height: Some(720),
+            fps: Some(60.0),
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("aac".to_string()),
+        };
+        validate_optimized_candidate(&valid).expect("valid optimized metadata");
+
+        let without_audio = ValidatedMediaMetadata {
+            audio_codec: None,
+            ..valid.clone()
+        };
+        validate_optimized_candidate(&without_audio).expect("video-only clips are valid");
+
+        let missing_required = ValidatedMediaMetadata {
+            width: None,
+            ..valid.clone()
+        };
+        assert!(validate_optimized_candidate(&missing_required).is_err());
+
+        let wrong_video_codec = ValidatedMediaMetadata {
+            video_codec: Some("hevc".to_string()),
+            ..valid.clone()
+        };
+        assert!(validate_optimized_candidate(&wrong_video_codec).is_err());
+
+        let wrong_audio_codec = ValidatedMediaMetadata {
+            audio_codec: Some("opus".to_string()),
+            ..valid
+        };
+        assert!(validate_optimized_candidate(&wrong_audio_codec).is_err());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn media_command_sandbox_allows_simple_process() {

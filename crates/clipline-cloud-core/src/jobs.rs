@@ -1696,6 +1696,17 @@ mod tests {
         assert_eq!(job.status, "succeeded");
     }
 
+    #[test]
+    fn meaningful_savings_requires_configured_threshold() {
+        assert!(is_meaningfully_smaller(95, 100, 5));
+        assert!(is_meaningfully_smaller(50, 100, 50));
+        assert!(is_meaningfully_smaller(99, 100, 0));
+        assert!(!is_meaningfully_smaller(96, 100, 5));
+        assert!(!is_meaningfully_smaller(100, 100, 0));
+        assert!(!is_meaningfully_smaller(101, 100, 0));
+        assert!(!is_meaningfully_smaller(1, 0, 5));
+    }
+
     #[tokio::test]
     async fn run_until_shutdown_exits_when_requested() {
         let (temp_dir, repositories) = sqlite_repositories().await;
