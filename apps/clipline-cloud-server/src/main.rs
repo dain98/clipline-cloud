@@ -290,7 +290,6 @@ fn router(
         .route("/admin", get(spa_index))
         .route("/account", get(spa_index))
         .route("/clip/{*path}", get(spa_index))
-        .route("/c/{*path}", get(spa_index))
         .merge(auth::routes())
         .merge(admin::routes())
         .merge(clips::routes())
