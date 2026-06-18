@@ -1,3 +1,16 @@
+import {
+  clampTime,
+  formatClock,
+  formatReadout,
+  markerSummary,
+  nextMarker,
+  normalizeMarkers,
+  percentFor,
+  playerKeyIntent,
+  previousMarker,
+  secondsFromMilliseconds,
+} from "./player-core.js";
+
 const app = document.querySelector("#app");
 
 const state = {
@@ -33,20 +46,29 @@ const icons = {
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  fastForward: '<path d="m13 19 9-7-9-7v14Z"/><path d="m2 19 9-7-9-7v14Z"/>',
   film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 8h4"/><path d="M3 16h4"/><path d="M17 8h4"/><path d="M17 16h4"/>',
+  fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
   library: '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  pause: '<path d="M8 5v14"/><path d="M16 5v14"/>',
+  play: '<path d="m8 5 11 7-11 7V5Z"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.7L21 8"/><path d="M21 3v5h-5"/>',
+  rewind: '<path d="m11 19-9-7 9-7v14Z"/><path d="m22 19-9-7 9-7v14Z"/>',
   save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+  skipBack: '<path d="M19 20 9 12l10-8v16Z"/><path d="M5 19V5"/>',
+  skipForward: '<path d="m5 4 10 8-10 8V4Z"/><path d="M19 5v14"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 8.8a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V5l8-3 8 3v8Z"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
+  volume2: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>',
+  volumeX: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 };
 
@@ -808,19 +830,372 @@ async function renderClipDetail(id) {
   }
 }
 
+function clipPlayerView({ playerId, src, poster = "", title = "", durationMs = null }) {
+  const safeSrc = src ? escapeAttr(src) : "";
+  const safePoster = poster ? escapeAttr(poster) : "";
+  const durationLabel = durationMs == null ? "Loading media..." : formatDuration(durationMs);
+  return `
+    <div class="clip-player" data-clip-player="${escapeAttr(playerId)}" tabindex="0" aria-label="Video player">
+      <div class="clip-player-stage" data-player-stage>
+        <video
+          class="clip-player-video"
+          data-player-video
+          preload="metadata"
+          playsinline
+          ${safePoster ? `poster="${safePoster}"` : ""}
+          ${safeSrc ? `src="${safeSrc}"` : ""}
+        ></video>
+        <button class="clip-player-center" type="button" data-player-toggle aria-label="Play video">
+          ${icon("play")}
+        </button>
+        <div class="clip-player-note" data-player-note>${escapeHtml(durationLabel)}</div>
+        <div class="clip-player-overlay">
+          <div class="clip-player-transport">
+            <div class="player-cluster">
+              <button type="button" class="player-icon" data-player-prev-marker title="Previous marker (Shift+M)" aria-label="Previous marker">${icon("skipBack")}</button>
+              <button type="button" class="player-icon" data-player-next-marker title="Next marker (M)" aria-label="Next marker">${icon("skipForward")}</button>
+              <span class="player-marker-count" data-player-marker-count>No markers</span>
+            </div>
+            <div class="player-cluster player-cluster-main">
+              <button type="button" class="player-icon" data-player-back title="Back 5 seconds" aria-label="Back 5 seconds">${icon("rewind")}</button>
+              <button type="button" class="player-icon player-play" data-player-toggle title="Play / pause (Space)" aria-label="Play / pause">
+                <span class="player-play-icon">${icon("play")}</span>
+                <span class="player-pause-icon">${icon("pause")}</span>
+              </button>
+              <button type="button" class="player-icon" data-player-forward title="Forward 5 seconds" aria-label="Forward 5 seconds">${icon("fastForward")}</button>
+              <span class="player-time" data-player-time>0:00.0 / 0:00.0</span>
+            </div>
+            <div class="player-cluster player-cluster-right">
+              <select class="player-rate" data-player-rate title="Playback speed" aria-label="Playback speed">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+              <button type="button" class="player-icon" data-player-mute title="Mute / unmute" aria-label="Mute / unmute">
+                <span class="player-volume-icon">${icon("volume2")}</span>
+                <span class="player-muted-icon">${icon("volumeX")}</span>
+              </button>
+              <input class="player-volume" data-player-volume type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+              <button type="button" class="player-icon" data-player-fullscreen title="Fullscreen (F)" aria-label="Fullscreen">${icon("fullscreen")}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="clip-player-deck">
+        <div class="clip-player-timeline" data-player-timeline>
+          <div class="clip-player-progress" data-player-progress></div>
+          <div class="clip-player-marker-layer" data-player-marker-layer></div>
+          <input class="clip-player-scrubber" data-player-scrubber type="range" min="0" max="0" step="0.01" value="0" aria-label="Seek">
+        </div>
+        <div class="clip-player-meta">
+          <span data-player-title>${escapeHtml(title || "Clip")}</span>
+          <span class="muted" data-player-duration>${escapeHtml(durationLabel)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
+  if (!root) {
+    return;
+  }
+
+  const video = root.querySelector("[data-player-video]");
+  const note = root.querySelector("[data-player-note]");
+  const time = root.querySelector("[data-player-time]");
+  const durationLabel = root.querySelector("[data-player-duration]");
+  const progress = root.querySelector("[data-player-progress]");
+  const scrubber = root.querySelector("[data-player-scrubber]");
+  const markerLayer = root.querySelector("[data-player-marker-layer]");
+  const markerCount = root.querySelector("[data-player-marker-count]");
+  const prevMarkerButton = root.querySelector("[data-player-prev-marker]");
+  const nextMarkerButton = root.querySelector("[data-player-next-marker]");
+  const volume = root.querySelector("[data-player-volume]");
+  const muteButton = root.querySelector("[data-player-mute]");
+  const fullscreenButton = root.querySelector("[data-player-fullscreen]");
+  const playbackRate = root.querySelector("[data-player-rate]");
+  const playButtons = Array.from(root.querySelectorAll("[data-player-toggle]"));
+  const fallbackDuration = secondsFromMilliseconds(durationMs);
+  let duration = fallbackDuration;
+  let normalizedMarkers = normalizeMarkers(markers, duration);
+  let pendingSeek = null;
+  let scrubbing = false;
+  let resumeAfterScrub = false;
+
+  video.controls = false;
+  video.playbackRate = Number(playbackRate.value);
+
+  function playable() {
+    return Boolean(video.currentSrc || video.getAttribute("src"));
+  }
+
+  function setRangeFill(input, value, max) {
+    const pct = max > 0 ? percentFor(value, max) : 0;
+    input.style.setProperty("--range-fill", `${pct}%`);
+  }
+
+  function resolveDuration() {
+    return Number.isFinite(video.duration) && video.duration > 0 ? video.duration : fallbackDuration;
+  }
+
+  function setDuration(nextDuration) {
+    duration = Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : fallbackDuration;
+    scrubber.max = duration > 0 ? String(duration) : "0";
+    scrubber.disabled = !(duration > 0);
+    normalizedMarkers = normalizeMarkers(markers, duration);
+    renderMarkers();
+    updateProgress(video.currentTime || 0);
+  }
+
+  function updateProgress(timeValue = video.currentTime || 0) {
+    const current = duration > 0 ? clampTime(timeValue, duration) : Math.max(0, timeValue || 0);
+    const pct = percentFor(current, duration);
+    progress.style.width = `${pct}%`;
+    if (!scrubbing) {
+      scrubber.value = String(current);
+    }
+    setRangeFill(scrubber, current, duration);
+    time.textContent = formatReadout(current, duration);
+  }
+
+  function updatePlayState() {
+    const playing = !video.paused && !video.ended;
+    root.classList.toggle("is-playing", playing);
+    playButtons.forEach((button) => {
+      button.setAttribute("aria-label", playing ? "Pause video" : "Play video");
+      button.setAttribute("aria-pressed", String(playing));
+    });
+  }
+
+  function updateVolumeState() {
+    const muted = video.muted || video.volume === 0;
+    root.classList.toggle("is-muted", muted);
+    volume.value = String(muted ? 0 : video.volume);
+    setRangeFill(volume, Number(volume.value), 1);
+  }
+
+  function renderMarkers() {
+    markerLayer.replaceChildren();
+    markerCount.textContent = markerSummary(normalizedMarkers);
+    prevMarkerButton.disabled = !normalizedMarkers.length;
+    nextMarkerButton.disabled = !normalizedMarkers.length;
+
+    for (const marker of normalizedMarkers) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `clip-player-marker marker-${marker.category}`;
+      button.style.left = `${percentFor(marker.time, duration)}%`;
+      button.title = `${marker.label} @ ${formatClock(marker.time)}`;
+      button.setAttribute("aria-label", `Seek to ${marker.label} at ${formatClock(marker.time)}`);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        seekTo(marker.time);
+      });
+      markerLayer.appendChild(button);
+    }
+  }
+
+  function seekTo(value) {
+    if (!playable()) {
+      return;
+    }
+    const target = duration > 0 ? clampTime(Number(value), duration) : Math.max(0, Number(value) || 0);
+    if (video.seeking) {
+      pendingSeek = target;
+    } else {
+      pendingSeek = null;
+      video.currentTime = target;
+    }
+    updateProgress(target);
+  }
+
+  function seekBy(seconds) {
+    seekTo((video.currentTime || 0) + seconds);
+  }
+
+  function togglePlay() {
+    if (!playable()) {
+      note.textContent = "Media unavailable";
+      return;
+    }
+    if (video.paused || video.ended) {
+      video.play().catch((error) => {
+        note.textContent = error?.message || "Playback failed";
+        updatePlayState();
+      });
+    } else {
+      video.pause();
+    }
+  }
+
+  function jumpMarker(direction) {
+    const current = video.currentTime || 0;
+    const marker = direction > 0
+      ? nextMarker(normalizedMarkers, current)
+      : previousMarker(normalizedMarkers, current);
+    if (marker) {
+      seekTo(marker.time);
+    }
+  }
+
+  function toggleMute() {
+    if (video.muted || video.volume === 0) {
+      video.muted = false;
+      if (video.volume === 0) {
+        video.volume = 1;
+      }
+    } else {
+      video.muted = true;
+    }
+    updateVolumeState();
+  }
+
+  async function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (root.requestFullscreen) {
+      await root.requestFullscreen();
+    }
+  }
+
+  function updateMediaNote() {
+    if (video.videoWidth && video.videoHeight) {
+      note.textContent = `${video.videoWidth}x${video.videoHeight} - ${duration > 0 ? formatClock(duration) : "ready"}`;
+      durationLabel.textContent = duration > 0 ? formatClock(duration) : "Ready";
+    }
+  }
+
+  function startScrub() {
+    scrubbing = true;
+    resumeAfterScrub = !video.paused;
+    if (resumeAfterScrub) {
+      video.pause();
+    }
+  }
+
+  function endScrub() {
+    if (!scrubbing) {
+      return;
+    }
+    scrubbing = false;
+    if (resumeAfterScrub) {
+      resumeAfterScrub = false;
+      video.play().catch(updatePlayState);
+    }
+  }
+
+  playButtons.forEach((button) => button.addEventListener("click", togglePlay));
+  video.addEventListener("click", togglePlay);
+  root.querySelector("[data-player-back]").addEventListener("click", () => seekBy(-5));
+  root.querySelector("[data-player-forward]").addEventListener("click", () => seekBy(5));
+  prevMarkerButton.addEventListener("click", () => jumpMarker(-1));
+  nextMarkerButton.addEventListener("click", () => jumpMarker(1));
+  muteButton.addEventListener("click", toggleMute);
+  fullscreenButton.addEventListener("click", () => {
+    toggleFullscreen().catch((error) => {
+      note.textContent = error?.message || "Fullscreen unavailable";
+    });
+  });
+  playbackRate.addEventListener("change", () => {
+    video.playbackRate = Number(playbackRate.value);
+  });
+  volume.addEventListener("input", () => {
+    video.volume = Number(volume.value);
+    video.muted = video.volume === 0;
+    updateVolumeState();
+  });
+  scrubber.addEventListener("pointerdown", startScrub);
+  scrubber.addEventListener("input", () => {
+    seekTo(Number(scrubber.value));
+  });
+  scrubber.addEventListener("change", endScrub);
+  scrubber.addEventListener("pointerup", endScrub);
+  scrubber.addEventListener("pointercancel", endScrub);
+  scrubber.addEventListener("lostpointercapture", endScrub);
+  root.addEventListener("pointerdown", () => root.focus({ preventScroll: true }));
+  root.addEventListener("keydown", (event) => {
+    const tag = event.target && event.target.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") {
+      return;
+    }
+    const intent = playerKeyIntent(event.code, event.shiftKey);
+    if (!intent) {
+      return;
+    }
+    event.preventDefault();
+    switch (intent.kind) {
+      case "toggle-play":
+        togglePlay();
+        break;
+      case "seek-by":
+        seekBy(intent.seconds);
+        break;
+      case "seek-to":
+        seekTo(intent.seconds);
+        break;
+      case "seek-to-end":
+        seekTo(duration);
+        break;
+      case "next-marker":
+        jumpMarker(1);
+        break;
+      case "previous-marker":
+        jumpMarker(-1);
+        break;
+      case "fullscreen":
+        toggleFullscreen().catch(() => {});
+        break;
+    }
+  });
+
+  video.addEventListener("loadedmetadata", () => {
+    setDuration(resolveDuration());
+    updateMediaNote();
+  });
+  video.addEventListener("durationchange", () => setDuration(resolveDuration()));
+  video.addEventListener("timeupdate", () => updateProgress());
+  video.addEventListener("play", updatePlayState);
+  video.addEventListener("pause", updatePlayState);
+  video.addEventListener("ended", updatePlayState);
+  video.addEventListener("volumechange", updateVolumeState);
+  video.addEventListener("seeked", () => {
+    if (pendingSeek != null) {
+      const target = pendingSeek;
+      pendingSeek = null;
+      video.currentTime = target;
+    }
+    updateProgress();
+  });
+  video.addEventListener("error", () => {
+    const error = video.error;
+    note.textContent = `Load error ${error ? error.code : ""}`.trim();
+  });
+
+  setDuration(duration);
+  updatePlayState();
+  updateVolumeState();
+  updateMediaNote();
+}
+
 function clipDetailView(clip) {
   return `
     <section class="detail-layout">
       <div class="section">
-        <div class="video-frame">
-          <video controls preload="metadata" src="/api/v1/clips/${encodeURIComponent(clip.id)}/media"></video>
-        </div>
+        ${clipPlayerView({
+          playerId: `clip-${clip.id}`,
+          src: `/api/v1/clips/${encodeURIComponent(clip.id)}/media`,
+          title: clip.title,
+          durationMs: clip.duration_ms,
+        })}
         <div class="panel">
           <div class="section-header">
             <h2>Markers</h2>
             <span class="muted">${clip.markers.length} marker${clip.markers.length === 1 ? "" : "s"}</span>
           </div>
-          ${markerTimeline(clip)}
           ${
             clip.markers.length
               ? `<ul class="marker-list">${clip.markers.map(markerItem).join("")}</ul>`
@@ -882,6 +1257,11 @@ function clipDetailView(clip) {
 }
 
 function bindClipDetailEvents(clip) {
+  initClipPlayer(document.querySelector("[data-clip-player]"), {
+    durationMs: clip.duration_ms,
+    markers: clip.markers,
+  });
+
   document.querySelector("#clip-edit-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -933,19 +1313,6 @@ function bindClipDetailEvents(clip) {
   });
 }
 
-function markerTimeline(clip) {
-  if (!clip.duration_ms || !clip.markers.length) {
-    return "";
-  }
-  const ticks = clip.markers
-    .map((marker) => {
-      const left = Math.max(0, Math.min(100, (marker.timestamp_ms / clip.duration_ms) * 100));
-      return `<span class="tick" style="left:${left}%" title="${escapeAttr(marker.label || marker.kind)}"></span>`;
-    })
-    .join("");
-  return `<div class="timeline" aria-hidden="true">${ticks}</div>`;
-}
-
 function markerItem(marker) {
   return `
     <li>
@@ -975,9 +1342,13 @@ async function renderPublicShare(shareId) {
             <h1 id="public-title">${escapeHtml(clip.title)}</h1>
             <p>${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
           </div>
-          <div class="video-frame">
-            <video controls preload="metadata" ${thumbnailUrl ? `poster="${escapeAttr(thumbnailUrl)}"` : ""} ${mediaUrl ? `src="${escapeAttr(mediaUrl)}"` : ""}></video>
-          </div>
+          ${clipPlayerView({
+            playerId: `public-${clip.share_id}`,
+            src: mediaUrl,
+            poster: thumbnailUrl,
+            title: clip.title,
+            durationMs: clip.duration_ms,
+          })}
           <div class="panel">
             <dl class="data-list">
               ${dataRow("Recorded", formatDate(clip.recorded_at))}
@@ -989,6 +1360,10 @@ async function renderPublicShare(shareId) {
         </section>
       </main>
     `;
+    initClipPlayer(document.querySelector("[data-clip-player]"), {
+      durationMs: clip.duration_ms,
+      markers: [],
+    });
   } catch (_) {
     app.innerHTML = `
       <main class="public-shell">
