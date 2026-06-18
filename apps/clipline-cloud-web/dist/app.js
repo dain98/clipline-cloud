@@ -830,7 +830,7 @@ async function renderClipDetail(id) {
   }
 }
 
-function clipPlayerView({ playerId, src, poster = "", title = "", durationMs = null }) {
+function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
   const safeSrc = src ? escapeAttr(src) : "";
   const safePoster = poster ? escapeAttr(poster) : "";
   const durationLabel = durationMs == null ? "Loading media..." : formatDuration(durationMs);
@@ -845,9 +845,6 @@ function clipPlayerView({ playerId, src, poster = "", title = "", durationMs = n
           ${safePoster ? `poster="${safePoster}"` : ""}
           ${safeSrc ? `src="${safeSrc}"` : ""}
         ></video>
-        <button class="clip-player-center" type="button" data-player-toggle aria-label="Play video">
-          ${icon("play")}
-        </button>
         <div class="clip-player-note" data-player-note>${escapeHtml(durationLabel)}</div>
         <div class="clip-player-overlay">
           <div class="clip-player-transport">
@@ -890,10 +887,6 @@ function clipPlayerView({ playerId, src, poster = "", title = "", durationMs = n
           <div class="clip-player-marker-layer" data-player-marker-layer></div>
           <input class="clip-player-scrubber" data-player-scrubber type="range" min="0" max="0" step="0.01" value="0" aria-label="Seek">
         </div>
-        <div class="clip-player-meta">
-          <span data-player-title>${escapeHtml(title || "Clip")}</span>
-          <span class="muted" data-player-duration>${escapeHtml(durationLabel)}</span>
-        </div>
       </div>
     </div>
   `;
@@ -907,7 +900,6 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   const video = root.querySelector("[data-player-video]");
   const note = root.querySelector("[data-player-note]");
   const time = root.querySelector("[data-player-time]");
-  const durationLabel = root.querySelector("[data-player-duration]");
   const progress = root.querySelector("[data-player-progress]");
   const scrubber = root.querySelector("[data-player-scrubber]");
   const markerLayer = root.querySelector("[data-player-marker-layer]");
@@ -1065,7 +1057,6 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   function updateMediaNote() {
     if (video.videoWidth && video.videoHeight) {
       note.textContent = `${video.videoWidth}x${video.videoHeight} - ${duration > 0 ? formatClock(duration) : "ready"}`;
-      durationLabel.textContent = duration > 0 ? formatClock(duration) : "Ready";
     }
   }
 
@@ -1188,7 +1179,6 @@ function clipDetailView(clip) {
         ${clipPlayerView({
           playerId: `clip-${clip.id}`,
           src: `/api/v1/clips/${encodeURIComponent(clip.id)}/media`,
-          title: clip.title,
           durationMs: clip.duration_ms,
         })}
         <div class="panel">
@@ -1346,7 +1336,6 @@ async function renderPublicShare(shareId) {
             playerId: `public-${clip.share_id}`,
             src: mediaUrl,
             poster: thumbnailUrl,
-            title: clip.title,
             durationMs: clip.duration_ms,
           })}
           <div class="panel">
