@@ -11,6 +11,7 @@ Run commands from `deploy/compose/`.
 | File | Purpose |
 |------|---------|
 | `docker-compose.yml` | SQLite + local disk. Local smoke-test profile. |
+| `docker-compose.standalone.yml` | SQLite + local disk with relative bind mounts and file-backed secrets. |
 | `docker-compose.caddy.yml` | SQLite + local disk behind Caddy automatic HTTPS. |
 | `docker-compose.postgres.yml` | Postgres metadata DB + local disk media. |
 | `docker-compose.s3.yml` | SQLite metadata DB + external S3-compatible media storage. |
@@ -28,6 +29,10 @@ first start. Removing that volume signs out browser sessions and invalidates out
 tokens. The MinIO profile is for local S3 testing only: MinIO ports bind to `127.0.0.1`, credentials
 are generated into the local secrets volume, and operators should use `docker-compose.s3.yml` with a
 real private bucket for production object storage.
+
+For production-style local disk deployments without a git clone, prefer
+`docker-compose.standalone.yml`. It avoids the `clipline-secrets` helper container and reads the
+session secret from `./secrets/session_secret.txt`.
 
 The first boot creates the initial admin account. If no bootstrap password is configured, read the
 generated one-time password from logs:
@@ -111,7 +116,7 @@ The repository includes a Docker-only smoke runner for repeatable operations che
 deploy/compose/smoke.sh
 ```
 
-By default it builds a local `clipline-cloud:ops-smoke` image, validates all five Compose files,
+By default it builds a local `clipline-cloud:ops-smoke` image, validates all six Compose files,
 starts the default, MinIO, and Postgres profiles with temporary secrets, checks `/readyz`, creates an
 admin device token, opens admin diagnostics, verifies SQLite/local and Postgres/local backup and
 restore, exercises the MinIO direct-S3 upload path, and confirms that stopping MinIO/Postgres flips
