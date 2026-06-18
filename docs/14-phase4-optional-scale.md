@@ -86,7 +86,7 @@ already playable MP4s, so optimization must be optional, conservative, and loss-
   - [x] Safe replacement of canonical `source.mp4`; failed/skipped optimization leaves original intact
   - [x] DB metadata update for active optimized media plus artifact/probe refresh where needed
   - [x] Cleanup deletes candidates and, by default, originals after successful replacement
-  - [ ] Local and S3 smoke coverage proves optimized media serves correctly and saves bytes on a fixture
+  - [x] Local and S3 smoke coverage proves optimized media serves correctly and saves bytes on a fixture
 - [ ] CDN in front of public clips (extends doc-08 public-media path)
 - [ ] Invite links (self-service onboarding without full self-registration)
 - [ ] OIDC login (Discord/Google/Steam)
@@ -118,4 +118,7 @@ already playable MP4s, so optimization must be optional, conservative, and loss-
 - 2026-06-18: Implemented the disabled-by-default `optimize_video` job. It creates a validated
   H.264/AAC candidate, requires the configured byte-savings threshold, replaces canonical
   `source.mp4`, refreshes active media metadata/artifact jobs, and deletes temporary candidates.
-  Full local/S3 smoke coverage with an ffmpeg-equipped runtime remains open.
+- 2026-06-18: Added opt-in `RUN_VIDEO_OPTIMIZATION=1` Compose smoke coverage. The smoke harness now
+  enables optimization with aggressive test-only settings, uploads a compressible fixture, verifies
+  `file_size_bytes` decreases, confirms owner range playback, and waits for regenerated
+  thumbnail/poster JPEGs on local and S3-compatible profiles.

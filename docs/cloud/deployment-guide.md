@@ -229,8 +229,13 @@ only replaces `source.mp4` after the candidate validates and meets the configure
 | `CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL` | `false` | Store `original-source.mp4` under the clip media token for early testing |
 
 Only enable this on a deployment with enough worker CPU headroom. The default retention path deletes
-the uploaded original after successful replacement; use `KEEP_ORIGINAL=true` temporarily while
-evaluating quality/storage tradeoffs.
+the uploaded original after successful replacement; use
+`CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL=true` temporarily while evaluating quality/storage
+tradeoffs.
+
+The Docker smoke harness can exercise the optimization path with `RUN_VIDEO_OPTIMIZATION=1`. It
+uses smoke-specific CRF/max-width/min-savings settings, uploads a compressible fixture, waits for
+`source.mp4` to shrink, verifies range playback, and checks regenerated thumbnail/poster artifacts.
 
 To smoke-test the external S3 profile against a real bucket, use a disposable bucket or a
 smoke/test prefix. This check uploads a generated MP4 through the normal server-proxy path, waits
@@ -271,6 +276,15 @@ The repository includes a Docker-only smoke runner. Against the released image:
 
 ```sh
 BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 deploy/compose/smoke.sh
+```
+
+To include the opt-in video optimization path:
+
+```sh
+BUILD_IMAGE=0 \
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 \
+RUN_VIDEO_OPTIMIZATION=1 \
+deploy/compose/smoke.sh
 ```
 
 By default it exercises the **default**, **MinIO**, and **Postgres** profiles: it validates the Compose

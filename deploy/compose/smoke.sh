@@ -10,6 +10,7 @@ BUILD_IMAGE="${BUILD_IMAGE:-1}"
 RUN_PROFILES="${RUN_PROFILES-default minio postgres}"
 RUN_CADDY="${RUN_CADDY:-0}"
 RUN_DIRECT_S3="${RUN_DIRECT_S3:-1}"
+RUN_VIDEO_OPTIMIZATION="${RUN_VIDEO_OPTIMIZATION:-0}"
 RUN_EXTERNAL_S3="${RUN_EXTERNAL_S3:-0}"
 ALLOW_EXTERNAL_S3_NO_PREFIX="${ALLOW_EXTERNAL_S3_NO_PREFIX:-0}"
 ALLOW_EXTERNAL_S3_NON_SMOKE_PREFIX="${ALLOW_EXTERNAL_S3_NON_SMOKE_PREFIX:-0}"
@@ -530,6 +531,185 @@ curl -fsS \
 SCRIPT
 }
 
+smoke_video_optimization() {
+  local project="$1"
+  local file="$2"
+  local token="$3"
+
+  log "Smoke-testing video optimization"
+  compose "$project" "$file" exec -T -e SMOKE_TOKEN="$token" clipline-cloud sh -s <<'SCRIPT'
+set -eu
+
+api="http://127.0.0.1:8080"
+clip="/tmp/clipline-optimization-smoke.mp4"
+headers="/tmp/clipline-optimization-headers.txt"
+body="/tmp/clipline-optimization-body.out"
+trap 'rm -f "$clip" "$headers" "$body"' EXIT
+
+# The runtime image intentionally omits jq; these parsers assume serde's compact JSON output.
+json_string() {
+  field="$1"
+  sed -n "s/.*\"$field\":\"\([^\"]*\)\".*/\1/p"
+}
+
+json_number() {
+  field="$1"
+  sed -n "s/.*\"$field\":\([0-9][0-9]*\).*/\1/p"
+}
+
+require_json_string() {
+  field="$1"
+  value="$(printf '%s' "$2" | json_string "$field")"
+  [ -n "$value" ] || {
+    printf 'missing JSON string field %s in: %s\n' "$field" "$2" >&2
+    exit 1
+  }
+  printf '%s' "$value"
+}
+
+require_json_number() {
+  field="$1"
+  value="$(printf '%s' "$2" | json_number "$field")"
+  [ -n "$value" ] || {
+    printf 'missing JSON number field %s in: %s\n' "$field" "$2" >&2
+    exit 1
+  }
+  printf '%s' "$value"
+}
+
+wait_for_optimized_clip() {
+  clip_id="$1"
+  original_size="$2"
+
+  for _ in $(seq 1 180); do
+    if clip_response="$(curl -fsS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/clips/$clip_id" 2>/dev/null)"; then
+      if printf '%s' "$clip_response" | grep -q '"status":"ready"'; then
+        optimized_size="$(printf '%s' "$clip_response" | json_number file_size_bytes)"
+        video_codec="$(printf '%s' "$clip_response" | json_string video_codec)"
+        if [ -n "$optimized_size" ] && [ "$optimized_size" -lt "$original_size" ] && [ "$video_codec" = "h264" ]; then
+          printf '%s' "$optimized_size"
+          return 0
+        fi
+      fi
+    fi
+    sleep 2
+  done
+
+  printf 'clip %s did not optimize below original size %s\n' "$clip_id" "$original_size" >&2
+  curl -sS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/admin/jobs/recent-errors" >&2 || true
+  return 1
+}
+
+wait_for_jpeg() {
+  clip_id="$1"
+  endpoint="$2"
+  label="$3"
+
+  for _ in $(seq 1 120); do
+    code="$(curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      "$api/api/v1/clips/$clip_id/$endpoint")"
+    if [ "$code" = "200" ] && grep -qi '^content-type: image/jpeg' "$headers"; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  printf '%s did not become a generated JPEG for optimized clip %s\n' "$label" "$clip_id" >&2
+  cat "$headers" >&2 || true
+  curl -sS -H "Authorization: Bearer $SMOKE_TOKEN" "$api/api/v1/admin/jobs/recent-errors" >&2 || true
+  return 1
+}
+
+ffmpeg -hide_banner -loglevel error -nostdin -y \
+  -f lavfi -i testsrc2=size=320x180:rate=30 \
+  -t 2 \
+  -c:v mpeg4 \
+  -q:v 1 \
+  -pix_fmt yuv420p \
+  -movflags +faststart \
+  "$clip"
+
+size="$(wc -c < "$clip" | tr -d ' ')"
+checksum="$(sha256sum "$clip" | awk '{print $1}')"
+client_clip_id="$(printf 'optimization-smoke-%s-%s' "$(date +%s)" "$$")"
+payload="$(printf '{"client_clip_id":"%s","title":"Video optimization smoke","source_type":"deployment_smoke","duration_ms":2000,"file_size_bytes":%s,"checksum_sha256":"%s","container":"mp4","video_codec":"mpeg4","width":320,"height":180,"fps":30,"visibility":"private"}' "$client_clip_id" "$size" "$checksum")"
+
+create_response="$(curl -fsS \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "$payload" \
+  "$api/api/v1/uploads")"
+
+clip_id="$(require_json_string clip_id "$create_response")"
+upload_id="$(require_json_string upload_id "$create_response")"
+mode="$(require_json_string mode "$create_response")"
+
+case "$mode" in
+  single_put)
+    content_path="$(require_json_string single_put_url "$create_response")"
+    upload_response="$(curl -fsS \
+      -X PUT \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      -H 'Content-Type: video/mp4' \
+      --data-binary "@$clip" \
+      "$api$content_path")"
+    printf '%s' "$upload_response" | grep -q '"status":"completed"' || {
+      printf 'single PUT response did not complete upload %s: %s\n' "$upload_id" "$upload_response" >&2
+      exit 1
+    }
+    ;;
+  chunked)
+    parts_template="$(require_json_string parts_url_template "$create_response")"
+    part_path="$(printf '%s' "$parts_template" | sed 's/{part_number}/1/g')"
+    part_response="$(curl -fsS \
+      -X PUT \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      -H "X-Clipline-Part-SHA256: $checksum" \
+      --data-binary "@$clip" \
+      "$api$part_path")"
+    printf '%s' "$part_response" | grep -q "\"upload_id\":\"$upload_id\"" || {
+      printf 'part response did not reference upload_id %s: %s\n' "$upload_id" "$part_response" >&2
+      exit 1
+    }
+    curl -fsS \
+      -X POST \
+      -H "Authorization: Bearer $SMOKE_TOKEN" \
+      "$api/api/v1/uploads/$upload_id/complete" >/dev/null
+    ;;
+  *)
+    printf 'unexpected upload mode %s in: %s\n' "$mode" "$create_response" >&2
+    exit 1
+    ;;
+esac
+
+optimized_size="$(wait_for_optimized_clip "$clip_id" "$size")"
+
+owner_media_code="$(curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  -H 'Range: bytes=0-15' \
+  "$api/api/v1/clips/$clip_id/media")"
+[ "$owner_media_code" = "206" ] || {
+  printf 'optimized owner media range request returned %s, expected 206\n' "$owner_media_code" >&2
+  cat "$headers" >&2 || true
+  exit 1
+}
+grep -qi "^content-range: bytes 0-15/$optimized_size" "$headers" || {
+  printf 'optimized owner media response missing expected Content-Range total %s\n' "$optimized_size" >&2
+  cat "$headers" >&2 || true
+  exit 1
+}
+
+wait_for_jpeg "$clip_id" thumbnail thumbnail
+wait_for_jpeg "$clip_id" poster poster
+
+curl -fsS \
+  -X DELETE \
+  -H "Authorization: Bearer $SMOKE_TOKEN" \
+  "$api/api/v1/clips/$clip_id" >/dev/null || true
+SCRIPT
+}
+
 smoke_direct_s3_upload() {
   local project="$1"
   local file="$2"
@@ -785,6 +965,12 @@ run_profile() {
   local token=""
   local CLIPLINE_DIRECT_S3_UPLOADS="${CLIPLINE_DIRECT_S3_UPLOADS:-}"
   local CLIPLINE_SINGLE_PUT_MAX_BYTES="${CLIPLINE_SINGLE_PUT_MAX_BYTES:-}"
+  local CLIPLINE_VIDEO_OPTIMIZATION="${CLIPLINE_VIDEO_OPTIMIZATION:-}"
+  local CLIPLINE_VIDEO_OPTIMIZATION_CRF="${CLIPLINE_VIDEO_OPTIMIZATION_CRF:-}"
+  local CLIPLINE_VIDEO_OPTIMIZATION_PRESET="${CLIPLINE_VIDEO_OPTIMIZATION_PRESET:-}"
+  local CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH="${CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH:-}"
+  local CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT="${CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT:-}"
+  local CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL="${CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL:-}"
 
   file="$(compose_file_for_profile "$profile")"
   project="clipline-smoke-$profile-$SMOKE_ID"
@@ -797,6 +983,14 @@ run_profile() {
   if [ "$profile" = "minio" ] && [ "$RUN_DIRECT_S3" = "1" ]; then
     CLIPLINE_DIRECT_S3_UPLOADS="${CLIPLINE_DIRECT_S3_UPLOADS:-true}"
     CLIPLINE_SINGLE_PUT_MAX_BYTES="${CLIPLINE_SINGLE_PUT_MAX_BYTES:-1}"
+  fi
+  if [ "$RUN_VIDEO_OPTIMIZATION" = "1" ]; then
+    CLIPLINE_VIDEO_OPTIMIZATION="${CLIPLINE_VIDEO_OPTIMIZATION:-on}"
+    CLIPLINE_VIDEO_OPTIMIZATION_CRF="${CLIPLINE_VIDEO_OPTIMIZATION_CRF:-35}"
+    CLIPLINE_VIDEO_OPTIMIZATION_PRESET="${CLIPLINE_VIDEO_OPTIMIZATION_PRESET:-veryfast}"
+    CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH="${CLIPLINE_VIDEO_OPTIMIZATION_MAX_WIDTH:-160}"
+    CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT="${CLIPLINE_VIDEO_OPTIMIZATION_MIN_SAVINGS_PERCENT:-1}"
+    CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL="${CLIPLINE_VIDEO_OPTIMIZATION_KEEP_ORIGINAL:-false}"
   fi
 
   log "Starting $profile profile"
@@ -813,12 +1007,18 @@ run_profile() {
   case "$profile" in
     default)
       smoke_backup_restore "$project" "$file" "$token"
+      if [ "$RUN_VIDEO_OPTIMIZATION" = "1" ]; then
+        smoke_video_optimization "$project" "$file" "$token"
+      fi
       ;;
     minio)
       if [ "$RUN_DIRECT_S3" = "1" ]; then
         smoke_direct_s3_upload "$project" "$file" "$token"
       else
         log "Skipping direct S3 runtime smoke; set RUN_DIRECT_S3=1 to enable"
+      fi
+      if [ "$RUN_VIDEO_OPTIMIZATION" = "1" ]; then
+        smoke_video_optimization "$project" "$file" "$token"
       fi
       log "Checking storage readiness failure"
       compose "$project" "$file" stop minio >/dev/null
@@ -828,6 +1028,9 @@ run_profile() {
       ;;
     postgres)
       smoke_postgres_backup_restore "$project" "$file" "$token"
+      if [ "$RUN_VIDEO_OPTIMIZATION" = "1" ]; then
+        smoke_video_optimization "$project" "$file" "$token"
+      fi
       log "Checking database readiness failure"
       compose "$project" "$file" stop postgres >/dev/null
       expect_not_ready "$project" "$file" database
@@ -837,6 +1040,9 @@ run_profile() {
       ;;
     s3)
       smoke_external_s3_upload "$project" "$file" "$token"
+      if [ "$RUN_VIDEO_OPTIMIZATION" = "1" ]; then
+        smoke_video_optimization "$project" "$file" "$token"
+      fi
       if [ "$RUN_DIRECT_S3" = "1" ] && [ "${CLIPLINE_DIRECT_S3_UPLOADS:-}" = "true" ]; then
         smoke_direct_s3_upload "$project" "$file" "$token"
       fi

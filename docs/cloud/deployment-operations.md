@@ -124,8 +124,14 @@ CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
 BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.0.0 deploy/compose/smoke.sh
 RUN_PROFILES="default minio" deploy/compose/smoke.sh
 RUN_DIRECT_S3=0 RUN_PROFILES=minio deploy/compose/smoke.sh
+RUN_VIDEO_OPTIMIZATION=1 RUN_PROFILES="default minio" deploy/compose/smoke.sh
 RUN_CADDY=1 RUN_PROFILES="" deploy/compose/smoke.sh
 ```
+
+`RUN_VIDEO_OPTIMIZATION=1` turns on video optimization with smoke-specific CRF/max-width/min-savings
+settings. It uploads a compressible fixture, waits for optimized `source.mp4` to become smaller,
+checks owner range playback, and waits for regenerated thumbnail/poster JPEGs. Include both
+`default` and `minio` profiles when you want local-disk plus S3-compatible coverage.
 
 External S3 is intentionally opt-in because it writes to a real bucket. Use a disposable bucket or a
 smoke/test prefix:
