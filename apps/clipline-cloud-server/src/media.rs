@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use clipline_cloud_db::{Clip, ClipSort, PublicClipListParams};
+use clipline_cloud_db::{Clip, ClipSort, PublicClipListParams, User};
 use clipline_cloud_storage::{
     ByteRange, ContentRange, ObjectKey, ObjectMetadata, StorageError, StoredObject,
 };
@@ -67,6 +67,7 @@ struct PublicClipListResponse {
 struct PublicClipSummaryResponse {
     share_id: String,
     title: String,
+    author_name: String,
     game_name: Option<String>,
     game_id: Option<String>,
     recorded_at: Option<DateTime<Utc>>,
@@ -80,6 +81,7 @@ struct PublicClipSummaryResponse {
 struct PublicClipResponse {
     share_id: String,
     title: String,
+    author_name: String,
     game_name: Option<String>,
     game_id: Option<String>,
     recorded_at: Option<DateTime<Utc>>,
@@ -110,7 +112,13 @@ async fn get_public_share_page(
         return Ok(public_share_unavailable_response(&state, &share_id));
     };
 
-    Ok(public_share_page_response(&state, &share_id, &clip))
+    let author_name = public_clip_author_name(&state, &clip).await?;
+    Ok(public_share_page_response(
+        &state,
+        &share_id,
+        &clip,
+        &author_name,
+    ))
 }
 
 async fn list_public_clips(
@@ -129,19 +137,21 @@ async fn list_public_clips(
         limit: page_size,
         offset: (page - 1) * page_size,
     };
-    let clips = state
-        .repositories
-        .clips
-        .list_public(&params)
-        .await?
-        .into_iter()
-        .filter_map(|clip| public_clip_summary_response(&state, clip))
-        .collect();
+    let clips = state.repositories.clips.list_public(&params).await?;
+    let mut public_clips = Vec::with_capacity(clips.len());
+    for clip in clips {
+        if clip.public_share_id.is_some() {
+            let author_name = public_clip_author_name(&state, &clip).await?;
+            if let Some(response) = public_clip_summary_response(&state, clip, author_name) {
+                public_clips.push(response);
+            }
+        }
+    }
 
     Ok(Json(PublicClipListResponse {
         page,
         page_size,
-        clips,
+        clips: public_clips,
     }))
 }
 
@@ -202,9 +212,11 @@ async fn get_public_clip(
     Path(share_id): Path<String>,
 ) -> Result<Json<PublicClipResponse>, ApiError> {
     let clip = load_public_clip(&state, &share_id).await?;
+    let author_name = public_clip_author_name(&state, &clip).await?;
     Ok(Json(PublicClipResponse {
         share_id: share_id.clone(),
         title: clip.title,
+        author_name,
         game_name: clip.game_name,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
@@ -217,13 +229,18 @@ async fn get_public_clip(
     }))
 }
 
-fn public_clip_summary_response(state: &AppState, clip: Clip) -> Option<PublicClipSummaryResponse> {
+fn public_clip_summary_response(
+    state: &AppState,
+    clip: Clip,
+    author_name: String,
+) -> Option<PublicClipSummaryResponse> {
     let share_id = clip.public_share_id?;
     Some(PublicClipSummaryResponse {
         thumbnail_url: absolute_url(state, &format!("api/v1/public/clips/{share_id}/thumbnail")),
         share_url: absolute_url(state, &format!("c/{share_id}")),
         share_id,
         title: clip.title,
+        author_name,
         game_name: clip.game_name,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
@@ -592,9 +609,14 @@ fn insert_header_str(headers: &mut HeaderMap, name: HeaderName, value: impl AsRe
     }
 }
 
-fn public_share_page_response(state: &AppState, share_id: &str, clip: &Clip) -> Response {
+fn public_share_page_response(
+    state: &AppState,
+    share_id: &str,
+    clip: &Clip,
+    author_name: &str,
+) -> Response {
     let title = public_share_title(clip);
-    let description = public_share_description(clip);
+    let description = public_share_description(clip, Some(author_name));
     let share_url = absolute_url(state, &format!("c/{share_id}"));
     let media_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/media"));
     let thumbnail_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/thumbnail"));
@@ -734,7 +756,32 @@ fn public_share_title(clip: &Clip) -> String {
     }
 }
 
-fn public_share_description(clip: &Clip) -> String {
+async fn public_clip_author_name(state: &AppState, clip: &Clip) -> Result<String, ApiError> {
+    let user = state.repositories.users.get(&clip.owner_user_id).await?;
+    Ok(public_user_name(user.as_ref()))
+}
+
+fn public_user_name(user: Option<&User>) -> String {
+    user.map(|user| public_author_label(user.display_name.as_deref(), &user.username))
+        .unwrap_or_else(|| "Unknown creator".to_string())
+}
+
+fn public_author_label(display_name: Option<&str>, username: &str) -> String {
+    [display_name, Some(username)]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or("Unknown creator")
+        .to_string()
+}
+
+fn public_share_description(clip: &Clip, author_name: Option<&str>) -> String {
+    let intro = author_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|author_name| format!("Shared Clipline clip by {author_name}"))
+        .unwrap_or_else(|| "Shared Clipline clip".to_string());
     let mut parts = Vec::new();
     if let Some(game) = clip
         .game_name
@@ -749,9 +796,9 @@ fn public_share_description(clip: &Clip) -> String {
         parts.push(format_duration(duration_ms));
     }
     if parts.is_empty() {
-        "Shared Clipline clip".to_string()
+        intro
     } else {
-        format!("Shared Clipline clip - {}", parts.join(" - "))
+        format!("{intro} - {}", parts.join(" - "))
     }
 }
 
@@ -905,12 +952,34 @@ mod tests {
     fn public_share_description_uses_game_and_duration() {
         let clip = test_clip_with_metadata(Some("Renata Glasc"), Some(65_500));
         assert_eq!(
-            public_share_description(&clip),
+            public_share_description(&clip, Some("Dain")),
+            "Shared Clipline clip by Dain - Renata Glasc - 1:05"
+        );
+        assert_eq!(
+            public_share_description(&clip, None),
             "Shared Clipline clip - Renata Glasc - 1:05"
         );
 
         let clip = test_clip_with_metadata(None, None);
-        assert_eq!(public_share_description(&clip), "Shared Clipline clip");
+        assert_eq!(
+            public_share_description(&clip, Some("Dain")),
+            "Shared Clipline clip by Dain"
+        );
+        assert_eq!(
+            public_share_description(&clip, None),
+            "Shared Clipline clip"
+        );
+    }
+
+    #[test]
+    fn public_author_label_prefers_display_name_then_username() {
+        assert_eq!(
+            public_author_label(Some("  Display Name  "), "username"),
+            "Display Name"
+        );
+        assert_eq!(public_author_label(Some("   "), " username "), "username");
+        assert_eq!(public_author_label(None, " username "), "username");
+        assert_eq!(public_author_label(None, "   "), "Unknown creator");
     }
 
     fn headers_with_range(value: &'static str) -> HeaderMap {

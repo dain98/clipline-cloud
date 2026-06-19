@@ -1,3 +1,16 @@
+import {
+  clampTime,
+  formatClock,
+  formatReadout,
+  markerSummary,
+  nextMarker,
+  normalizeMarkers,
+  percentFor,
+  playerKeyIntent,
+  previousMarker,
+  secondsFromMilliseconds,
+} from "./player-core.js";
+
 const app = document.querySelector("#app");
 
 const state = {
@@ -33,20 +46,30 @@ const icons = {
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  fastForward: '<path d="m13 19 9-7-9-7v14Z"/><path d="m2 19 9-7-9-7v14Z"/>',
   film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 8h4"/><path d="M3 16h4"/><path d="M17 8h4"/><path d="M17 16h4"/>',
+  fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
+  home: '<path d="m3 10 9-7 9 7"/><path d="M5 8.5V20a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5"/><path d="M9 22V12h6v10"/>',
   library: '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  pause: '<path d="M8 5v14"/><path d="M16 5v14"/>',
+  play: '<path d="m8 5 11 7-11 7V5Z"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.7L21 8"/><path d="M21 3v5h-5"/>',
+  rewind: '<path d="m11 19-9-7 9-7v14Z"/><path d="m22 19-9-7 9-7v14Z"/>',
   save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+  skipBack: '<path d="M19 20 9 12l10-8v16Z"/><path d="M5 19V5"/>',
+  skipForward: '<path d="m5 4 10 8-10 8V4Z"/><path d="M19 5v14"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 8.8a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V5l8-3 8 3v8Z"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
+  volume2: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>',
+  volumeX: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 };
 
@@ -238,7 +261,7 @@ function renderLogin(error = "") {
   });
 }
 
-function renderShell({ active, title, subtitle, body }) {
+function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
   const adminLink =
     state.user?.role === "admin"
       ? navLink("/admin", "admin", active, icon("shield"), "Admin")
@@ -254,7 +277,7 @@ function renderShell({ active, title, subtitle, body }) {
           </div>
         </div>
         <nav class="nav-stack" aria-label="Primary">
-          ${navLink("/", "public", active, icon("globe"), "Public")}
+          ${navLink("/", "public", active, icon("home"), "Home")}
           ${navLink("/library", "library", active, icon("library"), "Library")}
           ${navLink("/account", "account", active, icon("user"), "Account")}
           ${adminLink}
@@ -270,12 +293,16 @@ function renderShell({ active, title, subtitle, body }) {
         </div>
       </aside>
       <main class="main-pane">
-        <header class="topbar">
-          <div>
-            <h1>${escapeHtml(title)}</h1>
-            <p>${escapeHtml(subtitle || "")}</p>
-          </div>
-        </header>
+        ${
+          hideTopbar
+            ? ""
+            : `<header class="topbar">
+                <div>
+                  <h1>${escapeHtml(title)}</h1>
+                  ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
+                </div>
+              </header>`
+        }
         <div class="content">
           ${renderFlash()}
           ${body}
@@ -543,24 +570,27 @@ function bindLibraryEvents() {
 
 async function renderPublicLibrary() {
   renderPublicLibraryPage({
-    title: "Public",
-    subtitle: "Public clips from this instance.",
-    body: `<div class="empty-state">Loading public clips...</div>`,
+    title: "Home",
+    body: publicLibraryView([], {
+      statusHtml: `<div class="empty-state">Loading public clips...</div>`,
+    }),
   });
 
   try {
     const data = await api(`/api/v1/public/clips?${publicLibraryParams().toString()}`);
     renderPublicLibraryPage({
-      title: "Public",
-      subtitle: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"} in this view.`,
-      body: publicLibraryView(data.clips),
+      title: "Home",
+      body: publicLibraryView(data.clips, {
+        resultText: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"}`,
+      }),
     });
     bindPublicLibraryEvents();
   } catch (error) {
     renderPublicLibraryPage({
-      title: "Public",
-      subtitle: "Public clips from this instance.",
-      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+      title: "Home",
+      body: publicLibraryView([], {
+        statusHtml: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+      }),
     });
   }
 }
@@ -572,6 +602,7 @@ function renderPublicLibraryPage({ title, subtitle, body }) {
       title,
       subtitle,
       body,
+      hideTopbar: true,
     });
     return;
   }
@@ -583,16 +614,12 @@ function renderPublicLibraryPage({ title, subtitle, body }) {
           <div class="brand-mark" aria-hidden="true">CL</div>
           <div>
             <strong>Clipline</strong>
-            <span>Public</span>
+            <span>Home</span>
           </div>
         </a>
         <a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>
       </header>
       <section class="public-browse-content">
-        <div>
-          <h1>${escapeHtml(title)}</h1>
-          <p>${escapeHtml(subtitle || "")}</p>
-        </div>
         ${renderFlash()}
         ${body}
       </section>
@@ -612,12 +639,30 @@ function publicLibraryParams() {
   return params;
 }
 
-function publicLibraryView(clips) {
+function publicLibraryView(clips, options = {}) {
   return `
-    <section class="section">
-      <form id="public-filter-form" class="panel toolbar">
-        ${field("Search", "q", "search", state.publicQuery.q, "Title or game")}
-        ${selectField("Sort", "sort", state.publicQuery.sort, [
+    <section class="section public-home">
+      ${publicSearchForm(options.resultText || "")}
+      ${
+        options.statusHtml
+          ? options.statusHtml
+          : clips.length
+          ? `<div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>`
+          : `<div class="empty-state">No public clips match this view.</div>`
+      }
+    </section>
+  `;
+}
+
+function publicSearchForm(resultText) {
+  return `
+    <form id="public-filter-form" class="public-search-form" role="search">
+      <div class="public-search-row">
+        <input name="q" type="search" value="${escapeAttr(state.publicQuery.q)}" placeholder="Search" aria-label="Search public clips" autocomplete="off">
+        <button class="public-search-button" type="submit" aria-label="Search">${icon("search")}</button>
+      </div>
+      <div class="public-search-controls">
+        ${publicSelectControl("Sort", "sort", state.publicQuery.sort, [
           ["uploaded_at_desc", "Uploaded newest"],
           ["uploaded_at_asc", "Uploaded oldest"],
           ["recorded_at_desc", "Recorded newest"],
@@ -629,32 +674,47 @@ function publicLibraryView(clips) {
           ["title_asc", "Title A-Z"],
           ["title_desc", "Title Z-A"],
         ])}
-        ${field("Game", "game", "text", state.publicQuery.game, "Name or ID")}
-        <button class="btn-primary" type="submit">${icon("search")} Apply</button>
-      </form>
-      ${
-        clips.length
-          ? `<div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>`
-          : `<div class="empty-state">No public clips match this view.</div>`
-      }
-    </section>
+        <label class="public-filter-control">
+          <span>Game</span>
+          <input name="game" type="text" value="${escapeAttr(state.publicQuery.game)}" placeholder="Any game">
+        </label>
+        ${resultText ? `<span class="public-result-count">${escapeHtml(resultText)}</span>` : ""}
+      </div>
+    </form>
+  `;
+}
+
+function publicSelectControl(label, name, value, options) {
+  return `
+    <label class="public-filter-control">
+      <span>${escapeHtml(label)}</span>
+      <select name="${escapeAttr(name)}">
+        ${options
+          .map(([optionValue, optionLabel]) => `<option value="${escapeAttr(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`)
+          .join("")}
+      </select>
+    </label>
   `;
 }
 
 function publicClipCard(clip) {
   const sharePath = `/c/${encodeURIComponent(clip.share_id)}`;
   const thumbnailPath = `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
+  const authorName = publicAuthorName(clip);
+  const duration = formatDuration(clip.duration_ms);
+  const uploadedAgo = formatRelativeTime(clip.uploaded_at);
   return `
     <a class="public-clip-card" href="${escapeAttr(sharePath)}" data-route>
-      <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
+      <div class="public-thumb-wrap">
+        <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
+        ${duration !== "Unknown" ? `<span class="public-duration-badge">${escapeHtml(duration)}</span>` : ""}
+      </div>
       <div class="public-clip-body">
         <h2>${escapeHtml(clip.title)}</h2>
-        <div class="meta-line">
+        <p class="public-author">${escapeHtml(authorName)}</p>
+        <div class="meta-line public-card-meta">
           <span>${escapeHtml(gameLabel(clip))}</span>
-          <span>${formatDuration(clip.duration_ms)}</span>
-        </div>
-        <div class="meta-line">
-          <span>Uploaded ${formatDate(clip.uploaded_at)}</span>
+          ${uploadedAgo !== "Unknown" ? `<span aria-hidden="true">&middot;</span><span>${escapeHtml(uploadedAgo)}</span>` : ""}
         </div>
       </div>
     </a>
@@ -674,6 +734,10 @@ function bindPublicLibraryEvents() {
 
 function gameLabel(clip) {
   return clip.game_name || clip.game_id || "No game";
+}
+
+function publicAuthorName(clip) {
+  return clip.author_name || "Unknown creator";
 }
 
 function syncSelectedClips(clips) {
@@ -808,19 +872,362 @@ async function renderClipDetail(id) {
   }
 }
 
+function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
+  const safeSrc = src ? escapeAttr(src) : "";
+  const safePoster = poster ? escapeAttr(poster) : "";
+  const durationLabel = durationMs == null ? "Loading media..." : formatDuration(durationMs);
+  return `
+    <div class="clip-player" data-clip-player="${escapeAttr(playerId)}" tabindex="0" aria-label="Video player">
+      <div class="clip-player-stage" data-player-stage>
+        <video
+          class="clip-player-video"
+          data-player-video
+          preload="metadata"
+          playsinline
+          ${safePoster ? `poster="${safePoster}"` : ""}
+          ${safeSrc ? `src="${safeSrc}"` : ""}
+        ></video>
+        <div class="clip-player-note" data-player-note>${escapeHtml(durationLabel)}</div>
+        <div class="clip-player-overlay">
+          <div class="clip-player-transport">
+            <div class="player-cluster">
+              <button type="button" class="player-icon" data-player-prev-marker title="Previous marker (Shift+M)" aria-label="Previous marker">${icon("skipBack")}</button>
+              <button type="button" class="player-icon" data-player-next-marker title="Next marker (M)" aria-label="Next marker">${icon("skipForward")}</button>
+              <span class="player-marker-count" data-player-marker-count>No markers</span>
+            </div>
+            <div class="player-cluster player-cluster-main">
+              <button type="button" class="player-icon" data-player-back title="Back 5 seconds" aria-label="Back 5 seconds">${icon("rewind")}</button>
+              <button type="button" class="player-icon player-play" data-player-toggle title="Play / pause (Space)" aria-label="Play / pause">
+                <span class="player-play-icon">${icon("play")}</span>
+                <span class="player-pause-icon">${icon("pause")}</span>
+              </button>
+              <button type="button" class="player-icon" data-player-forward title="Forward 5 seconds" aria-label="Forward 5 seconds">${icon("fastForward")}</button>
+              <span class="player-time" data-player-time>0:00.0 / 0:00.0</span>
+            </div>
+            <div class="player-cluster player-cluster-right">
+              <select class="player-rate" data-player-rate title="Playback speed" aria-label="Playback speed">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+              <button type="button" class="player-icon" data-player-mute title="Mute / unmute" aria-label="Mute / unmute">
+                <span class="player-volume-icon">${icon("volume2")}</span>
+                <span class="player-muted-icon">${icon("volumeX")}</span>
+              </button>
+              <input class="player-volume" data-player-volume type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+              <button type="button" class="player-icon" data-player-fullscreen title="Fullscreen (F)" aria-label="Fullscreen">${icon("fullscreen")}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="clip-player-deck">
+        <div class="clip-player-timeline" data-player-timeline>
+          <div class="clip-player-progress" data-player-progress></div>
+          <div class="clip-player-marker-layer" data-player-marker-layer></div>
+          <input class="clip-player-scrubber" data-player-scrubber type="range" min="0" max="0" step="0.01" value="0" aria-label="Seek">
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
+  if (!root) {
+    return;
+  }
+
+  const video = root.querySelector("[data-player-video]");
+  const note = root.querySelector("[data-player-note]");
+  const time = root.querySelector("[data-player-time]");
+  const progress = root.querySelector("[data-player-progress]");
+  const scrubber = root.querySelector("[data-player-scrubber]");
+  const markerLayer = root.querySelector("[data-player-marker-layer]");
+  const markerCount = root.querySelector("[data-player-marker-count]");
+  const prevMarkerButton = root.querySelector("[data-player-prev-marker]");
+  const nextMarkerButton = root.querySelector("[data-player-next-marker]");
+  const volume = root.querySelector("[data-player-volume]");
+  const muteButton = root.querySelector("[data-player-mute]");
+  const fullscreenButton = root.querySelector("[data-player-fullscreen]");
+  const playbackRate = root.querySelector("[data-player-rate]");
+  const playButtons = Array.from(root.querySelectorAll("[data-player-toggle]"));
+  const fallbackDuration = secondsFromMilliseconds(durationMs);
+  let duration = fallbackDuration;
+  let normalizedMarkers = normalizeMarkers(markers, duration);
+  let pendingSeek = null;
+  let scrubbing = false;
+  let resumeAfterScrub = false;
+
+  video.controls = false;
+  video.playbackRate = Number(playbackRate.value);
+
+  function playable() {
+    return Boolean(video.currentSrc || video.getAttribute("src"));
+  }
+
+  function setRangeFill(input, value, max) {
+    const pct = max > 0 ? percentFor(value, max) : 0;
+    input.style.setProperty("--range-fill", `${pct}%`);
+  }
+
+  function resolveDuration() {
+    return Number.isFinite(video.duration) && video.duration > 0 ? video.duration : fallbackDuration;
+  }
+
+  function setDuration(nextDuration) {
+    duration = Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : fallbackDuration;
+    scrubber.max = duration > 0 ? String(duration) : "0";
+    scrubber.disabled = !(duration > 0);
+    normalizedMarkers = normalizeMarkers(markers, duration);
+    renderMarkers();
+    updateProgress(video.currentTime || 0);
+  }
+
+  function updateProgress(timeValue = video.currentTime || 0) {
+    const current = duration > 0 ? clampTime(timeValue, duration) : Math.max(0, timeValue || 0);
+    const pct = percentFor(current, duration);
+    progress.style.width = `${pct}%`;
+    if (!scrubbing) {
+      scrubber.value = String(current);
+    }
+    setRangeFill(scrubber, current, duration);
+    time.textContent = formatReadout(current, duration);
+  }
+
+  function updatePlayState() {
+    const playing = !video.paused && !video.ended;
+    root.classList.toggle("is-playing", playing);
+    playButtons.forEach((button) => {
+      button.setAttribute("aria-label", playing ? "Pause video" : "Play video");
+      button.setAttribute("aria-pressed", String(playing));
+    });
+  }
+
+  function updateVolumeState() {
+    const muted = video.muted || video.volume === 0;
+    root.classList.toggle("is-muted", muted);
+    volume.value = String(muted ? 0 : video.volume);
+    setRangeFill(volume, Number(volume.value), 1);
+  }
+
+  function renderMarkers() {
+    markerLayer.replaceChildren();
+    markerCount.textContent = markerSummary(normalizedMarkers);
+    prevMarkerButton.disabled = !normalizedMarkers.length;
+    nextMarkerButton.disabled = !normalizedMarkers.length;
+
+    for (const marker of normalizedMarkers) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `clip-player-marker marker-${marker.category}`;
+      button.style.left = `${percentFor(marker.time, duration)}%`;
+      button.title = `${marker.label} @ ${formatClock(marker.time)}`;
+      button.setAttribute("aria-label", `Seek to ${marker.label} at ${formatClock(marker.time)}`);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        seekTo(marker.time);
+      });
+      markerLayer.appendChild(button);
+    }
+  }
+
+  function seekTo(value) {
+    if (!playable()) {
+      return;
+    }
+    const target = duration > 0 ? clampTime(Number(value), duration) : Math.max(0, Number(value) || 0);
+    if (video.seeking) {
+      pendingSeek = target;
+    } else {
+      pendingSeek = null;
+      video.currentTime = target;
+    }
+    updateProgress(target);
+  }
+
+  function seekBy(seconds) {
+    seekTo((video.currentTime || 0) + seconds);
+  }
+
+  function togglePlay() {
+    if (!playable()) {
+      note.textContent = "Media unavailable";
+      return;
+    }
+    if (video.paused || video.ended) {
+      video.play().catch((error) => {
+        note.textContent = error?.message || "Playback failed";
+        updatePlayState();
+      });
+    } else {
+      video.pause();
+    }
+  }
+
+  function jumpMarker(direction) {
+    const current = video.currentTime || 0;
+    const marker = direction > 0
+      ? nextMarker(normalizedMarkers, current)
+      : previousMarker(normalizedMarkers, current);
+    if (marker) {
+      seekTo(marker.time);
+    }
+  }
+
+  function toggleMute() {
+    if (video.muted || video.volume === 0) {
+      video.muted = false;
+      if (video.volume === 0) {
+        video.volume = 1;
+      }
+    } else {
+      video.muted = true;
+    }
+    updateVolumeState();
+  }
+
+  async function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (root.requestFullscreen) {
+      await root.requestFullscreen();
+    }
+  }
+
+  function updateMediaNote() {
+    if (video.videoWidth && video.videoHeight) {
+      note.textContent = `${video.videoWidth}x${video.videoHeight} - ${duration > 0 ? formatClock(duration) : "ready"}`;
+    }
+  }
+
+  function startScrub() {
+    scrubbing = true;
+    resumeAfterScrub = !video.paused;
+    if (resumeAfterScrub) {
+      video.pause();
+    }
+  }
+
+  function endScrub() {
+    if (!scrubbing) {
+      return;
+    }
+    scrubbing = false;
+    if (resumeAfterScrub) {
+      resumeAfterScrub = false;
+      video.play().catch(updatePlayState);
+    }
+  }
+
+  playButtons.forEach((button) => button.addEventListener("click", togglePlay));
+  video.addEventListener("click", togglePlay);
+  root.querySelector("[data-player-back]").addEventListener("click", () => seekBy(-5));
+  root.querySelector("[data-player-forward]").addEventListener("click", () => seekBy(5));
+  prevMarkerButton.addEventListener("click", () => jumpMarker(-1));
+  nextMarkerButton.addEventListener("click", () => jumpMarker(1));
+  muteButton.addEventListener("click", toggleMute);
+  fullscreenButton.addEventListener("click", () => {
+    toggleFullscreen().catch((error) => {
+      note.textContent = error?.message || "Fullscreen unavailable";
+    });
+  });
+  playbackRate.addEventListener("change", () => {
+    video.playbackRate = Number(playbackRate.value);
+  });
+  volume.addEventListener("input", () => {
+    video.volume = Number(volume.value);
+    video.muted = video.volume === 0;
+    updateVolumeState();
+  });
+  scrubber.addEventListener("pointerdown", startScrub);
+  scrubber.addEventListener("input", () => {
+    seekTo(Number(scrubber.value));
+  });
+  scrubber.addEventListener("change", endScrub);
+  scrubber.addEventListener("pointerup", endScrub);
+  scrubber.addEventListener("pointercancel", endScrub);
+  scrubber.addEventListener("lostpointercapture", endScrub);
+  root.addEventListener("pointerdown", () => root.focus({ preventScroll: true }));
+  root.addEventListener("keydown", (event) => {
+    const tag = event.target && event.target.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") {
+      return;
+    }
+    const intent = playerKeyIntent(event.code, event.shiftKey);
+    if (!intent) {
+      return;
+    }
+    event.preventDefault();
+    switch (intent.kind) {
+      case "toggle-play":
+        togglePlay();
+        break;
+      case "seek-by":
+        seekBy(intent.seconds);
+        break;
+      case "seek-to":
+        seekTo(intent.seconds);
+        break;
+      case "seek-to-end":
+        seekTo(duration);
+        break;
+      case "next-marker":
+        jumpMarker(1);
+        break;
+      case "previous-marker":
+        jumpMarker(-1);
+        break;
+      case "fullscreen":
+        toggleFullscreen().catch(() => {});
+        break;
+    }
+  });
+
+  video.addEventListener("loadedmetadata", () => {
+    setDuration(resolveDuration());
+    updateMediaNote();
+  });
+  video.addEventListener("durationchange", () => setDuration(resolveDuration()));
+  video.addEventListener("timeupdate", () => updateProgress());
+  video.addEventListener("play", updatePlayState);
+  video.addEventListener("pause", updatePlayState);
+  video.addEventListener("ended", updatePlayState);
+  video.addEventListener("volumechange", updateVolumeState);
+  video.addEventListener("seeked", () => {
+    if (pendingSeek != null) {
+      const target = pendingSeek;
+      pendingSeek = null;
+      video.currentTime = target;
+    }
+    updateProgress();
+  });
+  video.addEventListener("error", () => {
+    const error = video.error;
+    note.textContent = `Load error ${error ? error.code : ""}`.trim();
+  });
+
+  setDuration(duration);
+  updatePlayState();
+  updateVolumeState();
+  updateMediaNote();
+}
+
 function clipDetailView(clip) {
   return `
     <section class="detail-layout">
       <div class="section">
-        <div class="video-frame">
-          <video controls preload="metadata" src="/api/v1/clips/${encodeURIComponent(clip.id)}/media"></video>
-        </div>
+        ${clipPlayerView({
+          playerId: `clip-${clip.id}`,
+          src: `/api/v1/clips/${encodeURIComponent(clip.id)}/media`,
+          durationMs: clip.duration_ms,
+        })}
         <div class="panel">
           <div class="section-header">
             <h2>Markers</h2>
             <span class="muted">${clip.markers.length} marker${clip.markers.length === 1 ? "" : "s"}</span>
           </div>
-          ${markerTimeline(clip)}
           ${
             clip.markers.length
               ? `<ul class="marker-list">${clip.markers.map(markerItem).join("")}</ul>`
@@ -882,6 +1289,11 @@ function clipDetailView(clip) {
 }
 
 function bindClipDetailEvents(clip) {
+  initClipPlayer(document.querySelector("[data-clip-player]"), {
+    durationMs: clip.duration_ms,
+    markers: clip.markers,
+  });
+
   document.querySelector("#clip-edit-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -933,19 +1345,6 @@ function bindClipDetailEvents(clip) {
   });
 }
 
-function markerTimeline(clip) {
-  if (!clip.duration_ms || !clip.markers.length) {
-    return "";
-  }
-  const ticks = clip.markers
-    .map((marker) => {
-      const left = Math.max(0, Math.min(100, (marker.timestamp_ms / clip.duration_ms) * 100));
-      return `<span class="tick" style="left:${left}%" title="${escapeAttr(marker.label || marker.kind)}"></span>`;
-    })
-    .join("");
-  return `<div class="timeline" aria-hidden="true">${ticks}</div>`;
-}
-
 function markerItem(marker) {
   return `
     <li>
@@ -967,19 +1366,24 @@ async function renderPublicShare(shareId) {
     const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
     const mediaUrl = safeMediaUrl(clip.media_url);
     const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
+    const authorName = publicAuthorName(clip);
     app.innerHTML = `
       <main class="public-shell">
         <section class="public-panel" aria-labelledby="public-title">
           <div>
             <div class="brand-mark" aria-hidden="true">CL</div>
             <h1 id="public-title">${escapeHtml(clip.title)}</h1>
-            <p>${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
+            <p>by ${escapeHtml(authorName)} - ${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
           </div>
-          <div class="video-frame">
-            <video controls preload="metadata" ${thumbnailUrl ? `poster="${escapeAttr(thumbnailUrl)}"` : ""} ${mediaUrl ? `src="${escapeAttr(mediaUrl)}"` : ""}></video>
-          </div>
+          ${clipPlayerView({
+            playerId: `public-${clip.share_id}`,
+            src: mediaUrl,
+            poster: thumbnailUrl,
+            durationMs: clip.duration_ms,
+          })}
           <div class="panel">
             <dl class="data-list">
+              ${dataRow("Author", authorName)}
               ${dataRow("Recorded", formatDate(clip.recorded_at))}
               ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
               ${dataRow("Duration", formatDuration(clip.duration_ms))}
@@ -989,6 +1393,10 @@ async function renderPublicShare(shareId) {
         </section>
       </main>
     `;
+    initClipPlayer(document.querySelector("[data-clip-player]"), {
+      durationMs: clip.duration_ms,
+      markers: [],
+    });
   } catch (_) {
     app.innerHTML = `
       <main class="public-shell">
@@ -1529,6 +1937,30 @@ function formatDuration(value) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatRelativeTime(value) {
+  if (!value) {
+    return "Unknown";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  const diffMs = date.getTime() - Date.now();
+  const units = [
+    ["year", 365 * 24 * 60 * 60 * 1000],
+    ["month", 30 * 24 * 60 * 60 * 1000],
+    ["week", 7 * 24 * 60 * 60 * 1000],
+    ["day", 24 * 60 * 60 * 1000],
+    ["hour", 60 * 60 * 1000],
+    ["minute", 60 * 1000],
+    ["second", 1000],
+  ];
+  const [unit, unitMs] =
+    units.find(([, size]) => Math.abs(diffMs) >= size) || units[units.length - 1];
+  const amount = Math.round(diffMs / unitMs);
+  return new Intl.RelativeTimeFormat(undefined, { numeric: "always" }).format(amount, unit);
 }
 
 function formatBytes(value) {
