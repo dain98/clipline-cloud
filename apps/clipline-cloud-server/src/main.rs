@@ -292,6 +292,8 @@ fn router(
         .route("/library", get(spa_index))
         .route("/admin", get(spa_index))
         .route("/account", get(spa_index))
+        .route("/profile", get(spa_index))
+        .route("/u/{*path}", get(spa_index))
         .route("/clip/{*path}", get(spa_index))
         .merge(auth::routes())
         .merge(admin::routes())

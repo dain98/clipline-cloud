@@ -418,6 +418,7 @@ mod tests {
             vec![
                 "app_settings",
                 "audit_log",
+                "clip_comments",
                 "clip_markers",
                 "clips",
                 "device_tokens",
@@ -1259,7 +1260,7 @@ mod tests {
         public.visibility = "public".to_string();
         public.public_share_id = Some(format!("public-{test_id}"));
         public.game_name = Some("Renata Glasc".to_string());
-        repos.clips.create(&public).await.expect("public clip");
+        let public = repos.clips.create(&public).await.expect("public clip");
 
         let mut unlisted = NewClip::new(&user.id, "unlisted clip", "local");
         unlisted.status = "ready".to_string();
@@ -1299,6 +1300,7 @@ mod tests {
             .expect("soft delete clip");
 
         let mut params = PublicClipListParams {
+            owner_user_id: None,
             game: None,
             query: None,
             sort: ClipSort::UploadedAtDesc,
@@ -1334,6 +1336,85 @@ mod tests {
                 .expect("filter public clips")
                 .len(),
             1
+        );
+
+        let other_user = repos
+            .users
+            .create(&NewUser::new(format!("other-{test_id}"), "hash", "user"))
+            .await
+            .expect("create other user");
+        let mut other_public = NewClip::new(&other_user.id, "other public clip", "local");
+        other_public.status = "ready".to_string();
+        other_public.visibility = "public".to_string();
+        other_public.public_share_id = Some(format!("other-public-{test_id}"));
+        repos
+            .clips
+            .create(&other_public)
+            .await
+            .expect("other public clip");
+
+        params.game = None;
+        params.owner_user_id = Some(user.id.clone());
+        assert_eq!(
+            repos
+                .clips
+                .list_public(&params)
+                .await
+                .expect("filter public clips by owner")
+                .len(),
+            1
+        );
+        params.owner_user_id = Some(other_user.id.clone());
+        assert_eq!(
+            repos
+                .clips
+                .list_public(&params)
+                .await
+                .expect("filter other public clips by owner")
+                .len(),
+            1
+        );
+
+        let view_count = repos
+            .clips
+            .increment_view_count(&public.id)
+            .await
+            .expect("increment view count");
+        assert_eq!(view_count, 1);
+
+        let comment = repos
+            .clip_comments
+            .create(&NewClipComment::new(&public.id, &user.id, "looks good"))
+            .await
+            .expect("create comment");
+        assert_eq!(comment.body, "looks good");
+        assert_eq!(
+            repos
+                .clip_comments
+                .list_for_clip(&public.id, 10)
+                .await
+                .expect("list comments")
+                .len(),
+            1
+        );
+        assert!(repos
+            .clip_comments
+            .soft_delete(&comment.id)
+            .await
+            .expect("soft delete comment"));
+        assert!(!repos
+            .clip_comments
+            .soft_delete(&comment.id)
+            .await
+            .expect("second soft delete is a no-op"));
+        assert_eq!(
+            repos
+                .clip_comments
+                .list_for_clip(&public.id, 10)
+                .await
+                .expect("list comments after soft delete")
+                .len(),
+            0
         );
     }
 

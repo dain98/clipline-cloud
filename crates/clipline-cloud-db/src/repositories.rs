@@ -4,10 +4,10 @@ use sqlx::{types::Json, Postgres, QueryBuilder, Sqlite};
 
 use crate::{
     db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AppSettings,
-    AuditLogEntry, Clip, ClipMarker, Database, DbResult, DeviceToken, Job, NewAuditLogEntry,
-    NewClip, NewClipMarker, NewDeviceToken, NewJob, NewResetPasswordToken, NewSession,
-    NewUploadPart, NewUploadSession, NewUser, ResetPasswordToken, Session, UploadPart,
-    UploadSession, User,
+    AuditLogEntry, Clip, ClipComment, ClipMarker, Database, DbResult, DeviceToken, Job,
+    NewAuditLogEntry, NewClip, NewClipComment, NewClipMarker, NewDeviceToken, NewJob,
+    NewResetPasswordToken, NewSession, NewUploadPart, NewUploadSession, NewUser,
+    ResetPasswordToken, Session, UploadPart, UploadSession, User,
 };
 
 pub const DEFAULT_ABOUT_TEXT: &str = "Self-hosted clip sharing for Clipline. Upload clips from the desktop app, manage your own library, and share public links without relying on a hosted service.";
@@ -51,6 +51,7 @@ pub struct ClipListParams {
 
 #[derive(Debug, Clone)]
 pub struct PublicClipListParams {
+    pub owner_user_id: Option<String>,
     pub game: Option<String>,
     pub query: Option<String>,
     pub sort: ClipSort,
@@ -71,6 +72,7 @@ pub struct Repositories {
     pub sessions: SessionRepository,
     pub device_tokens: DeviceTokenRepository,
     pub clips: ClipRepository,
+    pub clip_comments: ClipCommentRepository,
     pub clip_markers: ClipMarkerRepository,
     pub upload_sessions: UploadSessionRepository,
     pub upload_parts: UploadPartRepository,
@@ -87,6 +89,7 @@ impl Repositories {
             sessions: SessionRepository::new(database.clone()),
             device_tokens: DeviceTokenRepository::new(database.clone()),
             clips: ClipRepository::new(database.clone()),
+            clip_comments: ClipCommentRepository::new(database.clone()),
             clip_markers: ClipMarkerRepository::new(database.clone()),
             upload_sessions: UploadSessionRepository::new(database.clone()),
             upload_parts: UploadPartRepository::new(database.clone()),
@@ -394,12 +397,14 @@ impl UserRepository {
     pub async fn create(&self, new: &NewUser) -> DbResult<User> {
         db_execute!(
             &self.database,
-            "INSERT INTO users (id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.username,
                 new.display_name.as_deref(),
+                new.bio.as_deref(),
+                new.avatar_key.as_deref(),
                 &new.password_hash,
                 &new.role,
                 new.is_disabled,
@@ -420,7 +425,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE id = ?",
             [id]
         )?)
@@ -430,7 +435,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE username = ?",
             [username]
         )?)
@@ -440,7 +445,7 @@ impl UserRepository {
         Ok(db_fetch_all!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users ORDER BY username ASC",
             []
         )?)
@@ -469,7 +474,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE role = 'admin' ORDER BY created_at ASC, id ASC LIMIT 1",
             []
         )?)
@@ -494,6 +499,29 @@ impl UserRepository {
                 now_utc(),
                 id,
             ]
+        )?;
+        Ok(())
+    }
+
+    pub async fn update_self_profile(
+        &self,
+        id: &str,
+        display_name: Option<&str>,
+        bio: Option<&str>,
+    ) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE users SET display_name = ?, bio = ?, updated_at = ? WHERE id = ?",
+            [display_name, bio, now_utc(), id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn set_avatar_key(&self, id: &str, avatar_key: Option<&str>) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE users SET avatar_key = ?, updated_at = ? WHERE id = ?",
+            [avatar_key, now_utc(), id]
         )?;
         Ok(())
     }
@@ -783,9 +811,9 @@ impl ClipRepository {
                id, owner_user_id, client_clip_id, title, description, game_name, game_id, game_executable, source_type,
                recorded_at, uploaded_at, duration_ms, file_size_bytes, width, height, fps, container,
                video_codec, audio_codec, checksum_sha256, visibility, status, storage_backend, storage_key,
-               poster_key, thumbnail_key, public_share_id, created_at, updated_at, deleted_at
+               poster_key, thumbnail_key, public_share_id, view_count, created_at, updated_at, deleted_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.owner_user_id,
@@ -814,6 +842,7 @@ impl ClipRepository {
                 new.poster_key.as_deref(),
                 new.thumbnail_key.as_deref(),
                 new.public_share_id.as_deref(),
+                new.view_count,
                 new.created_at,
                 new.updated_at,
                 new.deleted_at,
@@ -957,6 +986,22 @@ impl ClipRepository {
                 Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
             }
         }
+    }
+
+    pub async fn increment_view_count(&self, id: &str) -> DbResult<i64> {
+        db_execute!(
+            &self.database,
+            "UPDATE clips SET view_count = view_count + 1 WHERE id = ?",
+            [id]
+        )?;
+        Ok(db_fetch_optional!(
+            &self.database,
+            (i64,),
+            "SELECT view_count FROM clips WHERE id = ?",
+            [id]
+        )?
+        .map(|row| row.0)
+        .unwrap_or_default())
     }
 
     pub async fn list_ready_with_storage_key(&self, limit: i64) -> DbResult<Vec<Clip>> {
@@ -1260,7 +1305,7 @@ const CLIP_SELECT_SQL: &str = "SELECT
   id, owner_user_id, client_clip_id, title, description, game_name, game_id, game_executable, source_type,
   recorded_at, uploaded_at, duration_ms, file_size_bytes, width, height, fps, container,
   video_codec, audio_codec, checksum_sha256, visibility, status, storage_backend, storage_key,
-  poster_key, thumbnail_key, public_share_id, created_at, updated_at, deleted_at
+  poster_key, thumbnail_key, public_share_id, view_count, created_at, updated_at, deleted_at
   FROM clips";
 
 fn push_clip_list_filters_sqlite(builder: &mut QueryBuilder<'_, Sqlite>, params: &ClipListParams) {
@@ -1292,6 +1337,10 @@ fn push_public_clip_list_filters_sqlite(
           AND deleted_at IS NULL
           AND public_share_id IS NOT NULL",
     );
+    if let Some(owner_user_id) = &params.owner_user_id {
+        builder.push(" AND owner_user_id = ");
+        builder.push_bind(owner_user_id.clone());
+    }
     push_public_clip_optional_filters_sqlite(builder, params);
 }
 
@@ -1305,6 +1354,10 @@ fn push_public_clip_list_filters_postgres(
           AND deleted_at IS NULL
           AND public_share_id IS NOT NULL",
     );
+    if let Some(owner_user_id) = &params.owner_user_id {
+        builder.push(" AND owner_user_id = ");
+        builder.push_bind(owner_user_id.clone());
+    }
     push_public_clip_optional_filters_postgres(builder, params);
 }
 
@@ -1549,6 +1602,74 @@ fn escaped_like_pattern(query: &str) -> String {
     }
     pattern.push('%');
     pattern
+}
+
+#[derive(Clone)]
+pub struct ClipCommentRepository {
+    database: Database,
+}
+
+impl ClipCommentRepository {
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    pub async fn create(&self, new: &NewClipComment) -> DbResult<ClipComment> {
+        db_execute!(
+            &self.database,
+            "INSERT INTO clip_comments (id, clip_id, user_id, body, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                &new.id,
+                &new.clip_id,
+                &new.user_id,
+                &new.body,
+                new.created_at,
+                new.updated_at,
+                new.deleted_at,
+            ]
+        )?;
+
+        Ok(self
+            .get(&new.id)
+            .await?
+            .expect("inserted clip comment should exist"))
+    }
+
+    pub async fn get(&self, id: &str) -> DbResult<Option<ClipComment>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            ClipComment,
+            "SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
+             FROM clip_comments WHERE id = ?",
+            [id]
+        )?)
+    }
+
+    pub async fn list_for_clip(&self, clip_id: &str, limit: i64) -> DbResult<Vec<ClipComment>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            ClipComment,
+            "SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
+             FROM clip_comments
+             WHERE clip_id = ? AND deleted_at IS NULL
+             ORDER BY created_at ASC, id ASC
+             LIMIT ?",
+            [clip_id, limit]
+        )?)
+    }
+
+    pub async fn soft_delete(&self, id: &str) -> DbResult<bool> {
+        let now = now_utc();
+        let rows_affected = db_execute_rows!(
+            &self.database,
+            "UPDATE clip_comments
+             SET deleted_at = ?, updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL",
+            [now, now, id]
+        )?;
+        Ok(rows_affected > 0)
+    }
 }
 
 #[derive(Clone)]

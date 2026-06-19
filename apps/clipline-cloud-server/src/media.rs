@@ -1,13 +1,13 @@
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{delete, get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use clipline_cloud_db::{Clip, ClipSort, PublicClipListParams, User};
+use clipline_cloud_db::{Clip, ClipComment, ClipSort, NewClipComment, PublicClipListParams, User};
 use clipline_cloud_storage::{
     ByteRange, ContentRange, ObjectKey, ObjectMetadata, StorageError, StoredObject,
 };
@@ -18,7 +18,7 @@ use url::Url;
 use crate::{
     auth::{self, ApiError},
     config::PublicMediaMode,
-    AppState,
+    AppState, ClientIp,
 };
 
 const COPY_NOTICE: &str =
@@ -31,6 +31,9 @@ const MAX_PUBLIC_PAGE_SIZE: i64 = 100;
 const DEFAULT_RECOMMENDATION_LIMIT: i64 = 8;
 const MAX_RECOMMENDATION_LIMIT: i64 = 24;
 const RECOMMENDATION_CANDIDATE_LIMIT: i64 = 120;
+const PUBLIC_PROFILE_CLIP_LIMIT: i64 = 60;
+const PUBLIC_COMMENT_LIMIT: i64 = 100;
+const MAX_COMMENT_BODY_LEN: usize = 2000;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -39,11 +42,28 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/clips/{id}/thumbnail", get(get_owned_thumbnail))
         .route("/api/v1/clips/{id}/poster", get(get_owned_poster))
         .route("/api/v1/public/clips", get(list_public_clips))
+        .route("/api/v1/public/users/{username}", get(get_public_user))
+        .route(
+            "/api/v1/public/users/{username}/avatar",
+            get(get_public_user_avatar),
+        )
         .route(
             "/api/v1/public/recommendations",
             get(list_public_recommendations),
         )
         .route("/api/v1/public/clips/{share_id}", get(get_public_clip))
+        .route(
+            "/api/v1/public/clips/{share_id}/comments",
+            get(list_public_comments).post(create_public_comment),
+        )
+        .route(
+            "/api/v1/public/clips/{share_id}/comments/{comment_id}",
+            delete(delete_public_comment),
+        )
+        .route(
+            "/api/v1/public/clips/{share_id}/view",
+            post(record_public_view),
+        )
         .route(
             "/api/v1/public/clips/{share_id}/media",
             get(get_public_media),
@@ -87,11 +107,14 @@ struct PublicClipSummaryResponse {
     title: String,
     description: Option<String>,
     author_name: String,
+    author_username: Option<String>,
+    author_avatar_url: Option<String>,
     game_name: Option<String>,
     game_id: Option<String>,
     recorded_at: Option<DateTime<Utc>>,
     uploaded_at: Option<DateTime<Utc>>,
     duration_ms: Option<i64>,
+    view_count: i64,
     thumbnail_url: String,
     share_url: String,
 }
@@ -102,6 +125,8 @@ struct PublicClipResponse {
     title: String,
     description: Option<String>,
     author_name: String,
+    author_username: Option<String>,
+    author_avatar_url: Option<String>,
     viewer_can_edit: bool,
     viewer_clip_id: Option<String>,
     game_name: Option<String>,
@@ -109,10 +134,56 @@ struct PublicClipResponse {
     recorded_at: Option<DateTime<Utc>>,
     uploaded_at: Option<DateTime<Utc>>,
     duration_ms: Option<i64>,
+    view_count: i64,
     media_url: String,
     thumbnail_url: String,
     share_url: String,
     copy_notice: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicUserProfileResponse {
+    username: String,
+    display_name: Option<String>,
+    bio: Option<String>,
+    avatar_url: Option<String>,
+    clip_count: usize,
+    clips: Vec<PublicClipSummaryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicCommentListResponse {
+    comments: Vec<PublicCommentResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicCommentResponse {
+    id: String,
+    body: String,
+    author_name: String,
+    author_username: Option<String>,
+    author_avatar_url: Option<String>,
+    is_uploader: bool,
+    viewer_can_delete: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePublicCommentRequest {
+    body: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicViewResponse {
+    view_count: i64,
+}
+
+#[derive(Debug, Clone)]
+struct PublicAuthor {
+    name: String,
+    username: Option<String>,
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,6 +224,7 @@ async fn list_public_clips(
         .unwrap_or(DEFAULT_PUBLIC_PAGE_SIZE)
         .clamp(1, MAX_PUBLIC_PAGE_SIZE);
     let params = PublicClipListParams {
+        owner_user_id: None,
         game: normalized_optional(query.game),
         query: normalized_optional(query.q),
         sort: parse_public_sort(query.sort.as_deref())?,
@@ -163,8 +235,8 @@ async fn list_public_clips(
     let mut public_clips = Vec::with_capacity(clips.len());
     for clip in clips {
         if clip.public_share_id.is_some() {
-            let author_name = public_clip_author_name(&state, &clip).await?;
-            if let Some(response) = public_clip_summary_response(&state, clip, author_name) {
+            let author = public_clip_author(&state, &clip).await?;
+            if let Some(response) = public_clip_summary_response(&state, clip, author) {
                 public_clips.push(response);
             }
         }
@@ -191,6 +263,7 @@ async fn list_public_recommendations(
         None => None,
     };
     let params = PublicClipListParams {
+        owner_user_id: None,
         game: None,
         query: None,
         sort: ClipSort::UploadedAtDesc,
@@ -202,8 +275,8 @@ async fn list_public_recommendations(
 
     let mut public_clips = Vec::with_capacity(clips.len());
     for clip in clips {
-        let author_name = public_clip_author_name(&state, &clip).await?;
-        if let Some(response) = public_clip_summary_response(&state, clip, author_name) {
+        let author = public_clip_author(&state, &clip).await?;
+        if let Some(response) = public_clip_summary_response(&state, clip, author) {
             public_clips.push(response);
         }
     }
@@ -211,6 +284,75 @@ async fn list_public_recommendations(
     Ok(Json(PublicRecommendationResponse {
         clips: public_clips,
     }))
+}
+
+async fn get_public_user(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<Json<PublicUserProfileResponse>, ApiError> {
+    let Some(user) = state.repositories.users.get_by_username(&username).await? else {
+        return Err(ApiError::not_found("user not found"));
+    };
+    if user.is_disabled {
+        return Err(ApiError::not_found("user not found"));
+    }
+    let params = PublicClipListParams {
+        owner_user_id: Some(user.id.clone()),
+        game: None,
+        query: None,
+        sort: ClipSort::UploadedAtDesc,
+        limit: PUBLIC_PROFILE_CLIP_LIMIT,
+        offset: 0,
+    };
+    let clips = state.repositories.clips.list_public(&params).await?;
+    let author = public_author_from_user(&state, Some(&user));
+    let public_clips = clips
+        .into_iter()
+        .filter_map(|clip| public_clip_summary_response(&state, clip, author.clone()))
+        .collect::<Vec<_>>();
+
+    Ok(Json(PublicUserProfileResponse {
+        username: user.username,
+        display_name: user.display_name,
+        bio: user.bio,
+        avatar_url: author.avatar_url,
+        clip_count: public_clips.len(),
+        clips: public_clips,
+    }))
+}
+
+async fn get_public_user_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(username): Path<String>,
+) -> Result<Response, ApiError> {
+    let Some(user) = state.repositories.users.get_by_username(&username).await? else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+    if user.is_disabled {
+        return Err(ApiError::not_found("avatar not found"));
+    }
+    let Some(avatar_key) = user.avatar_key.as_deref() else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+    let key = ObjectKey::parse(avatar_key).map_err(|error| {
+        warn!(event = "media.invalid_avatar_key", username = %user.username, error = %error);
+        ApiError::internal("invalid avatar key")
+    })?;
+    let metadata = state
+        .storage
+        .head_object(&key)
+        .await
+        .map_err(storage_error)?;
+    if etag_matches(&headers, metadata.etag.as_deref()) {
+        return Ok(not_modified_response(&metadata, CacheScope::Public));
+    }
+    let object = state
+        .storage
+        .get_object(&key, None)
+        .await
+        .map_err(storage_error)?;
+    Ok(media_response(object, CacheScope::Public))
 }
 
 async fn get_owned_media(
@@ -276,12 +418,14 @@ async fn get_public_clip(
         .as_ref()
         .is_some_and(|auth| auth.user.id == clip.owner_user_id);
     let viewer_clip_id = viewer_can_edit.then(|| clip.id.clone());
-    let author_name = public_clip_author_name(&state, &clip).await?;
+    let author = public_clip_author(&state, &clip).await?;
     Ok(Json(PublicClipResponse {
         share_id: share_id.clone(),
         title: clip.title,
         description: clip.description,
-        author_name,
+        author_name: author.name,
+        author_username: author.username,
+        author_avatar_url: author.avatar_url,
         viewer_can_edit,
         viewer_clip_id,
         game_name: clip.game_name,
@@ -289,6 +433,7 @@ async fn get_public_clip(
         recorded_at: clip.recorded_at,
         uploaded_at: clip.uploaded_at,
         duration_ms: clip.duration_ms,
+        view_count: clip.view_count,
         media_url: absolute_url(&state, &format!("api/v1/public/clips/{share_id}/media")),
         thumbnail_url: absolute_url(&state, &format!("api/v1/public/clips/{share_id}/thumbnail")),
         share_url: absolute_url(&state, &format!("c/{share_id}")),
@@ -296,10 +441,112 @@ async fn get_public_clip(
     }))
 }
 
+async fn list_public_comments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(share_id): Path<String>,
+) -> Result<Json<PublicCommentListResponse>, ApiError> {
+    let clip = load_public_clip(&state, &share_id).await?;
+    let auth = auth::optional_auth(&state, &headers).await?;
+    let comments = state
+        .repositories
+        .clip_comments
+        .list_for_clip(&clip.id, PUBLIC_COMMENT_LIMIT)
+        .await?;
+    let mut responses = Vec::with_capacity(comments.len());
+    for comment in comments {
+        responses.push(public_comment_response(&state, &clip, comment, auth.as_ref()).await?);
+    }
+    Ok(Json(PublicCommentListResponse {
+        comments: responses,
+    }))
+}
+
+async fn create_public_comment(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Path(share_id): Path<String>,
+    Json(request): Json<CreatePublicCommentRequest>,
+) -> Result<Json<PublicCommentResponse>, ApiError> {
+    let auth = auth::require_auth(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    let clip = load_public_clip(&state, &share_id).await?;
+    let body = normalize_comment_body(request.body)?;
+    let comment = state
+        .repositories
+        .clip_comments
+        .create(&NewClipComment::new(&clip.id, &auth.user.id, body))
+        .await?;
+    auth::audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "clip.comment.created",
+        Some("clip"),
+        Some(&clip.id),
+        None,
+    )
+    .await?;
+    Ok(Json(
+        public_comment_response(&state, &clip, comment, Some(&auth)).await?,
+    ))
+}
+
+async fn delete_public_comment(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Path((share_id, comment_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let auth = auth::require_auth(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    let clip = load_public_clip(&state, &share_id).await?;
+    let Some(comment) = state.repositories.clip_comments.get(&comment_id).await? else {
+        return Err(ApiError::not_found("comment not found"));
+    };
+    if comment.deleted_at.is_some() || comment.clip_id != clip.id {
+        return Err(ApiError::not_found("comment not found"));
+    }
+    if !viewer_can_delete_comment(&state, &auth.user, &clip).await? {
+        return Err(ApiError::forbidden("comment delete is not allowed"));
+    }
+
+    state
+        .repositories
+        .clip_comments
+        .soft_delete(&comment.id)
+        .await?;
+    auth::audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "clip.comment.deleted",
+        Some("comment"),
+        Some(&comment.id),
+        Some(serde_json::json!({ "clip_id": clip.id })),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn record_public_view(
+    State(state): State<AppState>,
+    Path(share_id): Path<String>,
+) -> Result<Json<PublicViewResponse>, ApiError> {
+    let clip = load_public_clip(&state, &share_id).await?;
+    let view_count = state
+        .repositories
+        .clips
+        .increment_view_count(&clip.id)
+        .await?;
+    Ok(Json(PublicViewResponse { view_count }))
+}
+
 fn public_clip_summary_response(
     state: &AppState,
     clip: Clip,
-    author_name: String,
+    author: PublicAuthor,
 ) -> Option<PublicClipSummaryResponse> {
     let share_id = clip.public_share_id?;
     Some(PublicClipSummaryResponse {
@@ -308,12 +555,15 @@ fn public_clip_summary_response(
         share_id,
         title: clip.title,
         description: clip.description,
-        author_name,
+        author_name: author.name,
+        author_username: author.username,
+        author_avatar_url: author.avatar_url,
         game_name: clip.game_name,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
         uploaded_at: clip.uploaded_at,
         duration_ms: clip.duration_ms,
+        view_count: clip.view_count,
     })
 }
 
@@ -825,13 +1075,84 @@ fn public_share_title(clip: &Clip) -> String {
 }
 
 async fn public_clip_author_name(state: &AppState, clip: &Clip) -> Result<String, ApiError> {
-    let user = state.repositories.users.get(&clip.owner_user_id).await?;
-    Ok(public_user_name(user.as_ref()))
+    Ok(public_clip_author(state, clip).await?.name)
 }
 
-fn public_user_name(user: Option<&User>) -> String {
-    user.map(|user| public_author_label(user.display_name.as_deref(), &user.username))
-        .unwrap_or_else(|| "Unknown creator".to_string())
+async fn public_clip_author(state: &AppState, clip: &Clip) -> Result<PublicAuthor, ApiError> {
+    let user = state.repositories.users.get(&clip.owner_user_id).await?;
+    Ok(public_author_from_user(state, user.as_ref()))
+}
+
+async fn public_comment_response(
+    state: &AppState,
+    clip: &Clip,
+    comment: ClipComment,
+    viewer: Option<&auth::AuthenticatedUser>,
+) -> Result<PublicCommentResponse, ApiError> {
+    let user = state.repositories.users.get(&comment.user_id).await?;
+    let author = public_author_from_user(state, user.as_ref());
+    let is_uploader = comment.user_id == clip.owner_user_id;
+    let viewer_can_delete = match viewer {
+        Some(viewer) => viewer_can_delete_comment(state, &viewer.user, clip).await?,
+        None => false,
+    };
+    Ok(PublicCommentResponse {
+        id: comment.id,
+        body: comment.body,
+        author_name: author.name,
+        author_username: author.username,
+        author_avatar_url: author.avatar_url,
+        is_uploader,
+        viewer_can_delete,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+    })
+}
+
+async fn viewer_can_delete_comment(
+    state: &AppState,
+    viewer: &User,
+    clip: &Clip,
+) -> Result<bool, ApiError> {
+    let viewer_is_owner = auth::user_is_owner(state, viewer).await?;
+    Ok(viewer_can_delete_comment_with_owner_flag(
+        viewer,
+        clip,
+        viewer_is_owner,
+    ))
+}
+
+fn viewer_can_delete_comment_with_owner_flag(
+    viewer: &User,
+    clip: &Clip,
+    viewer_is_owner: bool,
+) -> bool {
+    viewer.id == clip.owner_user_id
+        || viewer_is_owner
+        || matches!(viewer.role.as_str(), "admin" | "owner")
+}
+
+fn public_author_from_user(state: &AppState, user: Option<&User>) -> PublicAuthor {
+    let Some(user) = user else {
+        return PublicAuthor {
+            name: "Unknown creator".to_string(),
+            username: None,
+            avatar_url: None,
+        };
+    };
+    PublicAuthor {
+        name: public_author_label(user.display_name.as_deref(), &user.username),
+        username: Some(user.username.clone()),
+        avatar_url: user.avatar_key.as_ref().map(|_| {
+            absolute_url(
+                state,
+                &format!(
+                    "api/v1/public/users/{}/avatar",
+                    path_segment(&user.username)
+                ),
+            )
+        }),
+    }
 }
 
 fn public_author_label(display_name: Option<&str>, username: &str) -> String {
@@ -842,6 +1163,34 @@ fn public_author_label(display_name: Option<&str>, username: &str) -> String {
         .find(|value| !value.is_empty())
         .unwrap_or("Unknown creator")
         .to_string()
+}
+
+fn normalize_comment_body(body: String) -> Result<String, ApiError> {
+    let body = body.trim().to_string();
+    if body.is_empty() {
+        return Err(ApiError::bad_request("comment body is required"));
+    }
+    if body.chars().count() > MAX_COMMENT_BODY_LEN {
+        return Err(ApiError::bad_request(format!(
+            "comment body must be {MAX_COMMENT_BODY_LEN} characters or fewer"
+        )));
+    }
+    Ok(body)
+}
+
+fn path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 fn public_share_description(clip: &Clip, author_name: Option<&str>) -> String {
@@ -1171,6 +1520,38 @@ mod tests {
     }
 
     #[test]
+    fn comment_delete_permission_allows_admins_owner_and_clip_uploader() {
+        let clip = test_clip_with_metadata(Some("Factorio"), Some(30_000));
+        let uploader = test_user("owner", "user");
+        let admin = test_user("admin", "admin");
+        let owner_role = test_user("instance-owner", "owner");
+        let configured_owner = test_user("configured-owner", "user");
+        let regular_user = test_user("viewer", "user");
+
+        assert!(viewer_can_delete_comment_with_owner_flag(
+            &uploader, &clip, false
+        ));
+        assert!(viewer_can_delete_comment_with_owner_flag(
+            &admin, &clip, false
+        ));
+        assert!(viewer_can_delete_comment_with_owner_flag(
+            &owner_role,
+            &clip,
+            false
+        ));
+        assert!(viewer_can_delete_comment_with_owner_flag(
+            &configured_owner,
+            &clip,
+            true
+        ));
+        assert!(!viewer_can_delete_comment_with_owner_flag(
+            &regular_user,
+            &clip,
+            false
+        ));
+    }
+
+    #[test]
     fn recommendations_exclude_source_and_prefer_same_game() {
         let mut source = test_clip_with_metadata(Some("Factorio"), Some(30_000));
         source.id = "source".to_string();
@@ -1252,9 +1633,28 @@ mod tests {
             poster_key: None,
             thumbnail_key: None,
             public_share_id: Some("share".to_string()),
+            view_count: 0,
             created_at: now,
             updated_at: now,
             deleted_at: None,
+        }
+    }
+
+    fn test_user(id: &str, role: &str) -> User {
+        let now = Utc::now();
+        User {
+            id: id.to_string(),
+            username: id.to_string(),
+            display_name: None,
+            bio: None,
+            avatar_key: None,
+            password_hash: "hash".to_string(),
+            role: role.to_string(),
+            is_disabled: false,
+            storage_quota_bytes: None,
+            created_at: now,
+            updated_at: now,
+            last_login_at: None,
         }
     }
 }
