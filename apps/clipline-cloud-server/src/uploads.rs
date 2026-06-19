@@ -23,6 +23,7 @@ use tracing::warn;
 
 use crate::{
     auth::{self, ApiError, AuthenticatedUser},
+    clips::generate_public_share_id,
     config::{Config, StorageConfig},
     AppState,
 };
@@ -129,6 +130,9 @@ async fn create_upload(
     new_clip.audio_codec = normalized_optional(&request.audio_codec);
     new_clip.checksum_sha256 = Some(request.checksum_sha256.to_ascii_lowercase());
     new_clip.visibility = request.visibility.unwrap_or_else(|| "private".to_string());
+    if matches!(new_clip.visibility.as_str(), "public" | "unlisted") {
+        new_clip.public_share_id = Some(generate_public_share_id());
+    }
     new_clip.storage_key = Some(keys.source.as_str().to_string());
     new_clip.poster_key = Some(keys.poster.as_str().to_string());
     new_clip.thumbnail_key = Some(keys.thumbnail.as_str().to_string());

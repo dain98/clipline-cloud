@@ -118,8 +118,8 @@ POST   /api/v1/me/change-password
 ```
 
 `POST /api/v1/users/{id}/reset-password` returns both the raw reset token and a browser-ready
-`/reset-password?token=...` URL. The web UI shows the reset URL with a copy action so the owner can
-create password setup links for users.
+`/reset-password?token=...` URL. The web UI shows the reset URL with a copy action so owners and
+admins can create password setup links for users.
 
 ### First-run owner creation (§21)
 
@@ -143,8 +143,8 @@ After an owner exists, bootstrap credentials are ignored. A later CLI adds
 
 Owners and admins can use the admin API. Only the owner can create admin accounts, disable admin
 accounts, modify the owner account, edit the public About text, or configure SMTP invite settings.
-When SMTP is enabled, user creation can send an email invite containing a one-time password setup
-link.
+User creation can generate a copyable invite link without SMTP, or send an email invite containing a
+one-time password setup link when SMTP is enabled.
 
 ### Security requirements that land here (§21)
 

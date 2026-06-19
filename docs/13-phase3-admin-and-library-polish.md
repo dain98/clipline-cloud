@@ -37,7 +37,7 @@ visibility; device-token and session management UI.
 - [x] Per-user storage usage computed and shown in the admin UI
 - [x] Enforced per-user quotas + global storage-warning threshold (surfaced + blocking at upload create)
 - [x] Admin settings for full-length VOD allowance, VOD threshold minutes, and owner-editable About text
-- [x] Owner-managed SMTP settings for email invites and copyable reset-password links
+- [x] Owner-managed SMTP settings plus copyable invite and reset-password links
 - [x] Advanced sort/search beyond the doc-07 baseline; additions index-backed and dialect-clean
 - [x] Game grouping in the library view
 - [x] Bulk delete (soft-delete) across selected clips, transactional, audit-logged per clip
@@ -51,7 +51,7 @@ visibility; device-token and session management UI.
 - [x] Advanced sort/search and game grouping work and stay performant on a large library
 - [x] Bulk delete and bulk visibility apply atomically and are fully audit-logged
 - [x] Users/admins can review and revoke sessions and device tokens from the UI; revocation is immediate
-- [x] Owner can configure SMTP and admins can create users with email invites when SMTP is enabled
+- [x] Owner can configure SMTP; admins can create users with copyable invite links or SMTP email invites
 
 ## Progress log
 
@@ -61,8 +61,8 @@ visibility; device-token and session management UI.
   admin Overview panel; upload creation already enforces the configured per-user quota.
 - 2026-06-19: Added instance settings for VOD uploads, VOD threshold minutes, per-user storage
   quota editing, and owner-editable About text.
-- 2026-06-19: Added owner-managed SMTP invite settings, email invite creation for new users, and
-  copyable reset-password links.
+- 2026-06-19: Added owner-managed SMTP invite settings, copyable invite-link creation for new users,
+  email invite creation for new users, and copyable reset-password links.
 - 2026-06-17: Added index-backed source, duration, size, created, updated, and file-size query
   support plus expanded library controls and client-side game grouping.
 - 2026-06-17: Added owner-scoped bulk selection UI plus transactional bulk delete / bulk visibility

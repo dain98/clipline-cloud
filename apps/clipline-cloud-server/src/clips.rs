@@ -626,7 +626,7 @@ fn patch_optional_string(patch: Option<Option<String>>, current: Option<String>)
     }
 }
 
-fn generate_public_share_id() -> String {
+pub(crate) fn generate_public_share_id() -> String {
     let mut value = String::with_capacity(2 + PUBLIC_SHARE_ID_LEN);
     value.push_str("c_");
     for _ in 0..PUBLIC_SHARE_ID_LEN {

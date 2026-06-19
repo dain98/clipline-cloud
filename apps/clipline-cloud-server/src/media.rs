@@ -93,6 +93,7 @@ struct PublicRecommendationQuery {
 struct PublicClipListResponse {
     page: i64,
     page_size: i64,
+    has_more: bool,
     clips: Vec<PublicClipSummaryResponse>,
 }
 
@@ -223,17 +224,19 @@ async fn list_public_clips(
         .page_size
         .unwrap_or(DEFAULT_PUBLIC_PAGE_SIZE)
         .clamp(1, MAX_PUBLIC_PAGE_SIZE);
+    let offset = public_page_offset(page, page_size)?;
     let params = PublicClipListParams {
         owner_user_id: None,
         game: normalized_optional(query.game),
         query: normalized_optional(query.q),
         sort: parse_public_sort(query.sort.as_deref())?,
-        limit: page_size,
-        offset: (page - 1) * page_size,
+        limit: page_size + 1,
+        offset,
     };
     let clips = state.repositories.clips.list_public(&params).await?;
+    let has_more = clips.len() as i64 > page_size;
     let mut public_clips = Vec::with_capacity(clips.len());
-    for clip in clips {
+    for clip in clips.into_iter().take(page_size as usize) {
         if clip.public_share_id.is_some() {
             let author = public_clip_author(&state, &clip).await?;
             if let Some(response) = public_clip_summary_response(&state, clip, author) {
@@ -245,6 +248,7 @@ async fn list_public_clips(
     Ok(Json(PublicClipListResponse {
         page,
         page_size,
+        has_more,
         clips: public_clips,
     }))
 }
@@ -305,6 +309,11 @@ async fn get_public_user(
         offset: 0,
     };
     let clips = state.repositories.clips.list_public(&params).await?;
+    let clip_count = state
+        .repositories
+        .clips
+        .count_public_for_owner(&user.id)
+        .await?;
     let author = public_author_from_user(&state, Some(&user));
     let public_clips = clips
         .into_iter()
@@ -316,7 +325,7 @@ async fn get_public_user(
         display_name: user.display_name,
         bio: user.bio,
         avatar_url: author.avatar_url,
-        clip_count: public_clips.len(),
+        clip_count: usize::try_from(clip_count).unwrap_or(usize::MAX),
         clips: public_clips,
     }))
 }
@@ -1385,6 +1394,12 @@ fn parse_public_sort(value: Option<&str>) -> Result<ClipSort, ApiError> {
     }
 }
 
+fn public_page_offset(page: i64, page_size: i64) -> Result<i64, ApiError> {
+    page.checked_sub(1)
+        .and_then(|page_index| page_index.checked_mul(page_size))
+        .ok_or_else(|| ApiError::bad_request("page is too large"))
+}
+
 fn absolute_url(state: &AppState, path: &str) -> String {
     state
         .config
@@ -1517,6 +1532,13 @@ mod tests {
         assert_eq!(public_author_label(Some("   "), " username "), "username");
         assert_eq!(public_author_label(None, " username "), "username");
         assert_eq!(public_author_label(None, "   "), "Unknown creator");
+    }
+
+    #[test]
+    fn public_page_offset_rejects_overflow() {
+        assert_eq!(public_page_offset(1, 60).expect("first page"), 0);
+        assert_eq!(public_page_offset(3, 60).expect("third page"), 120);
+        assert!(public_page_offset(i64::MAX, 100).is_err());
     }
 
     #[test]
