@@ -96,6 +96,20 @@ instead of the generated one, set `CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD` inline bef
 it after first login. (The default `docker-compose.yml` does not read an `admin_password.txt` secret — that
 file is used by the Caddy, Postgres, and S3 profiles below.)
 
+If you lose the owner password after first boot, use the operator reset command from the same Compose
+profile. It resets the configured owner account, re-enables it if disabled, revokes existing browser
+sessions/device tokens/reset links, and prints a new one-time password:
+
+```sh
+docker compose run --rm clipline-cloud admin reset-password
+```
+
+To reset a specific username instead:
+
+```sh
+docker compose run --rm clipline-cloud admin reset-password admin
+```
+
 ## No-clone standalone deployment
 
 Use `docker-compose.standalone.yml` when you want a single copyable Compose file instead of a git clone.

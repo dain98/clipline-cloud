@@ -1435,7 +1435,7 @@ pub(crate) fn require_reauth(user: &User, password: &str) -> Result<(), ApiError
     }
 }
 
-fn validate_new_password(password: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_new_password(password: &str) -> Result<(), ApiError> {
     if password.len() < MIN_PASSWORD_LEN {
         return Err(ApiError::bad_request(format!(
             "new password must be at least {MIN_PASSWORD_LEN} characters"
@@ -1678,7 +1678,7 @@ fn storage_api_error(error: StorageError) -> ApiError {
     }
 }
 
-fn hash_password(password: &str) -> Result<String, ApiError> {
+pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
     Ok(Argon2::default()
         .hash_password(
             password.as_bytes(),
@@ -1705,7 +1705,7 @@ fn generate_prefixed_token(prefix: &str) -> String {
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn generate_one_time_password() -> String {
+pub(crate) fn generate_one_time_password() -> String {
     let mut bytes = [0_u8; 18];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
@@ -1884,6 +1884,10 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
