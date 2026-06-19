@@ -12,11 +12,13 @@ import {
 } from "./player-core.js";
 
 const app = document.querySelector("#app");
+const sidebarStorageKey = "clipline.sidebarCollapsed";
 
 const state = {
   user: null,
   csrfToken: null,
   flash: null,
+  sidebarCollapsed: readSidebarCollapsed(),
   selectedClipIds: new Set(),
   libraryQuery: {
     sort: "uploaded_at_desc",
@@ -51,9 +53,11 @@ const icons = {
   fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
   home: '<path d="m3 10 9-7 9 7"/><path d="M5 8.5V20a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5"/><path d="M9 22V12h6v10"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   library: '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
   pause: '<path d="M8 5v14"/><path d="M16 5v14"/>',
   play: '<path d="m8 5 11 7-11 7V5Z"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -80,7 +84,11 @@ route();
 
 async function route() {
   const current = currentRoute();
+  syncSidebarForRoute(current.name);
   if (current.name === "public") {
+    if (!state.user) {
+      await refreshSession();
+    }
     await renderPublicShare(current.shareId);
     return;
   }
@@ -89,6 +97,13 @@ async function route() {
       await refreshSession();
     }
     await renderPublicLibrary();
+    return;
+  }
+  if (current.name === "about") {
+    if (!state.user) {
+      await refreshSession();
+    }
+    renderAbout();
     return;
   }
 
@@ -132,6 +147,9 @@ function currentRoute() {
   }
   if (path === "/" || path === "/public") {
     return { name: "publicLibrary" };
+  }
+  if (path === "/about") {
+    return { name: "about" };
   }
   if (path === "/library") {
     return { name: "library" };
@@ -262,41 +280,67 @@ function renderLogin(error = "") {
 }
 
 function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
+  const sidebarLabel = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+  const privateLinks = state.user
+    ? `
+          ${navLink("/library", "library", active, icon("library"), "Library")}
+          ${navLink("/account", "account", active, icon("user"), "Account")}
+        `
+    : "";
   const adminLink =
     state.user?.role === "admin"
       ? navLink("/admin", "admin", active, icon("shield"), "Admin")
       : "";
-  app.innerHTML = `
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="sidebar-brand">
-          <div class="brand-mark" aria-hidden="true">CL</div>
-          <div>
-            <strong>Clipline</strong>
-            <span>Cloud library</span>
+  const footer = state.user
+    ? `
+          <div class="user-chip">
+            ${escapeHtml(state.user.username)}
+            <span>${escapeHtml(state.user.role)}</span>
           </div>
+          <button id="logout-button" class="btn-ghost sidebar-action" title="Sign out" aria-label="Sign out">
+            ${icon("logOut")} <span>Sign out</span>
+          </button>
+        `
+    : `<a class="btn-secondary sidebar-signin sidebar-action" href="/login" data-route aria-label="Sign in" title="Sign in">${icon("lock")} <span>Sign in</span></a>`;
+  app.innerHTML = `
+    <div class="app-shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
+      <header class="app-topbar">
+        <div class="app-brand-cluster">
+          <button id="sidebar-toggle" class="app-menu-button" type="button" aria-label="${sidebarLabel}" aria-pressed="${state.sidebarCollapsed ? "true" : "false"}" title="${sidebarLabel}">
+            ${icon("menu")}
+          </button>
+          <a class="app-brand" href="/" data-route aria-label="Clipline Home">
+            <div class="brand-mark" aria-hidden="true">CL</div>
+            <div class="app-brand-text">
+              <strong>Clipline</strong>
+              <span>Cloud library</span>
+            </div>
+          </a>
         </div>
+        <form id="app-search-form" class="app-search-form" role="search">
+          <div class="app-search-row">
+            <input name="q" type="search" value="${escapeAttr(state.publicQuery.q)}" placeholder="Search" aria-label="Search public clips" autocomplete="off">
+            <button class="app-search-button" type="submit" aria-label="Search">${icon("search")}</button>
+          </div>
+        </form>
+        <div class="app-topbar-spacer" aria-hidden="true"></div>
+      </header>
+      <aside class="sidebar">
         <nav class="nav-stack" aria-label="Primary">
           ${navLink("/", "public", active, icon("home"), "Home")}
-          ${navLink("/library", "library", active, icon("library"), "Library")}
-          ${navLink("/account", "account", active, icon("user"), "Account")}
+          ${navLink("/about", "about", active, icon("info"), "About")}
+          ${privateLinks}
           ${adminLink}
         </nav>
         <div class="sidebar-footer">
-          <div class="user-chip">
-            ${escapeHtml(state.user?.username || "")}
-            <span>${escapeHtml(state.user?.role || "")}</span>
-          </div>
-          <button id="logout-button" class="btn-ghost" title="Sign out" aria-label="Sign out">
-            ${icon("logOut")} Sign out
-          </button>
+          ${footer}
         </div>
       </aside>
       <main class="main-pane">
         ${
           hideTopbar
             ? ""
-            : `<header class="topbar">
+            : `<header class="page-heading">
                 <div>
                   <h1>${escapeHtml(title)}</h1>
                   ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
@@ -310,15 +354,66 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
       </main>
     </div>
   `;
-  document.querySelector("#logout-button").addEventListener("click", logout);
+  document.querySelector("#sidebar-toggle")?.addEventListener("click", toggleSidebar);
+  document.querySelector("#app-search-form")?.addEventListener("submit", submitAppSearch);
+  document.querySelector("#logout-button")?.addEventListener("click", logout);
 }
 
 function navLink(href, key, active, iconSvg, label) {
   return `
-    <a class="nav-link ${active === key ? "active" : ""}" href="${escapeAttr(href)}" data-route>
+    <a class="nav-link ${active === key ? "active" : ""}" href="${escapeAttr(href)}" data-route aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}">
       ${iconSvg}<span>${escapeHtml(label)}</span>
     </a>
   `;
+}
+
+function readSidebarCollapsed() {
+  try {
+    return window.localStorage.getItem(sidebarStorageKey) === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed) {
+  try {
+    window.localStorage.setItem(sidebarStorageKey, String(collapsed));
+  } catch (_) {
+    // The layout still updates if storage is unavailable.
+  }
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!state.sidebarCollapsed);
+}
+
+function submitAppSearch(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  state.publicQuery.q = String(form.get("q") || "");
+  navigate("/");
+}
+
+function setSidebarCollapsed(collapsed) {
+  state.sidebarCollapsed = collapsed;
+  writeSidebarCollapsed(collapsed);
+  const shell = document.querySelector(".app-shell");
+  const toggle = document.querySelector("#sidebar-toggle");
+  shell?.classList.toggle("sidebar-collapsed", collapsed);
+  if (toggle) {
+    const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("aria-pressed", String(collapsed));
+    toggle.setAttribute("title", label);
+  }
+}
+
+function syncSidebarForRoute(routeName) {
+  if (routeName === "publicLibrary") {
+    setSidebarCollapsed(false);
+  } else if (routeName === "public" || routeName === "clip") {
+    setSidebarCollapsed(true);
+  }
 }
 
 async function logout() {
@@ -596,35 +691,13 @@ async function renderPublicLibrary() {
 }
 
 function renderPublicLibraryPage({ title, subtitle, body }) {
-  if (state.user) {
-    renderShell({
-      active: "public",
-      title,
-      subtitle,
-      body,
-      hideTopbar: true,
-    });
-    return;
-  }
-
-  app.innerHTML = `
-    <main class="public-browse-shell">
-      <header class="public-browse-topbar">
-        <a class="sidebar-brand" href="/" data-route>
-          <div class="brand-mark" aria-hidden="true">CL</div>
-          <div>
-            <strong>Clipline</strong>
-            <span>Home</span>
-          </div>
-        </a>
-        <a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>
-      </header>
-      <section class="public-browse-content">
-        ${renderFlash()}
-        ${body}
-      </section>
-    </main>
-  `;
+  renderShell({
+    active: "public",
+    title,
+    subtitle,
+    body,
+    hideTopbar: true,
+  });
 }
 
 function publicLibraryParams() {
@@ -656,11 +729,7 @@ function publicLibraryView(clips, options = {}) {
 
 function publicSearchForm(resultText) {
   return `
-    <form id="public-filter-form" class="public-search-form" role="search">
-      <div class="public-search-row">
-        <input name="q" type="search" value="${escapeAttr(state.publicQuery.q)}" placeholder="Search" aria-label="Search public clips" autocomplete="off">
-        <button class="public-search-button" type="submit" aria-label="Search">${icon("search")}</button>
-      </div>
+    <form id="public-filter-form" class="public-search-form public-filter-form">
       <div class="public-search-controls">
         ${publicSelectControl("Sort", "sort", state.publicQuery.sort, [
           ["uploaded_at_desc", "Uploaded newest"],
@@ -722,13 +791,24 @@ function publicClipCard(clip) {
 }
 
 function bindPublicLibraryEvents() {
-  document.querySelector("#public-filter-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    for (const key of Object.keys(state.publicQuery)) {
-      state.publicQuery[key] = String(form.get(key) || "");
-    }
+  const form = document.querySelector("#public-filter-form");
+  if (!form) {
+    return;
+  }
+
+  const applyFilters = () => {
+    const data = new FormData(form);
+    state.publicQuery.sort = String(data.get("sort") || "uploaded_at_desc");
+    state.publicQuery.game = String(data.get("game") || "");
     renderPublicLibrary();
+  };
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    applyFilters();
+  });
+  form.querySelectorAll("select, input").forEach((control) => {
+    control.addEventListener("change", applyFilters);
   });
 }
 
@@ -738,6 +818,28 @@ function gameLabel(clip) {
 
 function publicAuthorName(clip) {
   return clip.author_name || "Unknown creator";
+}
+
+function renderAbout() {
+  renderShell({
+    active: "about",
+    title: "About",
+    subtitle: "Clipline Cloud",
+    body: `
+      <section class="about-page">
+        <div class="panel section about-panel">
+          <h2>Clipline Cloud</h2>
+          <p>Clipline is a self-hosted clip library for saved gameplay moments.</p>
+          <dl class="data-list about-list">
+            ${dataRow("Home", "Public clips that are ready for discovery.")}
+            ${dataRow("Unlisted", "Shareable by link, but not listed on Home.")}
+            ${dataRow("Private", "Visible only to the clip owner.")}
+            ${dataRow("Media", "Public and unlisted clips are not DRM-protected.")}
+          </dl>
+        </div>
+      </section>
+    `,
+  });
 }
 
 function syncSelectedClips(clips) {
@@ -889,8 +991,8 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
         ></video>
         <div class="clip-player-note" data-player-note>${escapeHtml(durationLabel)}</div>
         <div class="clip-player-overlay">
-          <div class="clip-player-transport">
-            <div class="player-cluster">
+          <div class="clip-player-transport" data-player-transport>
+            <div class="player-cluster" data-player-marker-cluster>
               <button type="button" class="player-icon" data-player-prev-marker title="Previous marker (Shift+M)" aria-label="Previous marker">${icon("skipBack")}</button>
               <button type="button" class="player-icon" data-player-next-marker title="Next marker (M)" aria-label="Next marker">${icon("skipForward")}</button>
               <span class="player-marker-count" data-player-marker-count>No markers</span>
@@ -922,8 +1024,6 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
             </div>
           </div>
         </div>
-      </div>
-      <div class="clip-player-deck">
         <div class="clip-player-timeline" data-player-timeline>
           <div class="clip-player-progress" data-player-progress></div>
           <div class="clip-player-marker-layer" data-player-marker-layer></div>
@@ -946,6 +1046,8 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   const scrubber = root.querySelector("[data-player-scrubber]");
   const markerLayer = root.querySelector("[data-player-marker-layer]");
   const markerCount = root.querySelector("[data-player-marker-count]");
+  const markerCluster = root.querySelector("[data-player-marker-cluster]");
+  const transport = root.querySelector("[data-player-transport]");
   const prevMarkerButton = root.querySelector("[data-player-prev-marker]");
   const nextMarkerButton = root.querySelector("[data-player-next-marker]");
   const volume = root.querySelector("[data-player-volume]");
@@ -959,9 +1061,11 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   let pendingSeek = null;
   let scrubbing = false;
   let resumeAfterScrub = false;
+  let controlsTimer = null;
 
   video.controls = false;
   video.playbackRate = Number(playbackRate.value);
+  root.classList.add("is-controls-visible");
 
   function playable() {
     return Boolean(video.currentSrc || video.getAttribute("src"));
@@ -1013,10 +1117,14 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   }
 
   function renderMarkers() {
+    const hasMarkers = normalizedMarkers.length > 0;
+    markerCluster.hidden = !hasMarkers;
+    transport.classList.toggle("has-markers", hasMarkers);
+    transport.classList.toggle("no-markers", !hasMarkers);
     markerLayer.replaceChildren();
     markerCount.textContent = markerSummary(normalizedMarkers);
-    prevMarkerButton.disabled = !normalizedMarkers.length;
-    nextMarkerButton.disabled = !normalizedMarkers.length;
+    prevMarkerButton.disabled = !hasMarkers;
+    nextMarkerButton.disabled = !hasMarkers;
 
     for (const marker of normalizedMarkers) {
       const button = document.createElement("button");
@@ -1119,6 +1227,34 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       resumeAfterScrub = false;
       video.play().catch(updatePlayState);
     }
+    scheduleControlsHide();
+  }
+
+  function showControls() {
+    root.classList.add("is-controls-visible");
+    root.classList.remove("is-controls-hidden");
+  }
+
+  function hideControls() {
+    if (scrubbing) {
+      return;
+    }
+    root.classList.remove("is-controls-visible");
+    root.classList.add("is-controls-hidden");
+  }
+
+  function scheduleControlsHide(delay = 1600) {
+    window.clearTimeout(controlsTimer);
+    controlsTimer = window.setTimeout(() => {
+      if (!video.paused && !video.ended) {
+        hideControls();
+      }
+    }, delay);
+  }
+
+  function wakeControls() {
+    showControls();
+    scheduleControlsHide();
   }
 
   playButtons.forEach((button) => button.addEventListener("click", togglePlay));
@@ -1149,7 +1285,14 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   scrubber.addEventListener("pointerup", endScrub);
   scrubber.addEventListener("pointercancel", endScrub);
   scrubber.addEventListener("lostpointercapture", endScrub);
-  root.addEventListener("pointerdown", () => root.focus({ preventScroll: true }));
+  root.addEventListener("pointerenter", wakeControls);
+  root.addEventListener("pointermove", wakeControls);
+  root.addEventListener("pointerleave", hideControls);
+  root.addEventListener("focusin", showControls);
+  root.addEventListener("pointerdown", () => {
+    showControls();
+    root.focus({ preventScroll: true });
+  });
   root.addEventListener("keydown", (event) => {
     const tag = event.target && event.target.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") {
@@ -1191,9 +1334,20 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   });
   video.addEventListener("durationchange", () => setDuration(resolveDuration()));
   video.addEventListener("timeupdate", () => updateProgress());
-  video.addEventListener("play", updatePlayState);
-  video.addEventListener("pause", updatePlayState);
-  video.addEventListener("ended", updatePlayState);
+  video.addEventListener("play", () => {
+    updatePlayState();
+    scheduleControlsHide(900);
+  });
+  video.addEventListener("pause", () => {
+    updatePlayState();
+    showControls();
+    window.clearTimeout(controlsTimer);
+  });
+  video.addEventListener("ended", () => {
+    updatePlayState();
+    showControls();
+    window.clearTimeout(controlsTimer);
+  });
   video.addEventListener("volumechange", updateVolumeState);
   video.addEventListener("seeked", () => {
     if (pendingSeek != null) {
@@ -1355,59 +1509,85 @@ function markerItem(marker) {
 }
 
 async function renderPublicShare(shareId) {
-  app.innerHTML = `
-    <main class="public-shell">
-      <section class="public-panel">
+  renderPublicSharePage({
+    title: "Loading clip",
+    body: `
+      <section class="public-watch-page">
         <div class="empty-state">Loading public clip...</div>
       </section>
-    </main>
-  `;
+    `,
+  });
   try {
     const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
     const mediaUrl = safeMediaUrl(clip.media_url);
     const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
     const authorName = publicAuthorName(clip);
-    app.innerHTML = `
-      <main class="public-shell">
-        <section class="public-panel" aria-labelledby="public-title">
-          <div>
-            <div class="brand-mark" aria-hidden="true">CL</div>
-            <h1 id="public-title">${escapeHtml(clip.title)}</h1>
-            <p>by ${escapeHtml(authorName)} - ${escapeHtml(clip.game_name || clip.game_id || "Shared clip")}</p>
-          </div>
+    renderPublicSharePage({
+      title: clip.title,
+      subtitle: `${authorName} - ${clip.game_name || clip.game_id || "Shared clip"}`,
+      body: `
+        <section class="public-watch-page" aria-labelledby="public-title">
           ${clipPlayerView({
             playerId: `public-${clip.share_id}`,
             src: mediaUrl,
             poster: thumbnailUrl,
             durationMs: clip.duration_ms,
           })}
-          <div class="panel">
-            <dl class="data-list">
-              ${dataRow("Author", authorName)}
-              ${dataRow("Recorded", formatDate(clip.recorded_at))}
-              ${dataRow("Uploaded", formatDate(clip.uploaded_at))}
-              ${dataRow("Duration", formatDuration(clip.duration_ms))}
-            </dl>
-          </div>
-          <div class="public-copy">${escapeHtml(clip.copy_notice)}</div>
+          ${publicShareInfo(clip, authorName)}
         </section>
-      </main>
-    `;
+      `,
+    });
     initClipPlayer(document.querySelector("[data-clip-player]"), {
       durationMs: clip.duration_ms,
       markers: [],
     });
   } catch (_) {
-    app.innerHTML = `
-      <main class="public-shell">
-        <section class="public-panel">
-          <div class="brand-mark" aria-hidden="true">CL</div>
+    renderPublicSharePage({
+      title: "Clip unavailable",
+      body: `
+        <section class="public-watch-page">
           <h1>Clip unavailable</h1>
           <p>This public link is no longer active.</p>
         </section>
-      </main>
-    `;
+      `,
+    });
   }
+}
+
+function publicShareInfo(clip, authorName) {
+  const uploadedAgo = formatRelativeTime(clip.uploaded_at);
+  const meta = [
+    gameLabel(clip),
+    uploadedAgo !== "Unknown" ? uploadedAgo : "",
+    formatDuration(clip.duration_ms),
+  ].filter(Boolean);
+  return `
+    <section class="public-watch-info">
+      <h1 id="public-title">${escapeHtml(clip.title)}</h1>
+      <div class="public-watch-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('<span aria-hidden="true">&middot;</span>')}</div>
+      <div class="public-author-row">
+        <div class="public-author-avatar" aria-hidden="true">${escapeHtml(authorInitial(authorName))}</div>
+        <div>
+          <strong>${escapeHtml(authorName)}</strong>
+          <span>Uploaded ${escapeHtml(formatDate(clip.uploaded_at))}</span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function authorInitial(name) {
+  return (name || "C").trim().slice(0, 1).toUpperCase() || "C";
+}
+
+function renderPublicSharePage({ title, subtitle, body }) {
+  renderShell({
+    active: "public",
+    title,
+    subtitle,
+    body,
+    hideTopbar: true,
+  });
 }
 
 async function renderAccount() {
