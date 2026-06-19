@@ -1764,8 +1764,8 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       return;
     }
     window.clearTimeout(skipFeedbackTimer);
-    skipFeedback.textContent = formatSeekDelta(seconds);
     skipFeedback.className = `clip-player-skip-feedback is-${seconds > 0 ? "forward" : "back"}`;
+    skipFeedback.innerHTML = `${icon(seconds > 0 ? "fastForward" : "rewind")}<span>${escapeHtml(formatSeekDelta(seconds))}</span>`;
     // Restart the CSS animation even when the same shortcut repeats quickly.
     void skipFeedback.offsetWidth;
     skipFeedback.classList.add("is-visible");
