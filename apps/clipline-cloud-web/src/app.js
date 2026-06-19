@@ -261,7 +261,7 @@ function renderLogin(error = "") {
   });
 }
 
-function renderShell({ active, title, subtitle, body }) {
+function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
   const adminLink =
     state.user?.role === "admin"
       ? navLink("/admin", "admin", active, icon("shield"), "Admin")
@@ -293,12 +293,16 @@ function renderShell({ active, title, subtitle, body }) {
         </div>
       </aside>
       <main class="main-pane">
-        <header class="topbar">
-          <div>
-            <h1>${escapeHtml(title)}</h1>
-            ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
-          </div>
-        </header>
+        ${
+          hideTopbar
+            ? ""
+            : `<header class="topbar">
+                <div>
+                  <h1>${escapeHtml(title)}</h1>
+                  ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
+                </div>
+              </header>`
+        }
         <div class="content">
           ${renderFlash()}
           ${body}
@@ -598,6 +602,7 @@ function renderPublicLibraryPage({ title, subtitle, body }) {
       title,
       subtitle,
       body,
+      hideTopbar: true,
     });
     return;
   }
