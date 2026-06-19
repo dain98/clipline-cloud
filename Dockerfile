@@ -45,8 +45,6 @@ WORKDIR /app
 COPY --from=build /workspace/target/release/clipline-cloud-server /usr/local/bin/clipline-cloud-server
 COPY --from=build /workspace/apps/clipline-cloud-web/dist ./apps/clipline-cloud-web/dist
 
-ENV CLIPLINE_BIND_ADDR=0.0.0.0:8080
-
 EXPOSE 8080
 
 USER 10001:10001

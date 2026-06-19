@@ -4,6 +4,10 @@ This is the friendly, step-by-step guide to deploying Clipline Cloud v1.2.9 with
 deep operational runbook — operator limits, backup/restore details, migration, and failure-mode checks —
 see [`deployment-operations.md`](deployment-operations.md).
 
+For a hosted setup where Railway runs the app and Cloudflare R2 stores media, see
+[`railway-r2.md`](railway-r2.md). That path uses Railway Postgres + R2 instead of Docker Compose and
+host-mounted storage.
+
 All commands run from `deploy/compose/` unless noted. Pin the image to the release tag:
 
 ```text

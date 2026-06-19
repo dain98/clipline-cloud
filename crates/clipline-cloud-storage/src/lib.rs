@@ -806,12 +806,15 @@ impl S3Storage {
 #[async_trait]
 impl StorageBackend for S3Storage {
     async fn probe(&self) -> StorageResult<()> {
-        self.client
-            .head_bucket()
+        let mut request = self
+            .client
+            .list_objects_v2()
             .bucket(&self.bucket)
-            .send()
-            .await
-            .map_err(s3_error)?;
+            .max_keys(1);
+        if let Some(prefix) = &self.prefix {
+            request = request.prefix(format!("{prefix}/"));
+        }
+        request.send().await.map_err(s3_error)?;
         Ok(())
     }
 
