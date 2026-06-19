@@ -19,6 +19,7 @@ clipline-cloud-db = { path = "../../crates/clipline-cloud-db" }
 clipline-cloud-storage = { path = "../../crates/clipline-cloud-storage" }
 cookie.workspace = true
 hmac.workspace = true
+lettre.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true

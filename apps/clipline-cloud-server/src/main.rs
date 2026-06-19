@@ -3,6 +3,7 @@ mod auth;
 mod clips;
 mod config;
 mod logging;
+mod mail;
 mod media;
 mod uploads;
 
@@ -287,6 +288,7 @@ fn router(
         .route("/readyz", get(readyz))
         .route("/", get(spa_index))
         .route("/login", get(spa_index))
+        .route("/reset-password", get(spa_index))
         .route("/about", get(spa_index))
         .route("/public", get(spa_index))
         .route("/library", get(spa_index))

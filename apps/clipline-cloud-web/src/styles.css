@@ -2043,6 +2043,31 @@ a:hover {
   padding-top: 1rem;
 }
 
+.admin-reset-link {
+  align-items: center;
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+}
+
+.admin-reset-link div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.admin-reset-link span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.admin-reset-link code {
+  color: #d8e3f5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

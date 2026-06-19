@@ -317,6 +317,14 @@ pub struct UpdateAppSettings {
     pub allow_vod_uploads: Option<bool>,
     pub vod_threshold_minutes: Option<i64>,
     pub about_text: Option<String>,
+    pub smtp_enabled: Option<bool>,
+    pub smtp_host: Option<Option<String>>,
+    pub smtp_port: Option<i64>,
+    pub smtp_tls_mode: Option<String>,
+    pub smtp_username: Option<Option<String>>,
+    pub smtp_password: Option<Option<String>>,
+    pub smtp_from_email: Option<Option<String>>,
+    pub smtp_from_name: Option<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -334,7 +342,9 @@ impl AppSettingsRepository {
         Ok(db_fetch_optional!(
             &self.database,
             AppSettings,
-            "SELECT id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text, created_at, updated_at
+            "SELECT id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text,
+                    smtp_enabled, smtp_host, smtp_port, smtp_tls_mode, smtp_username, smtp_password,
+                    smtp_from_email, smtp_from_name, created_at, updated_at
              FROM app_settings WHERE id = 1",
             []
         )?
@@ -343,18 +353,49 @@ impl AppSettingsRepository {
 
     pub async fn update(&self, update: &UpdateAppSettings) -> DbResult<AppSettings> {
         self.ensure_default().await?;
+        let update_smtp_host = update.smtp_host.is_some();
+        let smtp_host = update.smtp_host.as_ref().and_then(Option::as_deref);
+        let update_smtp_username = update.smtp_username.is_some();
+        let smtp_username = update.smtp_username.as_ref().and_then(Option::as_deref);
+        let update_smtp_password = update.smtp_password.is_some();
+        let smtp_password = update.smtp_password.as_ref().and_then(Option::as_deref);
+        let update_smtp_from_email = update.smtp_from_email.is_some();
+        let smtp_from_email = update.smtp_from_email.as_ref().and_then(Option::as_deref);
+        let update_smtp_from_name = update.smtp_from_name.is_some();
+        let smtp_from_name = update.smtp_from_name.as_ref().and_then(Option::as_deref);
         db_execute!(
             &self.database,
             "UPDATE app_settings
              SET allow_vod_uploads = COALESCE(?, allow_vod_uploads),
                  vod_threshold_minutes = COALESCE(?, vod_threshold_minutes),
                  about_text = COALESCE(?, about_text),
+                 smtp_enabled = COALESCE(?, smtp_enabled),
+                 smtp_host = CASE WHEN ? THEN ? ELSE smtp_host END,
+                 smtp_port = COALESCE(?, smtp_port),
+                 smtp_tls_mode = COALESCE(?, smtp_tls_mode),
+                 smtp_username = CASE WHEN ? THEN ? ELSE smtp_username END,
+                 smtp_password = CASE WHEN ? THEN ? ELSE smtp_password END,
+                 smtp_from_email = CASE WHEN ? THEN ? ELSE smtp_from_email END,
+                 smtp_from_name = CASE WHEN ? THEN ? ELSE smtp_from_name END,
                  updated_at = ?
              WHERE id = 1",
             [
                 update.allow_vod_uploads,
                 update.vod_threshold_minutes,
                 update.about_text.as_deref(),
+                update.smtp_enabled,
+                update_smtp_host,
+                smtp_host,
+                update.smtp_port,
+                update.smtp_tls_mode.as_deref(),
+                update_smtp_username,
+                smtp_username,
+                update_smtp_password,
+                smtp_password,
+                update_smtp_from_email,
+                smtp_from_email,
+                update_smtp_from_name,
+                smtp_from_name,
                 now_utc(),
             ]
         )?;
@@ -375,10 +416,23 @@ impl AppSettingsRepository {
         let now = now_utc();
         db_execute!(
             &self.database,
-            "INSERT INTO app_settings (id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text, created_at, updated_at)
-             VALUES (1, NULL, ?, ?, ?, ?, ?)
+            "INSERT INTO app_settings (
+                 id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text,
+                 smtp_enabled, smtp_host, smtp_port, smtp_tls_mode, smtp_username, smtp_password,
+                 smtp_from_email, smtp_from_name, created_at, updated_at
+             )
+             VALUES (1, NULL, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
              ON CONFLICT(id) DO NOTHING",
-            [true, 30_i64, DEFAULT_ABOUT_TEXT, now, now]
+            [
+                true,
+                30_i64,
+                DEFAULT_ABOUT_TEXT,
+                false,
+                587_i64,
+                "starttls",
+                now,
+                now
+            ]
         )?;
         Ok(())
     }
@@ -397,12 +451,13 @@ impl UserRepository {
     pub async fn create(&self, new: &NewUser) -> DbResult<User> {
         db_execute!(
             &self.database,
-            "INSERT INTO users (id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.username,
                 new.display_name.as_deref(),
+                new.email.as_deref(),
                 new.bio.as_deref(),
                 new.avatar_key.as_deref(),
                 &new.password_hash,
@@ -425,7 +480,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE id = ?",
             [id]
         )?)
@@ -435,7 +490,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE username = ?",
             [username]
         )?)
@@ -445,7 +500,7 @@ impl UserRepository {
         Ok(db_fetch_all!(
             &self.database,
             User,
-            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users ORDER BY username ASC",
             []
         )?)
@@ -474,7 +529,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE role = 'admin' ORDER BY created_at ASC, id ASC LIMIT 1",
             []
         )?)
