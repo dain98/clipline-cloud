@@ -1780,6 +1780,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     }
     window.clearTimeout(stateFeedbackTimer);
     stateFeedback.className = `clip-player-state-feedback is-${kind}`;
+    stateFeedback.innerHTML = icon(kind === "pause" ? "pause" : "play");
     void stateFeedback.offsetWidth;
     stateFeedback.classList.add("is-visible");
     stateFeedbackTimer = window.setTimeout(() => {
