@@ -28,6 +28,9 @@ const PLACEHOLDER_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 const DEFAULT_PUBLIC_PAGE: i64 = 1;
 const DEFAULT_PUBLIC_PAGE_SIZE: i64 = 48;
 const MAX_PUBLIC_PAGE_SIZE: i64 = 100;
+const DEFAULT_RECOMMENDATION_LIMIT: i64 = 8;
+const MAX_RECOMMENDATION_LIMIT: i64 = 24;
+const RECOMMENDATION_CANDIDATE_LIMIT: i64 = 120;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -36,6 +39,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/clips/{id}/thumbnail", get(get_owned_thumbnail))
         .route("/api/v1/clips/{id}/poster", get(get_owned_poster))
         .route("/api/v1/public/clips", get(list_public_clips))
+        .route(
+            "/api/v1/public/recommendations",
+            get(list_public_recommendations),
+        )
         .route("/api/v1/public/clips/{share_id}", get(get_public_clip))
         .route(
             "/api/v1/public/clips/{share_id}/media",
@@ -56,10 +63,21 @@ struct PublicClipListQuery {
     page_size: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PublicRecommendationQuery {
+    share_id: Option<String>,
+    limit: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 struct PublicClipListResponse {
     page: i64,
     page_size: i64,
+    clips: Vec<PublicClipSummaryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicRecommendationResponse {
     clips: Vec<PublicClipSummaryResponse>,
 }
 
@@ -151,6 +169,42 @@ async fn list_public_clips(
     Ok(Json(PublicClipListResponse {
         page,
         page_size,
+        clips: public_clips,
+    }))
+}
+
+async fn list_public_recommendations(
+    State(state): State<AppState>,
+    Query(query): Query<PublicRecommendationQuery>,
+) -> Result<Json<PublicRecommendationResponse>, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_RECOMMENDATION_LIMIT)
+        .clamp(1, MAX_RECOMMENDATION_LIMIT);
+    let source_share_id = normalized_optional(query.share_id);
+    let source = match source_share_id.as_deref() {
+        Some(share_id) => Some(load_public_clip(&state, share_id).await?),
+        None => None,
+    };
+    let params = PublicClipListParams {
+        game: None,
+        query: None,
+        sort: ClipSort::UploadedAtDesc,
+        limit: RECOMMENDATION_CANDIDATE_LIMIT.max(limit),
+        offset: 0,
+    };
+    let candidates = state.repositories.clips.list_public(&params).await?;
+    let clips = recommend_public_clips(candidates, source.as_ref(), limit as usize);
+
+    let mut public_clips = Vec::with_capacity(clips.len());
+    for clip in clips {
+        let author_name = public_clip_author_name(&state, &clip).await?;
+        if let Some(response) = public_clip_summary_response(&state, clip, author_name) {
+            public_clips.push(response);
+        }
+    }
+
+    Ok(Json(PublicRecommendationResponse {
         clips: public_clips,
     }))
 }
@@ -830,6 +884,118 @@ fn normalized_optional(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn recommend_public_clips(
+    mut candidates: Vec<Clip>,
+    source: Option<&Clip>,
+    limit: usize,
+) -> Vec<Clip> {
+    let now = Utc::now();
+    let source_share_id = source.and_then(|clip| clip.public_share_id.as_deref());
+    candidates.retain(|clip| {
+        clip.public_share_id.is_some() && clip.public_share_id.as_deref() != source_share_id
+    });
+    candidates.sort_by(|left, right| {
+        let left_score = recommendation_score(left, source, now);
+        let right_score = recommendation_score(right, source, now);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| recommendation_timestamp(right).cmp(&recommendation_timestamp(left)))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    candidates.truncate(limit);
+    candidates
+}
+
+fn recommendation_score(clip: &Clip, source: Option<&Clip>, now: DateTime<Utc>) -> i64 {
+    let mut score = recency_score(clip, now) + stable_bucket(&clip.id, 11);
+    if clip.duration_ms.is_some() {
+        score += 3;
+    }
+
+    let Some(source) = source else {
+        return score;
+    };
+
+    if source.owner_user_id == clip.owner_user_id {
+        score += 8;
+    }
+    if game_keys(source)
+        .iter()
+        .any(|source_key| game_keys(clip).contains(source_key))
+    {
+        score += 120;
+    }
+
+    let source_tokens = title_tokens(&source.title);
+    if !source_tokens.is_empty() {
+        let overlap = title_tokens(&clip.title)
+            .intersection(&source_tokens)
+            .count()
+            .min(4) as i64;
+        score += overlap * 12;
+    }
+
+    if let (Some(source_duration), Some(duration)) = (source.duration_ms, clip.duration_ms) {
+        let source_duration = source_duration.max(1);
+        let diff = (duration - source_duration).abs();
+        if diff * 100 <= source_duration * 15 {
+            score += 20;
+        } else if diff * 100 <= source_duration * 50 {
+            score += 8;
+        }
+    }
+
+    score
+}
+
+fn recency_score(clip: &Clip, now: DateTime<Utc>) -> i64 {
+    let timestamp = clip
+        .uploaded_at
+        .as_ref()
+        .or(clip.recorded_at.as_ref())
+        .unwrap_or(&clip.created_at);
+    let age_days = now.signed_duration_since(*timestamp).num_days().max(0);
+    (60 - age_days).clamp(0, 60)
+}
+
+fn recommendation_timestamp(clip: &Clip) -> i64 {
+    clip.uploaded_at
+        .as_ref()
+        .or(clip.recorded_at.as_ref())
+        .unwrap_or(&clip.created_at)
+        .timestamp()
+}
+
+fn game_keys(clip: &Clip) -> Vec<String> {
+    [clip.game_id.as_deref(), clip.game_name.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(normalized_key)
+        .collect()
+}
+
+fn title_tokens(title: &str) -> std::collections::HashSet<String> {
+    title
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter_map(normalized_key)
+        .filter(|token| token.len() >= 3)
+        .collect()
+}
+
+fn normalized_key(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    (!value.is_empty()).then_some(value)
+}
+
+fn stable_bucket(value: &str, modulo: u64) -> i64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash % modulo) as i64
+}
+
 fn parse_public_sort(value: Option<&str>) -> Result<ClipSort, ApiError> {
     match value.unwrap_or("uploaded_at_desc") {
         "recorded_at_desc" => Ok(ClipSort::RecordedAtDesc),
@@ -980,6 +1146,52 @@ mod tests {
         assert_eq!(public_author_label(Some("   "), " username "), "username");
         assert_eq!(public_author_label(None, " username "), "username");
         assert_eq!(public_author_label(None, "   "), "Unknown creator");
+    }
+
+    #[test]
+    fn recommendations_exclude_source_and_prefer_same_game() {
+        let mut source = test_clip_with_metadata(Some("Factorio"), Some(30_000));
+        source.id = "source".to_string();
+        source.title = "factory belt rebuild".to_string();
+        source.public_share_id = Some("source-share".to_string());
+
+        let mut same_game = test_clip_with_metadata(Some("Factorio"), Some(31_000));
+        same_game.id = "same-game".to_string();
+        same_game.title = "factory belt upgrade".to_string();
+        same_game.public_share_id = Some("same-share".to_string());
+
+        let mut other_game = test_clip_with_metadata(Some("League"), Some(31_000));
+        other_game.id = "other-game".to_string();
+        other_game.title = "unrelated fight".to_string();
+        other_game.public_share_id = Some("other-share".to_string());
+
+        let recommendations = recommend_public_clips(
+            vec![other_game.clone(), source.clone(), same_game.clone()],
+            Some(&source),
+            3,
+        );
+
+        assert_eq!(recommendations.len(), 2);
+        assert_eq!(recommendations[0].id, same_game.id);
+        assert!(recommendations
+            .iter()
+            .all(|clip| clip.public_share_id.as_deref() != Some("source-share")));
+    }
+
+    #[test]
+    fn recommendations_ignore_clips_without_public_share_ids() {
+        let mut public = test_clip_with_metadata(Some("Factorio"), Some(30_000));
+        public.id = "public".to_string();
+        public.public_share_id = Some("public-share".to_string());
+
+        let mut no_share = test_clip_with_metadata(Some("Factorio"), Some(30_000));
+        no_share.id = "no-share".to_string();
+        no_share.public_share_id = None;
+
+        let recommendations = recommend_public_clips(vec![no_share, public.clone()], None, 5);
+
+        assert_eq!(recommendations.len(), 1);
+        assert_eq!(recommendations[0].id, public.id);
     }
 
     fn headers_with_range(value: &'static str) -> HeaderMap {
