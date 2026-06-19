@@ -1646,6 +1646,7 @@ mod tests {
             id: id.to_string(),
             username: id.to_string(),
             display_name: None,
+            email: None,
             bio: None,
             avatar_key: None,
             password_hash: "hash".to_string(),

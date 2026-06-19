@@ -490,15 +490,20 @@ mod tests {
 
         let mut new_user = NewUser::new(&username, "argon2id-hash", "admin");
         new_user.display_name = Some("Dain".to_string());
+        new_user.email = Some(format!("dain-{test_id}@example.com"));
         new_user.storage_quota_bytes = Some(1024);
         let user = repos.users.create(&new_user).await.expect("create user");
         assert_eq!(user.username, username);
+        assert_eq!(user.email, new_user.email);
         assert_eq!(user.storage_quota_bytes, Some(1024));
 
         let settings = repos.settings.get().await.expect("settings");
         assert!(settings.allow_vod_uploads);
         assert_eq!(settings.vod_threshold_minutes, 30);
         assert!(settings.about_text.contains("Clipline"));
+        assert!(!settings.smtp_enabled);
+        assert_eq!(settings.smtp_port, 587);
+        assert_eq!(settings.smtp_tls_mode, "starttls");
         let settings = repos
             .settings
             .set_owner_user_id(&user.id)
@@ -511,12 +516,40 @@ mod tests {
                 allow_vod_uploads: Some(false),
                 vod_threshold_minutes: Some(45),
                 about_text: Some("Custom About".to_string()),
+                smtp_enabled: Some(true),
+                smtp_host: Some(Some("smtp.example.com".to_string())),
+                smtp_port: Some(465),
+                smtp_tls_mode: Some("tls".to_string()),
+                smtp_username: Some(Some("mailer".to_string())),
+                smtp_password: Some(Some("secret".to_string())),
+                smtp_from_email: Some(Some("clips@example.com".to_string())),
+                smtp_from_name: Some(Some("Clipline".to_string())),
             })
             .await
             .expect("update settings");
         assert!(!settings.allow_vod_uploads);
         assert_eq!(settings.vod_threshold_minutes, 45);
         assert_eq!(settings.about_text, "Custom About");
+        assert!(settings.smtp_enabled);
+        assert_eq!(settings.smtp_host.as_deref(), Some("smtp.example.com"));
+        assert_eq!(settings.smtp_port, 465);
+        assert_eq!(settings.smtp_tls_mode, "tls");
+        assert_eq!(settings.smtp_username.as_deref(), Some("mailer"));
+        assert_eq!(settings.smtp_password.as_deref(), Some("secret"));
+        assert_eq!(
+            settings.smtp_from_email.as_deref(),
+            Some("clips@example.com")
+        );
+        assert_eq!(settings.smtp_from_name.as_deref(), Some("Clipline"));
+        let settings = repos
+            .settings
+            .update(&UpdateAppSettings {
+                smtp_password: Some(None),
+                ..UpdateAppSettings::default()
+            })
+            .await
+            .expect("clear SMTP password");
+        assert_eq!(settings.smtp_password, None);
 
         repos
             .users

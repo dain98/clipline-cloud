@@ -39,6 +39,8 @@ pub struct UserResponse {
     pub username: String,
     pub display_name: Option<String>,
     #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
     pub bio: Option<String>,
     #[serde(default)]
     pub avatar_url: Option<String>,

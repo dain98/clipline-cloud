@@ -117,6 +117,10 @@ POST   /api/v1/users/{id}/reset-password
 POST   /api/v1/me/change-password
 ```
 
+`POST /api/v1/users/{id}/reset-password` returns both the raw reset token and a browser-ready
+`/reset-password?token=...` URL. The web UI shows the reset URL with a copy action so the owner can
+create password setup links for users.
+
 ### First-run owner creation (§21)
 
 On first start the backend initializes schema and ensures one owner exists. The owner is stored as
@@ -138,7 +142,9 @@ After an owner exists, bootstrap credentials are ignored. A later CLI adds
 `clipline-cloud admin reset-password <user>`.
 
 Owners and admins can use the admin API. Only the owner can create admin accounts, disable admin
-accounts, modify the owner account, or edit the public About text.
+accounts, modify the owner account, edit the public About text, or configure SMTP invite settings.
+When SMTP is enabled, user creation can send an email invite containing a one-time password setup
+link.
 
 ### Security requirements that land here (§21)
 

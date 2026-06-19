@@ -38,7 +38,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-use crate::{config::Config, AppState, ClientIp};
+use crate::{config::Config, mail, AppState, ClientIp};
 
 const SESSION_COOKIE: &str = "clipline_session";
 const CSRF_HEADER: &str = "x-csrf-token";
@@ -641,7 +641,9 @@ async fn list_users(
 #[derive(Debug, Deserialize)]
 struct CreateUserRequest {
     username: String,
-    password: String,
+    password: Option<String>,
+    email: Option<String>,
+    send_invite: Option<bool>,
     display_name: Option<String>,
     role: Option<String>,
 }
@@ -663,14 +665,33 @@ async fn create_user(
     if request.username.trim().is_empty() {
         return Err(ApiError::bad_request("username is required"));
     }
-    validate_new_password(&request.password)?;
+    let email = normalized_optional_email(request.email)?;
+    let send_invite = request.send_invite.unwrap_or(false);
+    if send_invite && email.is_none() {
+        return Err(ApiError::bad_request("email is required to send an invite"));
+    }
+    if send_invite {
+        let settings = state.repositories.settings.get().await?;
+        if mail::SmtpInviteConfig::from_settings(&settings)
+            .map_err(|error| ApiError::bad_request(error.to_string()))?
+            .is_none()
+        {
+            return Err(ApiError::bad_request("SMTP invites are not enabled"));
+        }
+    }
+    let password = if send_invite {
+        generate_prefixed_token("clp_tmp_")
+    } else {
+        let Some(password) = request.password.as_deref() else {
+            return Err(ApiError::bad_request("password is required"));
+        };
+        password.to_string()
+    };
+    validate_new_password(&password)?;
 
-    let mut new_user = NewUser::new(
-        request.username.trim(),
-        hash_password(&request.password)?,
-        role,
-    );
+    let mut new_user = NewUser::new(request.username.trim(), hash_password(&password)?, role);
     new_user.display_name = request.display_name;
+    new_user.email = email;
     let created = state.repositories.users.create(&new_user).await?;
     audit_with_ip(
         &state.repositories,
@@ -682,6 +703,9 @@ async fn create_user(
         Some(json!({ "username": created.username })),
     )
     .await?;
+    if send_invite {
+        send_invite_email_for_user(&state, &auth.user, &created, Some(client_ip.as_str())).await?;
+    }
     Ok(Json(user_response_for_state(&state, created).await?))
 }
 
@@ -928,6 +952,7 @@ struct ResetPasswordRequest {
 #[derive(Debug, Serialize)]
 struct ResetPasswordResponse {
     reset_token: String,
+    reset_url: String,
     expires_at: DateTime<Utc>,
 }
 
@@ -952,17 +977,7 @@ async fn reset_password(
         ));
     }
 
-    let raw_token = generate_prefixed_token("clp_rst_");
-    let expires_at = now_utc() + ChronoDuration::hours(RESET_TOKEN_TTL_HOURS);
-    state
-        .repositories
-        .reset_password_tokens
-        .create(&NewResetPasswordToken::new(
-            &id,
-            hash_token(&raw_token),
-            expires_at,
-        ))
-        .await?;
+    let (raw_token, expires_at) = create_reset_token(&state, &id).await?;
     audit_with_ip(
         &state.repositories,
         Some(client_ip.as_str()),
@@ -975,9 +990,81 @@ async fn reset_password(
     .await?;
 
     Ok(Json(ResetPasswordResponse {
+        reset_url: mail::reset_url(&state.config.public_url, &raw_token)
+            .map_err(|_| ApiError::internal("failed to build reset URL"))?
+            .to_string(),
         reset_token: raw_token,
         expires_at,
     }))
+}
+
+async fn create_reset_token(
+    state: &AppState,
+    user_id: &str,
+) -> Result<(String, DateTime<Utc>), ApiError> {
+    let raw_token = generate_prefixed_token("clp_rst_");
+    let expires_at = now_utc() + ChronoDuration::hours(RESET_TOKEN_TTL_HOURS);
+    state
+        .repositories
+        .reset_password_tokens
+        .create(&NewResetPasswordToken::new(
+            user_id,
+            hash_token(&raw_token),
+            expires_at,
+        ))
+        .await?;
+    Ok((raw_token, expires_at))
+}
+
+async fn send_invite_email_for_user(
+    state: &AppState,
+    actor: &User,
+    target: &User,
+    client_ip: Option<&str>,
+) -> Result<(), ApiError> {
+    let Some(email) = target
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+    else {
+        return Err(ApiError::bad_request(
+            "user email is required to send an invite",
+        ));
+    };
+    let settings = state.repositories.settings.get().await?;
+    let Some(config) = mail::SmtpInviteConfig::from_settings(&settings)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?
+    else {
+        return Err(ApiError::bad_request("SMTP invites are not enabled"));
+    };
+    let (reset_token, expires_at) = create_reset_token(state, &target.id).await?;
+    mail::send_invite(
+        &config,
+        &state.config.public_url,
+        mail::InviteEmail {
+            to_email: email.to_string(),
+            username: target.username.clone(),
+            reset_token,
+            expires_at,
+        },
+    )
+    .await
+    .map_err(|error| {
+        warn!(event = "smtp.invite_failed", user_id = %target.id, error = %error);
+        ApiError::internal("invite email failed")
+    })?;
+    audit_with_ip(
+        &state.repositories,
+        client_ip,
+        Some(actor),
+        "user.invite_email.sent",
+        Some("user"),
+        Some(&target.id),
+        Some(json!({ "email": email })),
+    )
+    .await?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1243,6 +1330,20 @@ fn validate_new_password(password: &str) -> Result<(), ApiError> {
         )));
     }
     Ok(())
+}
+
+fn normalized_optional_email(email: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(email) = email else {
+        return Ok(None);
+    };
+    let email = email.trim();
+    if email.is_empty() {
+        return Ok(None);
+    }
+    if email.len() > 320 || !email.contains('@') || email.contains(char::is_whitespace) {
+        return Err(ApiError::bad_request("email must be a valid email address"));
+    }
+    Ok(Some(email.to_string()))
 }
 
 pub(crate) async fn audit_with_ip(
@@ -1561,6 +1662,7 @@ fn user_response_with_storage_and_owner(
         id: value.id,
         username: value.username,
         display_name: value.display_name,
+        email: value.email,
         bio: value.bio,
         avatar_url,
         role,

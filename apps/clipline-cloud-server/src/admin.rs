@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::{self, ApiError},
     config::StorageConfig,
-    AppState, ClientIp,
+    mail, AppState, ClientIp,
 };
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 200;
+const MAX_SMTP_FIELD_LEN: usize = 320;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -44,6 +45,14 @@ struct AdminSettingsResponse {
     allow_vod_uploads: bool,
     vod_threshold_minutes: i64,
     about_text: String,
+    smtp_enabled: bool,
+    smtp_host: Option<String>,
+    smtp_port: i64,
+    smtp_tls_mode: String,
+    smtp_username: Option<String>,
+    smtp_password_configured: bool,
+    smtp_from_email: Option<String>,
+    smtp_from_name: Option<String>,
     updated_at: DateTime<Utc>,
 }
 
@@ -52,6 +61,15 @@ struct UpdateAdminSettingsRequest {
     allow_vod_uploads: Option<bool>,
     vod_threshold_minutes: Option<i64>,
     about_text: Option<String>,
+    smtp_enabled: Option<bool>,
+    smtp_host: Option<Option<String>>,
+    smtp_port: Option<i64>,
+    smtp_tls_mode: Option<String>,
+    smtp_username: Option<Option<String>>,
+    smtp_password: Option<String>,
+    smtp_password_clear: Option<bool>,
+    smtp_from_email: Option<Option<String>>,
+    smtp_from_name: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,11 +176,13 @@ async fn update_settings(
 ) -> Result<Json<AdminSettingsResponse>, ApiError> {
     let auth = auth::require_admin(&state, &headers).await?;
     auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    let current_settings = state.repositories.settings.get().await?;
 
     let mut update = UpdateAppSettings {
         allow_vod_uploads: request.allow_vod_uploads,
         vod_threshold_minutes: None,
         about_text: None,
+        ..UpdateAppSettings::default()
     };
 
     if let Some(threshold) = request.vod_threshold_minutes {
@@ -190,6 +210,86 @@ async fn update_settings(
         update.about_text = Some(about_text.to_string());
     }
 
+    let smtp_updated = request.smtp_enabled.is_some()
+        || request.smtp_host.is_some()
+        || request.smtp_port.is_some()
+        || request.smtp_tls_mode.is_some()
+        || request.smtp_username.is_some()
+        || request.smtp_password.is_some()
+        || request.smtp_password_clear.unwrap_or(false)
+        || request.smtp_from_email.is_some()
+        || request.smtp_from_name.is_some();
+    let mut effective_settings = current_settings.clone();
+    if smtp_updated {
+        if !auth::user_is_owner(&state, &auth.user).await? {
+            return Err(ApiError::forbidden("owner role required to edit SMTP"));
+        }
+        if let Some(enabled) = request.smtp_enabled {
+            update.smtp_enabled = Some(enabled);
+            effective_settings.smtp_enabled = enabled;
+        }
+        if let Some(host) = request.smtp_host {
+            let host = normalized_optional_admin_string(host, "SMTP host")?;
+            effective_settings.smtp_host = host.clone();
+            update.smtp_host = Some(host);
+        }
+        if let Some(port) = request.smtp_port {
+            if !(1..=65535).contains(&port) {
+                return Err(ApiError::bad_request(
+                    "SMTP port must be between 1 and 65535",
+                ));
+            }
+            update.smtp_port = Some(port);
+            effective_settings.smtp_port = port;
+        }
+        if let Some(tls_mode) = request.smtp_tls_mode {
+            if !matches!(tls_mode.as_str(), "starttls" | "tls" | "none") {
+                return Err(ApiError::bad_request(
+                    "SMTP TLS mode must be starttls, tls, or none",
+                ));
+            }
+            update.smtp_tls_mode = Some(tls_mode.clone());
+            effective_settings.smtp_tls_mode = tls_mode;
+        }
+        if let Some(username) = request.smtp_username {
+            let username = normalized_optional_admin_string(username, "SMTP username")?;
+            effective_settings.smtp_username = username.clone();
+            update.smtp_username = Some(username);
+        }
+        if request.smtp_password_clear.unwrap_or(false) {
+            update.smtp_password = Some(None);
+            effective_settings.smtp_password = None;
+        } else if let Some(password) = request.smtp_password {
+            let password = password.trim();
+            if !password.is_empty() {
+                if password.len() > MAX_SMTP_FIELD_LEN {
+                    return Err(ApiError::bad_request(
+                        "SMTP password must be at most 320 bytes",
+                    ));
+                }
+                update.smtp_password = Some(Some(password.to_string()));
+                effective_settings.smtp_password = Some(password.to_string());
+            }
+        }
+        if let Some(from_email) = request.smtp_from_email {
+            let from_email = normalized_optional_admin_string(from_email, "SMTP from email")?;
+            if let Some(from_email) = from_email.as_deref() {
+                validate_emailish(from_email, "SMTP from email")?;
+            }
+            effective_settings.smtp_from_email = from_email.clone();
+            update.smtp_from_email = Some(from_email);
+        }
+        if let Some(from_name) = request.smtp_from_name {
+            let from_name = normalized_optional_admin_string(from_name, "SMTP from name")?;
+            effective_settings.smtp_from_name = from_name.clone();
+            update.smtp_from_name = Some(from_name);
+        }
+        if effective_settings.smtp_enabled {
+            mail::SmtpInviteConfig::from_settings(&effective_settings)
+                .map_err(|error| ApiError::bad_request(error.to_string()))?;
+        }
+    }
+
     let updated = state.repositories.settings.update(&update).await?;
     auth::audit_with_ip(
         &state.repositories,
@@ -202,6 +302,8 @@ async fn update_settings(
             "allow_vod_uploads": update.allow_vod_uploads,
             "vod_threshold_minutes": update.vod_threshold_minutes,
             "about_text_updated": update.about_text.is_some(),
+            "smtp_updated": smtp_updated,
+            "smtp_enabled": update.smtp_enabled,
         })),
     )
     .await?;
@@ -352,13 +454,54 @@ fn database_kind_name(kind: DatabaseKind) -> &'static str {
     }
 }
 
+fn normalized_optional_admin_string(
+    value: Option<String>,
+    label: &str,
+) -> Result<Option<String>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_SMTP_FIELD_LEN {
+        return Err(ApiError::bad_request(format!(
+            "{label} must be at most {MAX_SMTP_FIELD_LEN} bytes"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn validate_emailish(value: &str, label: &str) -> Result<(), ApiError> {
+    if value.contains('@') && !value.contains(char::is_whitespace) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(format!(
+            "{label} must be an email address"
+        )))
+    }
+}
+
 impl From<AppSettings> for AdminSettingsResponse {
     fn from(value: AppSettings) -> Self {
+        let smtp_password_configured = value
+            .smtp_password
+            .as_deref()
+            .is_some_and(|password| !password.trim().is_empty());
         Self {
             owner_user_id: value.owner_user_id,
             allow_vod_uploads: value.allow_vod_uploads,
             vod_threshold_minutes: value.vod_threshold_minutes,
             about_text: value.about_text,
+            smtp_enabled: value.smtp_enabled,
+            smtp_host: value.smtp_host,
+            smtp_port: value.smtp_port,
+            smtp_tls_mode: value.smtp_tls_mode,
+            smtp_username: value.smtp_username,
+            smtp_password_configured,
+            smtp_from_email: value.smtp_from_email,
+            smtp_from_name: value.smtp_from_name,
             updated_at: value.updated_at,
         }
     }

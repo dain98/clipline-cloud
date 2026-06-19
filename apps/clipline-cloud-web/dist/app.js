@@ -41,7 +41,7 @@ const state = {
     game: "",
     q: "",
   },
-  adminResetToken: null,
+  adminResetLink: null,
 };
 
 const icons = {
@@ -129,6 +129,10 @@ async function route() {
     renderLogin();
     return;
   }
+  if (current.name === "resetPassword") {
+    renderResetPassword(current.token);
+    return;
+  }
 
   if (!state.user) {
     const authenticated = await refreshSession();
@@ -190,6 +194,12 @@ function currentRoute() {
   }
   if (path === "/login") {
     return { name: "login" };
+  }
+  if (path === "/reset-password") {
+    return {
+      name: "resetPassword",
+      token: new URLSearchParams(window.location.search).get("token") || "",
+    };
   }
   return { name: "publicLibrary" };
 }
@@ -297,6 +307,48 @@ function renderLogin(error = "") {
       navigate("/library");
     } catch (loginError) {
       renderLogin(loginError.message);
+    }
+  });
+}
+
+function renderResetPassword(token, error = "") {
+  app.innerHTML = `
+    <main class="login-shell">
+      <section class="login-panel" aria-labelledby="reset-title">
+        <div class="brand-mark" aria-hidden="true">CL</div>
+        <h1 id="reset-title">Set Password</h1>
+        <p>Choose a new password for your Clipline Cloud account.</p>
+        ${error ? `<div class="error-box">${escapeHtml(error)}</div>` : ""}
+        ${
+          token
+            ? `<form id="reset-password-form" class="section" autocomplete="on">
+                <label class="field">
+                  <span>New password</span>
+                  <input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+                </label>
+                <button class="btn-primary" type="submit">${icon("lock")} Set password</button>
+              </form>`
+            : `<div class="error-box">This reset link is missing a token.</div>`
+        }
+        <a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>
+      </section>
+    </main>
+  `;
+  document.querySelector("#reset-password-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api("/api/v1/auth/reset-password", {
+        method: "POST",
+        body: {
+          reset_token: token,
+          new_password: String(form.get("new_password") || ""),
+        },
+      });
+      flash("Password set. Sign in with your new password.");
+      navigate("/login");
+    } catch (resetError) {
+      renderResetPassword(token, resetError.message);
     }
   });
 }
@@ -2451,7 +2503,7 @@ function adminView(tab, data) {
         ${adminTab("/admin?tab=settings", "settings", active, icon("sliders"), "Settings")}
         ${adminTab("/admin?tab=jobs", "jobs", active, icon("alert"), "Jobs")}
       </div>
-      ${active === "users" ? adminUsersView(data.users) : ""}
+      ${active === "users" ? adminUsersView(data.users, data.settings) : ""}
       ${active === "settings" ? adminSettingsView(data.settings) : ""}
       ${active === "jobs" ? adminJobsView(data.failedUploads, data.deadJobs, data.recentErrors) : ""}
       ${active === "overview" ? adminOverviewView(data.overview) : ""}
@@ -2497,19 +2549,29 @@ function storageWarningLabel(overview) {
   return overview.global_storage_warning ? `At or above ${threshold}` : `Below ${threshold}`;
 }
 
-function adminUsersView(users) {
+function adminUsersView(users, settings) {
   const roleOptions = [["user", "User"]];
   if (isOwner()) {
     roleOptions.push(["admin", "Admin"]);
   }
+  const smtpEnabled = Boolean(settings?.smtp_enabled);
   return `
     <div class="admin-grid">
       <form id="create-user-form" class="panel section">
         <h2>Create user</h2>
         ${field("Username", "username", "text", "", "Required")}
         ${field("Display name", "display_name", "text", "", "Optional")}
-        ${field("Password", "password", "password", "", "At least 8 characters")}
+        ${field("Email", "email", "email", "", smtpEnabled ? "Required for email invite" : "Optional")}
+        ${field("Password", "password", "password", "", smtpEnabled ? "Optional when sending invite" : "At least 8 characters")}
         ${selectField("Role", "role", "user", roleOptions)}
+        ${
+          smtpEnabled
+            ? `<label class="check-field">
+                <input name="send_invite" type="checkbox">
+                <span>Send email invite</span>
+              </label>`
+            : `<p class="muted">Configure SMTP in Settings to send email invites.</p>`
+        }
         <button class="btn-primary" type="submit">${icon("plus")} Create user</button>
       </form>
       <div class="panel">
@@ -2517,7 +2579,7 @@ function adminUsersView(users) {
           <h2>Users</h2>
           <span class="muted">${users.length} total</span>
         </div>
-        ${state.adminResetToken ? `<div class="notice mono">${escapeHtml(state.adminResetToken)}</div>` : ""}
+        ${adminResetLinkNotice()}
         <div class="table-wrap">
           <table>
             <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Storage</th><th>Last login</th><th></th></tr></thead>
@@ -2538,6 +2600,7 @@ function userRow(user) {
       <td>
         <strong>${escapeHtml(user.username)}</strong>
         <div class="muted">${escapeHtml(user.display_name || user.id)}</div>
+        ${user.email ? `<div class="muted">${escapeHtml(user.email)}</div>` : ""}
       </td>
       <td>${escapeHtml(user.role)}</td>
       <td>${user.is_disabled ? `<span class="badge badge-warn">Disabled</span>` : `<span class="badge badge-public">Active</span>`}</td>
@@ -2549,11 +2612,27 @@ function userRow(user) {
       <td>
         <div class="actions">
           <button class="btn-secondary" data-user-action="quota" data-user-id="${escapeAttr(user.id)}">${icon("sliders")} Quota</button>
-          <button class="btn-secondary" data-user-action="reset" data-user-id="${escapeAttr(user.id)}">${icon("clipboard")} Reset</button>
+          <button class="btn-secondary" data-user-action="reset" data-user-id="${escapeAttr(user.id)}">${icon("clipboard")} Reset link</button>
           <button class="btn-danger" data-user-action="disable" data-user-id="${escapeAttr(user.id)}" ${disableDisabled ? "disabled" : ""}>${icon("x")} Disable</button>
         </div>
       </td>
     </tr>
+  `;
+}
+
+function adminResetLinkNotice() {
+  if (!state.adminResetLink) {
+    return "";
+  }
+  return `
+    <div class="notice admin-reset-link">
+      <div>
+        <strong>Reset link created</strong>
+        <span>Expires ${escapeHtml(formatDate(state.adminResetLink.expires_at))}</span>
+        <code>${escapeHtml(state.adminResetLink.reset_url)}</code>
+      </div>
+      <button class="btn-secondary" type="button" data-copy="${escapeAttr(state.adminResetLink.reset_url)}">${icon("copy")} Copy</button>
+    </div>
   `;
 }
 
@@ -2593,6 +2672,33 @@ function adminSettingsView(settings) {
             <span>About text</span>
             <textarea name="about_text" maxlength="5000" ${isOwner() ? "" : "disabled"}>${escapeHtml(settings.about_text || "")}</textarea>
           </label>
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-copy">
+          <h2>Email invites</h2>
+          <p>${isOwner() ? "Configure SMTP so new users can receive password setup links by email." : "Only the owner can edit SMTP invite settings."}</p>
+        </div>
+        <div class="settings-controls">
+          <label class="check-field">
+            <input name="smtp_enabled" type="checkbox" ${settings.smtp_enabled ? "checked" : ""} ${isOwner() ? "" : "disabled"}>
+            <span>Enable SMTP invites</span>
+          </label>
+          ${field("SMTP host", "smtp_host", "text", settings.smtp_host || "", "smtp.example.com", !isOwner())}
+          ${numberField("SMTP port", "smtp_port", settings.smtp_port ?? 587, "587", "1", !isOwner())}
+          ${selectField("TLS mode", "smtp_tls_mode", settings.smtp_tls_mode || "starttls", [["starttls", "STARTTLS"], ["tls", "TLS"], ["none", "None"]], !isOwner())}
+          ${field("SMTP username", "smtp_username", "text", settings.smtp_username || "", "Optional", !isOwner())}
+          ${field("SMTP password", "smtp_password", "password", "", settings.smtp_password_configured ? "Configured; leave blank to keep" : "Optional", !isOwner())}
+          ${
+            settings.smtp_password_configured
+              ? `<label class="check-field">
+                  <input name="smtp_password_clear" type="checkbox" ${isOwner() ? "" : "disabled"}>
+                  <span>Clear stored SMTP password</span>
+                </label>`
+              : ""
+          }
+          ${field("From email", "smtp_from_email", "email", settings.smtp_from_email || "", "clips@example.com", !isOwner())}
+          ${field("From name", "smtp_from_name", "text", settings.smtp_from_name || "", "Clipline Cloud", !isOwner())}
         </div>
       </section>
       <div class="settings-action-row">
@@ -2682,7 +2788,9 @@ function bindAdminEvents() {
           body: {
             username: String(form.get("username") || ""),
             display_name: nullableString(form.get("display_name")),
-            password: String(form.get("password") || ""),
+            email: nullableString(form.get("email")),
+            password: nullableString(form.get("password")),
+            send_invite: form.get("send_invite") === "on",
             role: String(form.get("role") || "user"),
           },
         });
@@ -2706,6 +2814,20 @@ function bindAdminEvents() {
       };
       if (isOwner()) {
         body.about_text = String(form.get("about_text") || "");
+        body.smtp_enabled = form.get("smtp_enabled") === "on";
+        body.smtp_host = nullableString(form.get("smtp_host"));
+        body.smtp_port = Number(form.get("smtp_port") || 587);
+        body.smtp_tls_mode = String(form.get("smtp_tls_mode") || "starttls");
+        body.smtp_username = nullableString(form.get("smtp_username"));
+        body.smtp_from_email = nullableString(form.get("smtp_from_email"));
+        body.smtp_from_name = nullableString(form.get("smtp_from_name"));
+        const smtpPassword = String(form.get("smtp_password") || "").trim();
+        if (smtpPassword) {
+          body.smtp_password = smtpPassword;
+        }
+        if (form.get("smtp_password_clear") === "on") {
+          body.smtp_password_clear = true;
+        }
       }
       try {
         await api("/api/v1/admin/settings", {
@@ -2754,12 +2876,12 @@ function bindAdminEvents() {
           flash("Storage quota updated.");
         } else {
           const result = await openModal({
-            title: action === "disable" ? "Disable user?" : "Create reset token?",
+            title: action === "disable" ? "Disable user?" : "Create reset link?",
             description:
               action === "disable"
                 ? "This immediately revokes the user's sessions and device tokens."
-                : "This creates a temporary reset token for the selected user.",
-            confirmLabel: action === "disable" ? "Disable" : "Create token",
+                : "This creates a temporary password reset link for the selected user.",
+            confirmLabel: action === "disable" ? "Disable" : "Create link",
             danger: action === "disable",
             fields: [
               {
@@ -2784,8 +2906,8 @@ function bindAdminEvents() {
               method: "POST",
               body: { reauth_password: result.reauth_password },
             });
-            state.adminResetToken = `Reset token: ${data.reset_token} (expires ${formatDate(data.expires_at)})`;
-            flash("Reset token created.");
+            state.adminResetLink = data;
+            flash("Reset link created.");
           }
         }
         renderAdmin("users");
@@ -2797,29 +2919,29 @@ function bindAdminEvents() {
   });
 }
 
-function field(label, name, type, value, placeholder) {
+function field(label, name, type, value, placeholder, disabled = false) {
   return `
     <label class="field">
       <span>${escapeHtml(label)}</span>
-      <input name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder || "")}">
+      <input name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder || "")}" ${disabled ? "disabled" : ""}>
     </label>
   `;
 }
 
-function numberField(label, name, value, placeholder, step = "1") {
+function numberField(label, name, value, placeholder, step = "1", disabled = false) {
   return `
     <label class="field">
       <span>${escapeHtml(label)}</span>
-      <input name="${escapeAttr(name)}" type="number" min="0" step="${escapeAttr(step)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder || "")}">
+      <input name="${escapeAttr(name)}" type="number" min="0" step="${escapeAttr(step)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder || "")}" ${disabled ? "disabled" : ""}>
     </label>
   `;
 }
 
-function selectField(label, name, value, options) {
+function selectField(label, name, value, options, disabled = false) {
   return `
     <label class="field">
       <span>${escapeHtml(label)}</span>
-      <select name="${escapeAttr(name)}">
+      <select name="${escapeAttr(name)}" ${disabled ? "disabled" : ""}>
         ${options
           .map(([optionValue, optionLabel]) => `<option value="${escapeAttr(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`)
           .join("")}
