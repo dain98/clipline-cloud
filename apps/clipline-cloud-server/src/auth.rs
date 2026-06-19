@@ -12,10 +12,11 @@ use argon2::{
     Argon2,
 };
 use axum::{
+    body::Bytes,
     extract::{Extension, Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -28,6 +29,7 @@ use clipline_cloud_db::{
     now_utc, AppSettings, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewResetPasswordToken,
     NewSession, NewUser, Repositories, Session, User,
 };
+use clipline_cloud_storage::{ObjectKey, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
@@ -50,6 +52,8 @@ const LOGIN_LOCKOUT_MAX: Duration = Duration::from_secs(15 * 60);
 const LOGIN_LIMIT_MAX_BUCKETS: usize = 4096;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 1024;
+const MAX_PROFILE_BIO_LEN: usize = 2000;
+const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -306,6 +310,8 @@ pub fn routes() -> Router<AppState> {
             get(get_user).patch(update_user).delete(disable_user),
         )
         .route("/api/v1/users/{id}/reset-password", post(reset_password))
+        .route("/api/v1/me/profile", patch(update_me_profile))
+        .route("/api/v1/me/avatar", put(update_me_avatar))
         .route("/api/v1/me/change-password", post(change_password))
 }
 
@@ -765,6 +771,112 @@ async fn update_user(
         0,
         settings.owner_user_id.as_deref(),
     )))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateMeProfileRequest {
+    display_name: Option<String>,
+    bio: Option<String>,
+}
+
+async fn update_me_profile(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateMeProfileRequest>,
+) -> Result<Json<UserResponse>, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    require_csrf_for_cookie(&state, &headers, &auth)?;
+
+    let display_name = normalized_optional_string(request.display_name);
+    let bio = normalized_bio(request.bio)?;
+    state
+        .repositories
+        .users
+        .update_self_profile(&auth.user.id, display_name.as_deref(), bio.as_deref())
+        .await?;
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "user.profile_updated",
+        Some("user"),
+        Some(&auth.user.id),
+        None,
+    )
+    .await?;
+
+    let updated = state
+        .repositories
+        .users
+        .get(&auth.user.id)
+        .await?
+        .expect("updated user should exist");
+    Ok(Json(user_response_for_state(&state, updated).await?))
+}
+
+async fn update_me_avatar(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Result<Json<UserResponse>, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    require_csrf_for_cookie(&state, &headers, &auth)?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("avatar image is required"));
+    }
+    if bytes.len() > MAX_AVATAR_BYTES {
+        return Err(ApiError::payload_too_large("avatar image is too large"));
+    }
+    let content_type = avatar_content_type(&headers)?;
+    let extension = avatar_extension(content_type)
+        .ok_or_else(|| ApiError::bad_request("avatar must be a PNG, JPEG, WebP, or GIF image"))?;
+    let avatar_key = ObjectKey::parse(format!(
+        "objects/avatars/{}/avatar.{extension}",
+        auth.user.id
+    ))
+    .map_err(|_| ApiError::internal("invalid avatar key"))?;
+    state
+        .storage
+        .put_object(
+            &avatar_key,
+            bytes,
+            PutObjectMetadata::new(content_type.to_string()),
+        )
+        .await
+        .map_err(storage_api_error)?;
+
+    if let Some(previous_key) = auth.user.avatar_key.as_deref() {
+        if previous_key != avatar_key.as_str() {
+            if let Ok(key) = ObjectKey::parse(previous_key) {
+                let _ = state.storage.delete_object(&key).await;
+            }
+        }
+    }
+    state
+        .repositories
+        .users
+        .set_avatar_key(&auth.user.id, Some(avatar_key.as_str()))
+        .await?;
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "user.avatar_updated",
+        Some("user"),
+        Some(&auth.user.id),
+        None,
+    )
+    .await?;
+
+    let updated = state
+        .repositories
+        .users
+        .get(&auth.user.id)
+        .await?
+        .expect("updated user should exist");
+    Ok(Json(user_response_for_state(&state, updated).await?))
 }
 
 async fn disable_user(
@@ -1249,6 +1361,65 @@ fn validate_role(role: &str) -> Result<(), ApiError> {
     }
 }
 
+fn normalized_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalized_bio(value: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(value) = normalized_optional_string(value) else {
+        return Ok(None);
+    };
+    if value.chars().count() > MAX_PROFILE_BIO_LEN {
+        return Err(ApiError::bad_request(format!(
+            "bio must be {MAX_PROFILE_BIO_LEN} characters or fewer"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn avatar_content_type(headers: &HeaderMap) -> Result<&'static str, ApiError> {
+    let value = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "image/png" => Ok("image/png"),
+        "image/jpeg" | "image/jpg" => Ok("image/jpeg"),
+        "image/webp" => Ok("image/webp"),
+        "image/gif" => Ok("image/gif"),
+        _ => Err(ApiError::bad_request(
+            "avatar must be a PNG, JPEG, WebP, or GIF image",
+        )),
+    }
+}
+
+fn avatar_extension(content_type: &str) -> Option<&'static str> {
+    match content_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+fn storage_api_error(error: StorageError) -> ApiError {
+    match error {
+        StorageError::NotFound(_) => ApiError::not_found("object not found"),
+        error => {
+            warn!(event = "api.storage_error", error = %error);
+            ApiError::internal("storage error")
+        }
+    }
+}
+
 fn hash_password(password: &str) -> Result<String, ApiError> {
     Ok(Argon2::default()
         .hash_password(
@@ -1382,10 +1553,16 @@ fn user_response_with_storage_and_owner(
     } else {
         value.role
     };
+    let avatar_url = value
+        .avatar_key
+        .as_ref()
+        .map(|_| public_avatar_url_path(&value.username));
     UserResponse {
         id: value.id,
         username: value.username,
         display_name: value.display_name,
+        bio: value.bio,
+        avatar_url,
         role,
         is_disabled: value.is_disabled,
         storage_bytes,
@@ -1394,6 +1571,25 @@ fn user_response_with_storage_and_owner(
         updated_at: value.updated_at,
         last_login_at: value.last_login_at,
     }
+}
+
+fn public_avatar_url_path(username: &str) -> String {
+    format!("/api/v1/public/users/{}/avatar", path_segment(username))
+}
+
+fn path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 fn device_token_response(value: DeviceToken) -> DeviceTokenResponse {

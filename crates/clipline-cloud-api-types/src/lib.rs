@@ -38,6 +38,10 @@ pub struct UserResponse {
     pub id: String,
     pub username: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub role: String,
     pub is_disabled: bool,
     #[serde(default)]
@@ -221,6 +225,8 @@ pub struct ClipSummaryResponse {
     pub visibility: String,
     pub status: String,
     pub public_url: Option<String>,
+    #[serde(default)]
+    pub view_count: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -250,6 +256,8 @@ pub struct ClipDetailResponse {
     pub status: String,
     pub public_share_id: Option<String>,
     pub public_url: Option<String>,
+    #[serde(default)]
+    pub view_count: i64,
     pub markers: Vec<ClipMarkerResponse>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,

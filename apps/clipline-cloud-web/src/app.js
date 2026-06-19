@@ -60,6 +60,7 @@ const icons = {
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
   menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+  message: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>',
   notepad: '<path d="M8 2v4"/><path d="M16 2v4"/><path d="M3 10h18"/><path d="M6 4h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z"/><path d="M8 14h8"/><path d="M8 18h5"/>',
   pause: '<path d="M8 5v14"/><path d="M16 5v14"/>',
   play: '<path d="m8 5 11 7-11 7V5Z"/>',
@@ -75,6 +76,7 @@ const icons = {
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 8.8a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V5l8-3 8 3v8Z"/>',
   sliders: '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
   user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
   volume2: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>',
@@ -111,6 +113,13 @@ async function route() {
     await renderAbout();
     return;
   }
+  if (current.name === "publicUser") {
+    if (!state.user) {
+      await refreshSession();
+    }
+    await renderPublicUser(current.username);
+    return;
+  }
 
   if (current.name === "login") {
     if (state.user) {
@@ -131,6 +140,8 @@ async function route() {
 
   if (current.name === "clip") {
     await renderClipDetail(current.clipId);
+  } else if (current.name === "profile") {
+    await renderProfile();
   } else if (current.name === "admin") {
     if (!isAdminLike()) {
       flash("Admin access is required.", "error");
@@ -156,6 +167,9 @@ function currentRoute() {
   if (path === "/about") {
     return { name: "about" };
   }
+  if (path.startsWith("/u/")) {
+    return { name: "publicUser", username: decodeURIComponent(path.slice(3)) };
+  }
   if (path === "/library") {
     return { name: "library" };
   }
@@ -170,6 +184,9 @@ function currentRoute() {
   }
   if (path === "/account") {
     return { name: "account" };
+  }
+  if (path === "/profile") {
+    return { name: "profile" };
   }
   if (path === "/login") {
     return { name: "login" };
@@ -296,17 +313,6 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
     isAdminLike()
       ? navLink("/admin", "admin", active, icon("shield"), "Admin")
       : "";
-  const footer = state.user
-    ? `
-          <div class="user-chip">
-            ${escapeHtml(state.user.username)}
-            <span>${escapeHtml(state.user.role)}</span>
-          </div>
-          <button id="logout-button" class="btn-ghost sidebar-action" title="Sign out" aria-label="Sign out">
-            ${icon("logOut")} <span>Sign out</span>
-          </button>
-        `
-    : `<a class="btn-secondary sidebar-signin sidebar-action" href="/login" data-route aria-label="Sign in" title="Sign in">${icon("lock")} <span>Sign in</span></a>`;
   app.innerHTML = `
     <div class="app-shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
       <header class="app-topbar">
@@ -328,18 +334,19 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
             <button class="app-search-button" type="submit" aria-label="Search">${icon("search")}</button>
           </div>
         </form>
-        <div class="app-topbar-spacer" aria-hidden="true"></div>
+        <div class="app-topbar-actions">
+          ${topbarAuthControls()}
+        </div>
       </header>
       <aside class="sidebar">
         <nav class="nav-stack" aria-label="Primary">
           ${navLink("/", "public", active, icon("home"), "Home")}
           ${privateLinks}
           ${adminLink}
-          ${navLink("/about", "about", active, icon("info"), "About")}
         </nav>
         <section id="sidebar-recommendations" class="sidebar-recommendations" hidden></section>
         <div class="sidebar-footer">
-          ${footer}
+          ${navLink("/about", "about", active, icon("info"), "About")}
         </div>
       </aside>
       <main class="main-pane">
@@ -364,6 +371,21 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
   document.querySelector("#app-search-form")?.addEventListener("submit", submitAppSearch);
   document.querySelector("#logout-button")?.addEventListener("click", logout);
   loadSidebarRecommendations();
+}
+
+function topbarAuthControls() {
+  if (!state.user) {
+    return `<a class="btn-secondary topbar-signin" href="/login" data-route>${icon("lock")} Sign in</a>`;
+  }
+  return `
+    <a class="topbar-profile" href="/profile" data-route title="Profile settings" aria-label="Profile settings">
+      ${userAvatar(state.user, "topbar-avatar")}
+      <span>${escapeHtml(displayUserName(state.user))}</span>
+    </a>
+    <button id="logout-button" class="btn-ghost topbar-signout" type="button" title="Sign out" aria-label="Sign out">
+      ${icon("logOut")}
+    </button>
+  `;
 }
 
 function isAdminLike() {
@@ -835,23 +857,31 @@ function publicClipCard(clip) {
   const sharePath = `/c/${encodeURIComponent(clip.share_id)}`;
   const thumbnailPath = `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
   const authorName = publicAuthorName(clip);
+  const authorPath = publicAuthorPath(clip);
   const duration = formatDuration(clip.duration_ms);
   const uploadedAgo = formatRelativeTime(clip.uploaded_at);
   return `
-    <a class="public-clip-card" href="${escapeAttr(sharePath)}" data-route>
-      <div class="public-thumb-wrap">
-        <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
-        ${duration !== "Unknown" ? `<span class="public-duration-badge">${escapeHtml(duration)}</span>` : ""}
-      </div>
-      <div class="public-clip-body">
+    <article class="public-clip-card">
+      <a class="public-card-main" href="${escapeAttr(sharePath)}" data-route>
+        <div class="public-thumb-wrap">
+          <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
+          ${duration !== "Unknown" ? `<span class="public-duration-badge">${escapeHtml(duration)}</span>` : ""}
+        </div>
         <h2>${escapeHtml(clip.title)}</h2>
-        <p class="public-author">${escapeHtml(authorName)}</p>
+      </a>
+      <div class="public-clip-body">
+        ${
+          authorPath
+            ? `<a class="public-author" href="${escapeAttr(authorPath)}" data-route>${escapeHtml(authorName)}</a>`
+            : `<p class="public-author">${escapeHtml(authorName)}</p>`
+        }
         <div class="meta-line public-card-meta">
           <span>${escapeHtml(gameLabel(clip))}</span>
           ${uploadedAgo !== "Unknown" ? `<span aria-hidden="true">&middot;</span><span>${escapeHtml(uploadedAgo)}</span>` : ""}
+          <span aria-hidden="true">&middot;</span><span>${escapeHtml(formatViews(clip.view_count))}</span>
         </div>
       </div>
-    </a>
+    </article>
   `;
 }
 
@@ -883,6 +913,113 @@ function gameLabel(clip) {
 
 function publicAuthorName(clip) {
   return clip.author_name || "Unknown creator";
+}
+
+function publicAuthorPath(clip) {
+  return clip.author_username ? `/u/${encodeURIComponent(clip.author_username)}` : "";
+}
+
+function displayUserName(user) {
+  return user?.display_name || user?.username || "Unknown creator";
+}
+
+function avatarUrl(user) {
+  if (!user?.avatar_url) {
+    return "";
+  }
+  const cacheKey = user.updated_at || "";
+  if (!cacheKey) {
+    return user.avatar_url;
+  }
+  const separator = String(user.avatar_url).includes("?") ? "&" : "?";
+  return `${user.avatar_url}${separator}v=${encodeURIComponent(cacheKey)}`;
+}
+
+function userAvatar(user, className = "user-avatar") {
+  const name = displayUserName(user);
+  const src = avatarUrl(user);
+  if (src) {
+    return `<img class="${escapeAttr(className)} user-avatar-img" src="${escapeAttr(src)}" alt="">`;
+  }
+  return `<div class="${escapeAttr(className)} user-avatar-fallback" aria-hidden="true">${escapeHtml(authorInitial(name))}</div>`;
+}
+
+function authorNameLink(clip, authorName) {
+  const path = publicAuthorPath(clip);
+  if (!path) {
+    return `<strong>${escapeHtml(authorName)}</strong>`;
+  }
+  return `<a href="${escapeAttr(path)}" data-route><strong>${escapeHtml(authorName)}</strong></a>`;
+}
+
+function authorAvatarLink(clip, authorName) {
+  const avatar = userAvatar(
+    {
+      username: clip.author_username || authorName,
+      display_name: authorName,
+      avatar_url: clip.author_avatar_url,
+      updated_at: clip.updated_at,
+    },
+    "public-author-avatar"
+  );
+  const path = publicAuthorPath(clip);
+  return path ? `<a href="${escapeAttr(path)}" data-route>${avatar}</a>` : avatar;
+}
+
+async function renderPublicUser(username) {
+  renderShell({
+    active: "public",
+    title: "Profile",
+    body: `<div class="empty-state">Loading profile...</div>`,
+    hideTopbar: true,
+  });
+
+  try {
+    const profile = await api(`/api/v1/public/users/${encodeURIComponent(username)}`);
+    renderShell({
+      active: "public",
+      title: displayUserName(profile),
+      body: publicUserView(profile),
+      hideTopbar: true,
+    });
+  } catch (error) {
+    renderShell({
+      active: "public",
+      title: "Profile unavailable",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+      hideTopbar: true,
+    });
+  }
+}
+
+function publicUserView(profile) {
+  const name = displayUserName(profile);
+  const canEditProfile = state.user && state.user.username?.toLowerCase() === profile.username.toLowerCase();
+  return `
+    <section class="public-user-page">
+      <header class="public-user-header">
+        ${userAvatar(profile, "public-user-avatar")}
+        <div class="public-user-header-body">
+          <div class="public-user-title-row">
+            <div>
+              <h1>${escapeHtml(name)}</h1>
+              <p>@${escapeHtml(profile.username)}</p>
+            </div>
+            ${canEditProfile ? `<a class="btn-secondary" href="/profile" data-route>${icon("edit")} Edit profile</a>` : ""}
+          </div>
+          ${profile.bio ? `<div class="public-user-bio">${escapeHtml(profile.bio)}</div>` : ""}
+          <div class="meta-line">
+            <span>${escapeHtml(profile.clip_count)} public clip${profile.clip_count === 1 ? "" : "s"}</span>
+          </div>
+        </div>
+      </header>
+      ${
+        profile.clips?.length
+          ? `<div class="public-clip-grid">${profile.clips.map(publicClipCard).join("")}</div>`
+          : `<div class="empty-state">No public clips yet.</div>`
+      }
+    </section>
+  `;
 }
 
 async function renderAbout() {
@@ -1710,9 +1847,10 @@ async function renderPublicShare(shareId) {
     `,
   });
   try {
-    const [clip, recommendationData] = await Promise.all([
+    const [clip, recommendationData, commentData] = await Promise.all([
       api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`),
       api(`/api/v1/public/recommendations?share_id=${encodeURIComponent(shareId)}&limit=8`).catch(() => ({ clips: [] })),
+      api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`).catch(() => ({ comments: [] })),
     ]);
     let recommendations = recommendationData.clips || [];
     if (!recommendations.length) {
@@ -1725,12 +1863,14 @@ async function renderPublicShare(shareId) {
     renderPublicSharePage({
       title: clip.title,
       subtitle: `${authorName} - ${clip.game_name || clip.game_id || "Shared clip"}`,
-      body: publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations),
+      body: publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations, commentData.comments || []),
     });
     initClipPlayer(document.querySelector("[data-clip-player]"), {
       durationMs: clip.duration_ms,
       markers: [],
     });
+    bindPublicShareEvents(clip.share_id);
+    recordPublicView(clip.share_id);
   } catch (_) {
     renderPublicSharePage({
       title: "Clip unavailable",
@@ -1744,7 +1884,7 @@ async function renderPublicShare(shareId) {
   }
 }
 
-function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations) {
+function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations, comments) {
   return `
     <section class="public-watch-page" aria-labelledby="public-title">
       <div class="public-watch-layout">
@@ -1756,6 +1896,7 @@ function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendatio
             durationMs: clip.duration_ms,
           })}
           ${publicShareInfo(clip, authorName)}
+          ${publicCommentsView(clip, comments)}
         </div>
         ${recommendations.length ? publicRecommendationRail(recommendations) : ""}
       </div>
@@ -1780,17 +1921,150 @@ function publicShareInfo(clip, authorName) {
         <h1 id="public-title">${escapeHtml(clip.title)}</h1>
         ${editHref ? `<a class="btn-secondary" href="${escapeAttr(editHref)}" data-route>${icon("edit")} Edit</a>` : ""}
       </div>
-      <div class="public-watch-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('<span aria-hidden="true">&middot;</span>')}</div>
+      <div class="public-watch-meta">
+        ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('<span aria-hidden="true">&middot;</span>')}
+        ${meta.length ? '<span aria-hidden="true">&middot;</span>' : ""}
+        <span data-public-view-count>${escapeHtml(formatViews(clip.view_count))}</span>
+      </div>
       ${clip.description ? `<p class="public-watch-description">${escapeHtml(clip.description)}</p>` : ""}
       <div class="public-author-row">
-        <div class="public-author-avatar" aria-hidden="true">${escapeHtml(authorInitial(authorName))}</div>
+        ${authorAvatarLink(clip, authorName)}
         <div>
-          <strong>${escapeHtml(authorName)}</strong>
+          ${authorNameLink(clip, authorName)}
           <span>Uploaded ${escapeHtml(formatDate(clip.uploaded_at))}</span>
         </div>
       </div>
     </section>
   `;
+}
+
+function publicCommentsView(clip, comments) {
+  return `
+    <section class="public-comments" aria-labelledby="comments-title">
+      <div class="section-header">
+        <h2 id="comments-title">Comments</h2>
+        <span class="muted">${comments.length}</span>
+      </div>
+      ${
+        state.user
+          ? `<form id="public-comment-form" class="public-comment-form">
+              <label class="field">
+                <span>Comment</span>
+                <textarea name="body" rows="3" maxlength="2000" placeholder="Add a comment"></textarea>
+              </label>
+              <div class="clip-inline-actions">
+                <button class="btn-secondary" type="submit">${icon("message")} Post comment</button>
+              </div>
+            </form>`
+          : `<div class="notice public-comment-signin"><a href="/login" data-route>Sign in</a> to comment.</div>`
+      }
+      ${
+        comments.length
+          ? `<div class="public-comment-list">${comments.map((comment) => publicCommentItem(comment, clip.share_id)).join("")}</div>`
+          : `<div class="empty-state">No comments yet.</div>`
+      }
+    </section>
+  `;
+}
+
+function publicCommentItem(comment, shareId) {
+  const authorName = comment.author_name || "Unknown creator";
+  const authorPath = comment.author_username ? `/u/${encodeURIComponent(comment.author_username)}` : "";
+  return `
+    <article class="public-comment ${comment.is_uploader ? "public-comment-uploader" : ""}" data-comment-id="${escapeAttr(comment.id)}">
+      ${userAvatar(
+        {
+          username: comment.author_username || authorName,
+          display_name: authorName,
+          avatar_url: comment.author_avatar_url,
+          updated_at: comment.updated_at,
+        },
+        "public-comment-avatar"
+      )}
+      <div>
+        <div class="public-comment-head">
+          <div class="public-comment-byline">
+            ${
+              authorPath
+                ? `<a href="${escapeAttr(authorPath)}" data-route>${escapeHtml(authorName)}</a>`
+                : `<strong>${escapeHtml(authorName)}</strong>`
+            }
+            ${comment.is_uploader ? `<span class="public-comment-badge">Uploader</span>` : ""}
+            <span>${escapeHtml(formatRelativeTime(comment.created_at))}</span>
+          </div>
+          ${
+            comment.viewer_can_delete
+              ? `<button class="icon-button public-comment-delete" type="button" data-delete-comment="${escapeAttr(comment.id)}" data-share-id="${escapeAttr(shareId)}" aria-label="Delete comment" title="Delete comment">${icon("trash")}</button>`
+              : ""
+          }
+        </div>
+        <p>${escapeHtml(comment.body)}</p>
+      </div>
+    </article>
+  `;
+}
+
+function bindPublicShareEvents(shareId) {
+  document.querySelector("#public-comment-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`, {
+        method: "POST",
+        body: {
+          body: String(form.get("body") || ""),
+        },
+      });
+      flash("Comment posted.");
+      renderPublicShare(shareId);
+    } catch (error) {
+      flash(error.message, "error");
+      renderPublicShare(shareId);
+    }
+  });
+
+  document.querySelectorAll("[data-delete-comment]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const commentId = button.dataset.deleteComment;
+      const commentShareId = button.dataset.shareId || shareId;
+      if (!commentId) {
+        return;
+      }
+      const confirmed = await confirmModal(
+        "Delete comment?",
+        "This removes the comment from the public clip page.",
+        "Delete",
+        true,
+      );
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await api(
+          `/api/v1/public/clips/${encodeURIComponent(commentShareId)}/comments/${encodeURIComponent(commentId)}`,
+          { method: "DELETE", body: {} },
+        );
+        flash("Comment deleted.");
+        renderPublicShare(commentShareId);
+      } catch (error) {
+        flash(error.message, "error");
+        renderPublicShare(commentShareId);
+      }
+    });
+  });
+}
+
+async function recordPublicView(shareId) {
+  try {
+    const result = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/view`, {
+      method: "POST",
+      body: {},
+    });
+    document.querySelector("[data-public-view-count]")?.replaceChildren(document.createTextNode(formatViews(result.view_count)));
+  } catch (_) {
+    // View count is non-critical.
+  }
 }
 
 function publicRecommendationRail(clips) {
@@ -1843,6 +2117,134 @@ function renderPublicSharePage({ title, subtitle, body }) {
     body,
     hideTopbar: true,
   });
+}
+
+async function renderProfile() {
+  renderShell({
+    active: "profile",
+    title: "Profile",
+    subtitle: "Public identity and avatar.",
+    body: `<div class="empty-state">Loading profile settings...</div>`,
+  });
+
+  try {
+    await refreshSession();
+    renderShell({
+      active: "profile",
+      title: "Profile",
+      subtitle: "Public identity and avatar.",
+      body: profileView(state.user),
+    });
+    bindProfileEvents();
+  } catch (error) {
+    renderShell({
+      active: "profile",
+      title: "Profile",
+      subtitle: "Public identity and avatar.",
+      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function profileView(user) {
+  return `
+    <section class="profile-settings-page">
+      <div class="profile-settings-header">
+        ${userAvatar(user, "profile-avatar")}
+        <div>
+          <h2>${escapeHtml(displayUserName(user))}</h2>
+          <p>@${escapeHtml(user.username)} · ${escapeHtml(user.role)}</p>
+        </div>
+      </div>
+      <form id="profile-form" class="profile-form">
+        <label class="field">
+          <span>Display name</span>
+          <input name="display_name" type="text" maxlength="120" value="${escapeAttr(user.display_name || "")}" placeholder="${escapeAttr(user.username)}">
+        </label>
+        <label class="field">
+          <span>Bio</span>
+          <textarea name="bio" rows="6" maxlength="2000" placeholder="Tell people what you upload.">${escapeHtml(user.bio || "")}</textarea>
+        </label>
+        <div class="clip-inline-actions">
+          <button class="btn-primary" type="submit">${icon("save")} Save profile</button>
+        </div>
+      </form>
+      <form id="avatar-form" class="profile-form">
+        <label class="field">
+          <span>Avatar</span>
+          <input name="avatar" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+          <small>PNG, JPEG, WebP, or GIF. Max 2 MiB.</small>
+        </label>
+        <div class="clip-inline-actions">
+          <button class="btn-secondary" type="submit">${icon("upload")} Upload avatar</button>
+        </div>
+      </form>
+      <div class="profile-public-link">
+        <a class="btn-secondary" href="/u/${encodeURIComponent(user.username)}" data-route>${icon("external")} View public profile</a>
+      </div>
+    </section>
+  `;
+}
+
+function bindProfileEvents() {
+  document.querySelector("#profile-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const user = await api("/api/v1/me/profile", {
+        method: "PATCH",
+        body: {
+          display_name: nullableString(form.get("display_name")),
+          bio: nullableString(form.get("bio")),
+        },
+      });
+      state.user = user;
+      flash("Profile saved.");
+      renderProfile();
+    } catch (error) {
+      flash(error.message, "error");
+      renderProfile();
+    }
+  });
+
+  document.querySelector("#avatar-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const file = event.currentTarget.elements.avatar?.files?.[0];
+    if (!file) {
+      flash("Choose an avatar image first.", "error");
+      renderProfile();
+      return;
+    }
+    try {
+      const user = await uploadAvatar(file);
+      state.user = user;
+      flash("Avatar uploaded.");
+      renderProfile();
+    } catch (error) {
+      flash(error.message, "error");
+      renderProfile();
+    }
+  });
+}
+
+async function uploadAvatar(file) {
+  const headers = new Headers();
+  headers.set("Accept", "application/json");
+  headers.set("Content-Type", file.type || "application/octet-stream");
+  if (state.csrfToken) {
+    headers.set("X-CSRF-Token", state.csrfToken);
+  }
+  const response = await fetch("/api/v1/me/avatar", {
+    method: "PUT",
+    credentials: "same-origin",
+    headers,
+    body: file,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || response.statusText || "Avatar upload failed");
+  }
+  return data;
 }
 
 async function renderAccount() {
@@ -2630,6 +3032,13 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatViews(value) {
+  const views = Number(value || 0);
+  const safeViews = Number.isFinite(views) && views > 0 ? Math.floor(views) : 0;
+  const formatted = new Intl.NumberFormat(undefined, { notation: safeViews >= 10000 ? "compact" : "standard" }).format(safeViews);
+  return `${formatted} view${safeViews === 1 ? "" : "s"}`;
 }
 
 function gibibytesToBytes(value) {

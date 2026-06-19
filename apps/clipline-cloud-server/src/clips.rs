@@ -459,6 +459,7 @@ fn clip_summary_response(clip: Clip, state: &AppState) -> ClipSummaryResponse {
             .public_share_id
             .as_deref()
             .and_then(|share_id| public_url(state, share_id)),
+        view_count: clip.view_count,
         created_at: clip.created_at,
         updated_at: clip.updated_at,
     }
@@ -497,6 +498,7 @@ fn clip_detail_response(
         status: clip.status,
         public_share_id: clip.public_share_id,
         public_url,
+        view_count: clip.view_count,
         markers,
         created_at: clip.created_at,
         updated_at: clip.updated_at,

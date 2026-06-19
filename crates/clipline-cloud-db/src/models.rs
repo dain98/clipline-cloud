@@ -10,6 +10,8 @@ pub struct User {
     pub id: String,
     pub username: String,
     pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_key: Option<String>,
     pub password_hash: String,
     pub role: String,
     pub is_disabled: bool,
@@ -24,6 +26,8 @@ pub struct NewUser {
     pub id: String,
     pub username: String,
     pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_key: Option<String>,
     pub password_hash: String,
     pub role: String,
     pub is_disabled: bool,
@@ -44,6 +48,8 @@ impl NewUser {
             id: new_ulid(),
             username: username.into(),
             display_name: None,
+            bio: None,
+            avatar_key: None,
             password_hash: password_hash.into(),
             role: role.into(),
             is_disabled: false,
@@ -184,6 +190,7 @@ pub struct Clip {
     pub poster_key: Option<String>,
     pub thumbnail_key: Option<String>,
     pub public_share_id: Option<String>,
+    pub view_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -218,6 +225,7 @@ pub struct NewClip {
     pub poster_key: Option<String>,
     pub thumbnail_key: Option<String>,
     pub public_share_id: Option<String>,
+    pub view_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -258,6 +266,48 @@ impl NewClip {
             poster_key: None,
             thumbnail_key: None,
             public_share_id: None,
+            view_count: 0,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
+pub struct ClipComment {
+    pub id: String,
+    pub clip_id: String,
+    pub user_id: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewClipComment {
+    pub id: String,
+    pub clip_id: String,
+    pub user_id: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+impl NewClipComment {
+    pub fn new(
+        clip_id: impl Into<String>,
+        user_id: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        let now = now_utc();
+        Self {
+            id: new_ulid(),
+            clip_id: clip_id.into(),
+            user_id: user_id.into(),
+            body: body.into(),
             created_at: now,
             updated_at: now,
             deleted_at: None,
