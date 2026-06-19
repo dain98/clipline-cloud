@@ -530,8 +530,8 @@ impl UserRepository {
             &self.database,
             User,
             "SELECT id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
-             FROM users WHERE role = 'admin' ORDER BY created_at ASC, id ASC LIMIT 1",
-            []
+             FROM users WHERE role = 'admin' AND is_disabled = ? ORDER BY created_at ASC, id ASC LIMIT 1",
+            [false]
         )?)
     }
 
@@ -1041,6 +1041,23 @@ impl ClipRepository {
                 Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
             }
         }
+    }
+
+    pub async fn count_public_for_owner(&self, owner_user_id: &str) -> DbResult<i64> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            (i64,),
+            "SELECT CAST(COUNT(*) AS BIGINT)
+             FROM clips
+             WHERE visibility = 'public'
+               AND status = 'ready'
+               AND deleted_at IS NULL
+               AND public_share_id IS NOT NULL
+               AND owner_user_id = ?",
+            [owner_user_id]
+        )?
+        .map(|row| row.0)
+        .unwrap_or_default())
     }
 
     pub async fn increment_view_count(&self, id: &str) -> DbResult<i64> {
@@ -1706,10 +1723,14 @@ impl ClipCommentRepository {
             &self.database,
             ClipComment,
             "SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
-             FROM clip_comments
-             WHERE clip_id = ? AND deleted_at IS NULL
-             ORDER BY created_at ASC, id ASC
-             LIMIT ?",
+             FROM (
+               SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
+               FROM clip_comments
+               WHERE clip_id = ? AND deleted_at IS NULL
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?
+             ) recent_comments
+             ORDER BY created_at ASC, id ASC",
             [clip_id, limit]
         )?)
     }
@@ -2450,5 +2471,14 @@ impl ResetPasswordTokenRepository {
             [now, id, now]
         )?;
         Ok(rows > 0)
+    }
+
+    pub async fn delete_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM reset_password_tokens WHERE user_id = ?",
+            [user_id]
+        )?;
+        Ok(())
     }
 }

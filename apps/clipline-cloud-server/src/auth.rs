@@ -13,7 +13,7 @@ use argon2::{
 };
 use axum::{
     body::Bytes,
-    extract::{Extension, Path, State},
+    extract::{DefaultBodyLimit, Extension, Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
@@ -33,7 +33,7 @@ use clipline_cloud_storage::{ObjectKey, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
@@ -52,6 +52,7 @@ const LOGIN_LOCKOUT_MAX: Duration = Duration::from_secs(15 * 60);
 const LOGIN_LIMIT_MAX_BUCKETS: usize = 4096;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 1024;
+const MAX_DISPLAY_NAME_LEN: usize = 120;
 const MAX_PROFILE_BIO_LEN: usize = 2000;
 const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
@@ -68,6 +69,21 @@ struct LoginBucket {
     failures: u32,
     reset_at: Instant,
     blocked_until: Option<Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum PatchField<T> {
+    #[default]
+    Unset,
+    Set(Option<T>),
+}
+
+fn deserialize_patch_field<'de, D, T>(deserializer: D) -> Result<PatchField<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(PatchField::Set)
 }
 
 impl AuthRuntime {
@@ -237,8 +253,20 @@ pub async fn ensure_first_admin(
     repositories: &Repositories,
 ) -> anyhow::Result<()> {
     let settings = repositories.settings.get().await?;
-    if settings.owner_user_id.is_some() {
-        return Ok(());
+    if let Some(owner_user_id) = settings.owner_user_id.as_deref() {
+        if repositories
+            .users
+            .get(owner_user_id)
+            .await?
+            .is_some_and(|owner| !owner.is_disabled)
+        {
+            return Ok(());
+        }
+        warn!(
+            event = "owner.bootstrap.recover",
+            owner_user_id = %owner_user_id,
+            message = "Configured owner account is missing or disabled; selecting an active owner"
+        );
     }
 
     if let Some(admin) = repositories.users.first_admin().await? {
@@ -311,7 +339,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/v1/users/{id}/reset-password", post(reset_password))
         .route("/api/v1/me/profile", patch(update_me_profile))
-        .route("/api/v1/me/avatar", put(update_me_avatar))
+        .route(
+            "/api/v1/me/avatar",
+            put(update_me_avatar).layer(DefaultBodyLimit::max(MAX_AVATAR_BYTES)),
+        )
         .route("/api/v1/me/change-password", post(change_password))
 }
 
@@ -644,8 +675,16 @@ struct CreateUserRequest {
     password: Option<String>,
     email: Option<String>,
     send_invite: Option<bool>,
+    generate_invite_link: Option<bool>,
     display_name: Option<String>,
     role: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateUserResponse {
+    #[serde(flatten)]
+    user: UserResponse,
+    invite_link: Option<PasswordSetupLinkResponse>,
 }
 
 async fn create_user(
@@ -653,7 +692,7 @@ async fn create_user(
     Extension(client_ip): Extension<ClientIp>,
     headers: HeaderMap,
     Json(request): Json<CreateUserRequest>,
-) -> Result<Json<UserResponse>, ApiError> {
+) -> Result<Json<CreateUserResponse>, ApiError> {
     let auth = require_admin(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
 
@@ -667,6 +706,12 @@ async fn create_user(
     }
     let email = normalized_optional_email(request.email)?;
     let send_invite = request.send_invite.unwrap_or(false);
+    let generate_invite_link = request.generate_invite_link.unwrap_or(false);
+    if send_invite && generate_invite_link {
+        return Err(ApiError::bad_request(
+            "choose either email invite or invite link",
+        ));
+    }
     if send_invite && email.is_none() {
         return Err(ApiError::bad_request("email is required to send an invite"));
     }
@@ -679,7 +724,7 @@ async fn create_user(
             return Err(ApiError::bad_request("SMTP invites are not enabled"));
         }
     }
-    let password = if send_invite {
+    let password = if send_invite || generate_invite_link {
         generate_prefixed_token("clp_tmp_")
     } else {
         let Some(password) = request.password.as_deref() else {
@@ -690,7 +735,7 @@ async fn create_user(
     validate_new_password(&password)?;
 
     let mut new_user = NewUser::new(request.username.trim(), hash_password(&password)?, role);
-    new_user.display_name = request.display_name;
+    new_user.display_name = normalized_display_name(request.display_name)?;
     new_user.email = email;
     let created = state.repositories.users.create(&new_user).await?;
     audit_with_ip(
@@ -704,9 +749,33 @@ async fn create_user(
     )
     .await?;
     if send_invite {
-        send_invite_email_for_user(&state, &auth.user, &created, Some(client_ip.as_str())).await?;
+        if let Err(error) =
+            send_invite_email_for_user(&state, &auth.user, &created, Some(client_ip.as_str())).await
+        {
+            rollback_new_invited_user(&state, &created.id).await;
+            return Err(error);
+        }
     }
-    Ok(Json(user_response_for_state(&state, created).await?))
+    let invite_link = if generate_invite_link {
+        let link = create_password_setup_link(&state, &created.id).await?;
+        audit_with_ip(
+            &state.repositories,
+            Some(client_ip.as_str()),
+            Some(&auth.user),
+            "user.invite_link.created",
+            Some("user"),
+            Some(&created.id),
+            Some(json!({ "username": created.username })),
+        )
+        .await?;
+        Some(link)
+    } else {
+        None
+    };
+    Ok(Json(CreateUserResponse {
+        user: user_response_for_state(&state, created).await?,
+        invite_link,
+    }))
 }
 
 async fn get_user(
@@ -726,7 +795,9 @@ struct UpdateUserRequest {
     display_name: Option<String>,
     role: Option<String>,
     is_disabled: Option<bool>,
-    storage_quota_bytes: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    storage_quota_bytes: PatchField<u64>,
+    reauth_password: Option<String>,
 }
 
 async fn update_user(
@@ -744,6 +815,7 @@ async fn update_user(
     };
     let settings = state.repositories.settings.get().await?;
     let actor_is_owner = settings.owner_user_id.as_deref() == Some(auth.user.id.as_str());
+    require_reauth_for_privileged_user_patch(&auth.user, &existing, &request)?;
     enforce_user_update_policy(&auth.user, &existing, &request, &settings, actor_is_owner)?;
 
     let was_disabled = existing.is_disabled;
@@ -754,22 +826,28 @@ async fn update_user(
     validate_role(&role)?;
     let is_disabled = request.is_disabled.unwrap_or(was_disabled);
     let storage_quota_bytes = match request.storage_quota_bytes {
-        Some(Some(value)) => Some(
+        PatchField::Set(Some(value)) => Some(
             i64::try_from(value)
                 .map_err(|_| ApiError::bad_request("storage quota is too large"))?,
         ),
-        Some(None) => None,
-        None => existing.storage_quota_bytes,
+        PatchField::Set(None) => None,
+        PatchField::Unset => existing.storage_quota_bytes,
     };
-    let display_name = request
-        .display_name
-        .as_deref()
-        .or(existing.display_name.as_deref());
+    let display_name = match request.display_name {
+        Some(display_name) => normalized_display_name(Some(display_name))?,
+        None => existing.display_name,
+    };
 
     state
         .repositories
         .users
-        .update_profile(&id, display_name, &role, is_disabled, storage_quota_bytes)
+        .update_profile(
+            &id,
+            display_name.as_deref(),
+            &role,
+            is_disabled,
+            storage_quota_bytes,
+        )
         .await?;
     if is_disabled && !was_disabled {
         revoke_user_auth(&state.repositories, &id).await?;
@@ -799,8 +877,10 @@ async fn update_user(
 
 #[derive(Debug, Deserialize)]
 struct UpdateMeProfileRequest {
-    display_name: Option<String>,
-    bio: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    display_name: PatchField<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    bio: PatchField<String>,
 }
 
 async fn update_me_profile(
@@ -812,8 +892,14 @@ async fn update_me_profile(
     let auth = require_auth(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
 
-    let display_name = normalized_optional_string(request.display_name);
-    let bio = normalized_bio(request.bio)?;
+    let display_name = match request.display_name {
+        PatchField::Set(value) => normalized_display_name(value)?,
+        PatchField::Unset => auth.user.display_name.clone(),
+    };
+    let bio = match request.bio {
+        PatchField::Set(value) => normalized_bio(value)?,
+        PatchField::Unset => auth.user.bio.clone(),
+    };
     state
         .repositories
         .users
@@ -950,11 +1036,13 @@ struct ResetPasswordRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct ResetPasswordResponse {
+struct PasswordSetupLinkResponse {
     reset_token: String,
     reset_url: String,
     expires_at: DateTime<Utc>,
 }
+
+type ResetPasswordResponse = PasswordSetupLinkResponse;
 
 async fn reset_password(
     State(state): State<AppState>,
@@ -989,13 +1077,42 @@ async fn reset_password(
     )
     .await?;
 
+    let reset_url = mail::reset_url(&state.config.public_url, &raw_token)
+        .map_err(|_| ApiError::internal("failed to build reset URL"))?
+        .to_string();
     Ok(Json(ResetPasswordResponse {
-        reset_url: mail::reset_url(&state.config.public_url, &raw_token)
-            .map_err(|_| ApiError::internal("failed to build reset URL"))?
-            .to_string(),
         reset_token: raw_token,
+        reset_url,
         expires_at,
     }))
+}
+
+async fn rollback_new_invited_user(state: &AppState, user_id: &str) {
+    if let Err(error) = state
+        .repositories
+        .reset_password_tokens
+        .delete_for_user(user_id)
+        .await
+    {
+        warn!(event = "invite.rollback_reset_tokens_failed", user_id = %user_id, error = %error);
+    }
+    if let Err(error) = state.repositories.users.delete(user_id).await {
+        warn!(event = "invite.rollback_user_failed", user_id = %user_id, error = %error);
+    }
+}
+
+async fn create_password_setup_link(
+    state: &AppState,
+    user_id: &str,
+) -> Result<PasswordSetupLinkResponse, ApiError> {
+    let (reset_token, expires_at) = create_reset_token(state, user_id).await?;
+    Ok(PasswordSetupLinkResponse {
+        reset_url: mail::reset_url(&state.config.public_url, &reset_token)
+            .map_err(|_| ApiError::internal("failed to build reset URL"))?
+            .to_string(),
+        reset_token,
+        expires_at,
+    })
 }
 
 async fn create_reset_token(
@@ -1399,6 +1516,9 @@ fn enforce_user_update_policy(
         .role
         .as_deref()
         .is_some_and(|role| role != target.role);
+    let disabled_state_change = request
+        .is_disabled
+        .is_some_and(|is_disabled| is_disabled != target.is_disabled);
 
     if target_is_owner {
         if !actor_is_owner {
@@ -1415,8 +1535,10 @@ fn enforce_user_update_policy(
     }
 
     if target_is_admin && !actor_is_owner {
-        if request.is_disabled == Some(true) {
-            return Err(ApiError::forbidden("owner role required to disable admins"));
+        if disabled_state_change {
+            return Err(ApiError::forbidden(
+                "owner role required to change admin disabled state",
+            ));
         }
         if role_change {
             return Err(ApiError::forbidden("owner role required to change admins"));
@@ -1431,6 +1553,29 @@ fn enforce_user_update_policy(
         return Err(ApiError::forbidden("users cannot disable themselves"));
     }
 
+    Ok(())
+}
+
+fn require_reauth_for_privileged_user_patch(
+    actor: &User,
+    target: &User,
+    request: &UpdateUserRequest,
+) -> Result<(), ApiError> {
+    let role_change = request
+        .role
+        .as_deref()
+        .is_some_and(|role| role != target.role);
+    let disabled_state_change = request
+        .is_disabled
+        .is_some_and(|is_disabled| is_disabled != target.is_disabled);
+    if role_change || disabled_state_change {
+        let Some(password) = request.reauth_password.as_deref() else {
+            return Err(ApiError::bad_request(
+                "reauth_password is required for role or disabled-state changes",
+            ));
+        };
+        require_reauth(actor, password)?;
+    }
     Ok(())
 }
 
@@ -1466,6 +1611,18 @@ fn normalized_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalized_display_name(value: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(value) = normalized_optional_string(value) else {
+        return Ok(None);
+    };
+    if value.len() > MAX_DISPLAY_NAME_LEN {
+        return Err(ApiError::bad_request(format!(
+            "display_name must be at most {MAX_DISPLAY_NAME_LEN} bytes"
+        )));
+    }
+    Ok(Some(value))
 }
 
 fn normalized_bio(value: Option<String>) -> Result<Option<String>, ApiError> {
@@ -1957,6 +2114,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn update_user_request_distinguishes_null_storage_quota() {
+        let omitted: UpdateUserRequest = serde_json::from_str("{}").expect("omitted quota");
+        assert!(matches!(omitted.storage_quota_bytes, PatchField::Unset));
+
+        let cleared: UpdateUserRequest =
+            serde_json::from_str(r#"{"storage_quota_bytes":null}"#).expect("null quota");
+        assert!(matches!(cleared.storage_quota_bytes, PatchField::Set(None)));
+    }
+
     #[tokio::test]
     async fn revoke_routes_reject_foreign_ids_without_audit() {
         let app = test_app().await;
@@ -2103,7 +2270,8 @@ mod tests {
             display_name: None,
             role: None,
             is_disabled: Some(true),
-            storage_quota_bytes: None,
+            storage_quota_bytes: PatchField::Unset,
+            reauth_password: None,
         };
 
         assert_eq!(
@@ -2111,6 +2279,25 @@ mod tests {
                 &admin_actor,
                 &admin_target,
                 &request,
+                &settings,
+                false,
+            )),
+            StatusCode::FORBIDDEN
+        );
+        let mut disabled_admin_target = admin_target.clone();
+        disabled_admin_target.is_disabled = true;
+        let reenable_request = UpdateUserRequest {
+            display_name: None,
+            role: None,
+            is_disabled: Some(false),
+            storage_quota_bytes: PatchField::Unset,
+            reauth_password: None,
+        };
+        assert_eq!(
+            error_status(enforce_user_update_policy(
+                &admin_actor,
+                &disabled_admin_target,
+                &reenable_request,
                 &settings,
                 false,
             )),
@@ -2128,6 +2315,77 @@ mod tests {
             .expect("owner can update admin");
         enforce_user_disable_policy(&owner, &admin_target, &settings)
             .expect("owner can disable admin");
+    }
+
+    #[tokio::test]
+    async fn ensure_first_admin_recovers_disabled_configured_owner() {
+        let app = test_app().await;
+        let disabled_owner = insert_user_with_role(&app.state, "disabled-owner", "admin").await;
+        let active_admin = insert_user_with_role(&app.state, "active-admin", "admin").await;
+        app.state
+            .repositories
+            .users
+            .set_disabled(&disabled_owner.id, true)
+            .await
+            .expect("disable owner");
+        app.state
+            .repositories
+            .settings
+            .set_owner_user_id(&disabled_owner.id)
+            .await
+            .expect("set disabled owner");
+
+        ensure_first_admin(&app.state.config, &app.state.repositories)
+            .await
+            .expect("recover owner");
+
+        let settings = app
+            .state
+            .repositories
+            .settings
+            .get()
+            .await
+            .expect("settings");
+        assert_eq!(
+            settings.owner_user_id.as_deref(),
+            Some(active_admin.id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_me_profile_preserves_omitted_fields() {
+        let app = test_app().await;
+        let user = insert_user(&app.state, "profile").await;
+        app.state
+            .repositories
+            .users
+            .update_self_profile(&user.id, Some("Original"), Some("Keep this bio"))
+            .await
+            .expect("seed profile");
+        let headers = auth_headers(&app.state, &user.id).await;
+
+        let _ = update_me_profile(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            headers,
+            Json(UpdateMeProfileRequest {
+                display_name: PatchField::Set(Some("Updated".to_string())),
+                bio: PatchField::Unset,
+            }),
+        )
+        .await
+        .expect("update profile");
+
+        let updated = app
+            .state
+            .repositories
+            .users
+            .get(&user.id)
+            .await
+            .expect("load user")
+            .expect("user");
+        assert_eq!(updated.display_name.as_deref(), Some("Updated"));
+        assert_eq!(updated.bio.as_deref(), Some("Keep this bio"));
     }
 
     async fn test_app() -> TestApp {

@@ -40,6 +40,7 @@ const state = {
     sort: "uploaded_at_desc",
     game: "",
     q: "",
+    page: 1,
   },
   adminResetLink: null,
 };
@@ -521,6 +522,7 @@ function submitAppSearch(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   state.publicQuery.q = String(form.get("q") || "");
+  state.publicQuery.page = 1;
   navigate("/");
 }
 
@@ -812,10 +814,13 @@ async function renderPublicLibrary() {
 
   try {
     const data = await api(`/api/v1/public/clips?${publicLibraryParams().toString()}`);
+    state.publicQuery.page = Number(data.page || state.publicQuery.page || 1);
     renderPublicLibraryPage({
       title: "Home",
       body: publicLibraryView(data.clips, {
         resultText: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"}`,
+        page: data.page,
+        hasMore: Boolean(data.has_more),
       }),
     });
     bindPublicLibraryEvents();
@@ -843,6 +848,7 @@ function publicLibraryParams() {
   const params = new URLSearchParams();
   params.set("sort", state.publicQuery.sort);
   params.set("page_size", "60");
+  params.set("page", String(Math.max(1, Number(state.publicQuery.page || 1))));
   for (const key of ["game", "q"]) {
     if (state.publicQuery[key]) {
       params.set(key, state.publicQuery[key]);
@@ -859,10 +865,27 @@ function publicLibraryView(clips, options = {}) {
         options.statusHtml
           ? options.statusHtml
           : clips.length
-          ? `<div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>`
+          ? `
+              <div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>
+              ${publicPager(options.page || state.publicQuery.page, Boolean(options.hasMore))}
+            `
           : `<div class="empty-state">No public clips match this view.</div>`
       }
     </section>
+  `;
+}
+
+function publicPager(page, hasMore) {
+  const currentPage = Math.max(1, Number(page || 1));
+  if (currentPage <= 1 && !hasMore) {
+    return "";
+  }
+  return `
+    <nav class="public-pager" aria-label="Public clip pages">
+      <button class="btn-secondary" type="button" data-public-page="${currentPage - 1}" ${currentPage <= 1 ? "disabled" : ""}>Previous</button>
+      <span class="muted">Page ${currentPage}</span>
+      <button class="btn-secondary" type="button" data-public-page="${currentPage + 1}" ${hasMore ? "" : "disabled"}>Next</button>
+    </nav>
   `;
 }
 
@@ -947,6 +970,7 @@ function bindPublicLibraryEvents() {
     const data = new FormData(form);
     state.publicQuery.sort = String(data.get("sort") || "uploaded_at_desc");
     state.publicQuery.game = String(data.get("game") || "");
+    state.publicQuery.page = 1;
     renderPublicLibrary();
   };
 
@@ -956,6 +980,16 @@ function bindPublicLibraryEvents() {
   });
   form.querySelectorAll("select, input").forEach((control) => {
     control.addEventListener("change", applyFilters);
+  });
+  document.querySelectorAll("[data-public-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const page = Number(button.dataset.publicPage || 1);
+      if (!Number.isFinite(page) || page < 1) {
+        return;
+      }
+      state.publicQuery.page = page;
+      renderPublicLibrary();
+    });
   });
 }
 
@@ -1899,23 +1933,14 @@ async function renderPublicShare(shareId) {
     `,
   });
   try {
-    const [clip, recommendationData, commentData] = await Promise.all([
-      api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`),
-      api(`/api/v1/public/recommendations?share_id=${encodeURIComponent(shareId)}&limit=8`).catch(() => ({ clips: [] })),
-      api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`).catch(() => ({ comments: [] })),
-    ]);
-    let recommendations = recommendationData.clips || [];
-    if (!recommendations.length) {
-      const fallbackRecommendations = await api("/api/v1/public/recommendations?limit=8").catch(() => ({ clips: [] }));
-      recommendations = (fallbackRecommendations.clips || []).filter((candidate) => candidate.share_id !== clip.share_id);
-    }
+    const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
     const mediaUrl = safeMediaUrl(clip.media_url);
     const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
     const authorName = publicAuthorName(clip);
     renderPublicSharePage({
       title: clip.title,
       subtitle: `${authorName} - ${clip.game_name || clip.game_id || "Shared clip"}`,
-      body: publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations, commentData.comments || []),
+      body: publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, [], []),
     });
     initClipPlayer(document.querySelector("[data-clip-player]"), {
       durationMs: clip.duration_ms,
@@ -1923,6 +1948,7 @@ async function renderPublicShare(shareId) {
     });
     bindPublicShareEvents(clip.share_id);
     recordPublicView(clip.share_id);
+    hydratePublicShareSideData(clip);
   } catch (_) {
     renderPublicSharePage({
       title: "Clip unavailable",
@@ -1936,10 +1962,37 @@ async function renderPublicShare(shareId) {
   }
 }
 
+async function hydratePublicShareSideData(clip) {
+  const shareId = clip.share_id;
+  const [recommendationData, commentData] = await Promise.all([
+    api(`/api/v1/public/recommendations?share_id=${encodeURIComponent(shareId)}&limit=8`).catch(() => ({ clips: [] })),
+    api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`).catch(() => ({ comments: [] })),
+  ]);
+  if (currentRoute().name !== "public" || currentRoute().shareId !== shareId) {
+    return;
+  }
+  let recommendations = recommendationData.clips || [];
+  if (!recommendations.length) {
+    const fallbackRecommendations = await api("/api/v1/public/recommendations?limit=8").catch(() => ({ clips: [] }));
+    recommendations = (fallbackRecommendations.clips || []).filter((candidate) => candidate.share_id !== clip.share_id);
+  }
+  const commentsSlot = document.querySelector("#public-comments-slot");
+  if (commentsSlot) {
+    commentsSlot.innerHTML = publicCommentsView(clip, commentData.comments || []);
+    bindPublicShareEvents(shareId);
+  }
+  const recommendationSlot = document.querySelector("#public-recommendations-slot");
+  const layout = document.querySelector(".public-watch-layout");
+  if (recommendationSlot) {
+    recommendationSlot.innerHTML = recommendations.length ? publicRecommendationRail(recommendations) : "";
+    layout?.classList.toggle("has-recommendations", recommendations.length > 0);
+  }
+}
+
 function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations, comments) {
   return `
     <section class="public-watch-page" aria-labelledby="public-title">
-      <div class="public-watch-layout">
+      <div class="public-watch-layout ${recommendations.length ? "has-recommendations" : ""}">
         <div class="public-watch-main">
           ${clipPlayerView({
             playerId: `public-${clip.share_id}`,
@@ -1948,9 +2001,9 @@ function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendatio
             durationMs: clip.duration_ms,
           })}
           ${publicShareInfo(clip, authorName)}
-          ${publicCommentsView(clip, comments)}
+          <div id="public-comments-slot">${publicCommentsView(clip, comments)}</div>
         </div>
-        ${recommendations.length ? publicRecommendationRail(recommendations) : ""}
+        <div id="public-recommendations-slot">${recommendations.length ? publicRecommendationRail(recommendations) : ""}</div>
       </div>
     </section>
   `;
@@ -2555,6 +2608,13 @@ function adminUsersView(users, settings) {
     roleOptions.push(["admin", "Admin"]);
   }
   const smtpEnabled = Boolean(settings?.smtp_enabled);
+  const setupOptions = [
+    ["password", "Manual password"],
+    ["link", "Generate invite link"],
+  ];
+  if (smtpEnabled) {
+    setupOptions.push(["email", "Send email invite"]);
+  }
   return `
     <div class="admin-grid">
       <form id="create-user-form" class="panel section">
@@ -2562,16 +2622,10 @@ function adminUsersView(users, settings) {
         ${field("Username", "username", "text", "", "Required")}
         ${field("Display name", "display_name", "text", "", "Optional")}
         ${field("Email", "email", "email", "", smtpEnabled ? "Required for email invite" : "Optional")}
-        ${field("Password", "password", "password", "", smtpEnabled ? "Optional when sending invite" : "At least 8 characters")}
+        ${selectField("Account setup", "account_setup", "password", setupOptions)}
+        ${field("Password", "password", "password", "", "Required for manual setup")}
         ${selectField("Role", "role", "user", roleOptions)}
-        ${
-          smtpEnabled
-            ? `<label class="check-field">
-                <input name="send_invite" type="checkbox">
-                <span>Send email invite</span>
-              </label>`
-            : `<p class="muted">Configure SMTP in Settings to send email invites.</p>`
-        }
+        <p class="muted">${smtpEnabled ? "Invite links can be copied here; email invites are sent through SMTP." : "Invite links work without SMTP. Configure SMTP in Settings to send email invites."}</p>
         <button class="btn-primary" type="submit">${icon("plus")} Create user</button>
       </form>
       <div class="panel">
@@ -2624,10 +2678,12 @@ function adminResetLinkNotice() {
   if (!state.adminResetLink) {
     return "";
   }
+  const kind = state.adminResetLink.kind === "invite" ? "Invite" : "Reset";
+  const username = state.adminResetLink.username ? ` for ${state.adminResetLink.username}` : "";
   return `
     <div class="notice admin-reset-link">
       <div>
-        <strong>Reset link created</strong>
+        <strong>${escapeHtml(kind)} link created${escapeHtml(username)}</strong>
         <span>Expires ${escapeHtml(formatDate(state.adminResetLink.expires_at))}</span>
         <code>${escapeHtml(state.adminResetLink.reset_url)}</code>
       </div>
@@ -2782,19 +2838,31 @@ function bindAdminEvents() {
     createForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
+      const accountSetup = String(form.get("account_setup") || "password");
       try {
-        await api("/api/v1/users", {
+        const data = await api("/api/v1/users", {
           method: "POST",
           body: {
             username: String(form.get("username") || ""),
             display_name: nullableString(form.get("display_name")),
             email: nullableString(form.get("email")),
             password: nullableString(form.get("password")),
-            send_invite: form.get("send_invite") === "on",
+            send_invite: accountSetup === "email",
+            generate_invite_link: accountSetup === "link",
             role: String(form.get("role") || "user"),
           },
         });
-        flash("User created.");
+        if (data.invite_link) {
+          state.adminResetLink = {
+            ...data.invite_link,
+            kind: "invite",
+            username: data.username,
+          };
+          flash("Invite link created.");
+        } else {
+          state.adminResetLink = null;
+          flash(accountSetup === "email" ? "User created and invite sent." : "User created.");
+        }
         navigate("/admin?tab=users");
       } catch (error) {
         flash(error.message, "error");
@@ -2906,7 +2974,7 @@ function bindAdminEvents() {
               method: "POST",
               body: { reauth_password: result.reauth_password },
             });
-            state.adminResetLink = data;
+            state.adminResetLink = { ...data, kind: "reset" };
             flash("Reset link created.");
           }
         }

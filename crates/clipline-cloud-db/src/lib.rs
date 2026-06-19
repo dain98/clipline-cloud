@@ -1197,6 +1197,34 @@ mod tests {
         assert_public_clip_query_discovers_only_public_ready_clips(database).await;
     }
 
+    #[tokio::test]
+    async fn sqlite_public_clip_count_for_owner_is_not_page_limited() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_public_clip_count_for_owner_is_not_page_limited(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_public_clip_count_for_owner_is_not_page_limited() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_public_clip_count_for_owner_is_not_page_limited(database).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_clip_comments_limit_keeps_newest_comments() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_clip_comments_limit_keeps_newest_comments(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_clip_comments_limit_keeps_newest_comments() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_clip_comments_limit_keeps_newest_comments(database).await;
+    }
+
     async fn assert_clip_query_filters_source_duration_size_and_sorts_size(database: Database) {
         let repos = Repositories::new(database);
         let user = repos
@@ -1407,6 +1435,14 @@ mod tests {
                 .len(),
             1
         );
+        assert_eq!(
+            repos
+                .clips
+                .count_public_for_owner(&user.id)
+                .await
+                .expect("count public clips for owner"),
+            1
+        );
 
         let view_count = repos
             .clips
@@ -1448,6 +1484,74 @@ mod tests {
                 .expect("list comments after soft delete")
                 .len(),
             0
+        );
+    }
+
+    async fn assert_public_clip_count_for_owner_is_not_page_limited(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(format!("profile-{test_id}"), "hash", "user"))
+            .await
+            .expect("create user");
+
+        for index in 0..65 {
+            let mut clip = NewClip::new(&user.id, format!("public clip {index}"), "local");
+            clip.status = "ready".to_string();
+            clip.visibility = "public".to_string();
+            clip.public_share_id = Some(format!("profile-{test_id}-{index}"));
+            repos.clips.create(&clip).await.expect("create clip");
+        }
+
+        assert_eq!(
+            repos
+                .clips
+                .count_public_for_owner(&user.id)
+                .await
+                .expect("count clips"),
+            65
+        );
+    }
+
+    async fn assert_clip_comments_limit_keeps_newest_comments(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("commenter-{test_id}"),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("create user");
+        let mut clip = NewClip::new(&user.id, "commented clip", "local");
+        clip.status = "ready".to_string();
+        let clip = repos.clips.create(&clip).await.expect("create clip");
+
+        for index in 0..3 {
+            let mut comment = NewClipComment::new(&clip.id, &user.id, format!("comment {index}"));
+            comment.created_at = now_utc() + ChronoDuration::seconds(index);
+            comment.updated_at = comment.created_at;
+            repos
+                .clip_comments
+                .create(&comment)
+                .await
+                .expect("create comment");
+        }
+
+        let comments = repos
+            .clip_comments
+            .list_for_clip(&clip.id, 2)
+            .await
+            .expect("list comments");
+        assert_eq!(
+            comments
+                .iter()
+                .map(|comment| comment.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["comment 1", "comment 2"]
         );
     }
 
