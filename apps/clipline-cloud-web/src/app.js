@@ -332,6 +332,7 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
           ${privateLinks}
           ${adminLink}
         </nav>
+        <section id="sidebar-recommendations" class="sidebar-recommendations" hidden></section>
         <div class="sidebar-footer">
           ${footer}
         </div>
@@ -357,6 +358,7 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
   document.querySelector("#sidebar-toggle")?.addEventListener("click", toggleSidebar);
   document.querySelector("#app-search-form")?.addEventListener("submit", submitAppSearch);
   document.querySelector("#logout-button")?.addEventListener("click", logout);
+  loadSidebarRecommendations();
 }
 
 function navLink(href, key, active, iconSvg, label) {
@@ -365,6 +367,30 @@ function navLink(href, key, active, iconSvg, label) {
       ${iconSvg}<span>${escapeHtml(label)}</span>
     </a>
   `;
+}
+
+async function loadSidebarRecommendations() {
+  const container = document.querySelector("#sidebar-recommendations");
+  if (!container) {
+    return;
+  }
+  try {
+    const data = await api("/api/v1/public/recommendations?limit=3");
+    const currentContainer = document.querySelector("#sidebar-recommendations");
+    if (currentContainer !== container) {
+      return;
+    }
+    if (!data.clips?.length) {
+      container.hidden = true;
+      return;
+    }
+    container.innerHTML = `
+      ${recommendationSidebarContent(data.clips)}
+    `;
+    container.hidden = false;
+  } catch (_) {
+    container.hidden = true;
+  }
 }
 
 function readSidebarCollapsed() {
@@ -1518,24 +1544,22 @@ async function renderPublicShare(shareId) {
     `,
   });
   try {
-    const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
+    const [clip, recommendationData] = await Promise.all([
+      api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`),
+      api(`/api/v1/public/recommendations?share_id=${encodeURIComponent(shareId)}&limit=8`).catch(() => ({ clips: [] })),
+    ]);
+    let recommendations = recommendationData.clips || [];
+    if (!recommendations.length) {
+      const fallbackRecommendations = await api("/api/v1/public/recommendations?limit=8").catch(() => ({ clips: [] }));
+      recommendations = (fallbackRecommendations.clips || []).filter((candidate) => candidate.share_id !== clip.share_id);
+    }
     const mediaUrl = safeMediaUrl(clip.media_url);
     const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
     const authorName = publicAuthorName(clip);
     renderPublicSharePage({
       title: clip.title,
       subtitle: `${authorName} - ${clip.game_name || clip.game_id || "Shared clip"}`,
-      body: `
-        <section class="public-watch-page" aria-labelledby="public-title">
-          ${clipPlayerView({
-            playerId: `public-${clip.share_id}`,
-            src: mediaUrl,
-            poster: thumbnailUrl,
-            durationMs: clip.duration_ms,
-          })}
-          ${publicShareInfo(clip, authorName)}
-        </section>
-      `,
+      body: publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations),
     });
     initClipPlayer(document.querySelector("[data-clip-player]"), {
       durationMs: clip.duration_ms,
@@ -1552,6 +1576,25 @@ async function renderPublicShare(shareId) {
       `,
     });
   }
+}
+
+function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations) {
+  return `
+    <section class="public-watch-page" aria-labelledby="public-title">
+      <div class="public-watch-layout">
+        <div class="public-watch-main">
+          ${clipPlayerView({
+            playerId: `public-${clip.share_id}`,
+            src: mediaUrl,
+            poster: thumbnailUrl,
+            durationMs: clip.duration_ms,
+          })}
+          ${publicShareInfo(clip, authorName)}
+        </div>
+        ${recommendations.length ? publicRecommendationRail(recommendations) : ""}
+      </div>
+    </section>
+  `;
 }
 
 function publicShareInfo(clip, authorName) {
@@ -1573,6 +1616,44 @@ function publicShareInfo(clip, authorName) {
         </div>
       </div>
     </section>
+  `;
+}
+
+function publicRecommendationRail(clips) {
+  return `
+    <aside class="public-recommendation-rail" aria-label="Recommended clips">
+      ${recommendationSidebarContent(clips)}
+    </aside>
+  `;
+}
+
+function recommendationSidebarContent(clips) {
+  return `
+    <h2>Recommended</h2>
+    <div class="recommendation-list recommendation-list-sidebar">
+      ${clips.map((clip) => recommendationCard(clip, "sidebar")).join("")}
+    </div>
+  `;
+}
+
+function recommendationCard(clip, variant) {
+  const sharePath = `/c/${encodeURIComponent(clip.share_id)}`;
+  const thumbnailPath = `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
+  const authorName = publicAuthorName(clip);
+  const duration = formatDuration(clip.duration_ms);
+  const uploadedAgo = formatRelativeTime(clip.uploaded_at);
+  return `
+    <a class="recommendation-card recommendation-card-${escapeAttr(variant)}" href="${escapeAttr(sharePath)}" data-route>
+      <div class="recommendation-thumb">
+        <img src="${escapeAttr(thumbnailPath)}" alt="">
+        ${duration !== "Unknown" ? `<span class="public-duration-badge">${escapeHtml(duration)}</span>` : ""}
+      </div>
+      <div class="recommendation-body">
+        <strong>${escapeHtml(clip.title)}</strong>
+        <span>${escapeHtml(authorName)}</span>
+        <span>${escapeHtml(gameLabel(clip))}${uploadedAgo !== "Unknown" ? ` &middot; ${escapeHtml(uploadedAgo)}` : ""}</span>
+      </div>
+    </a>
   `;
 }
 

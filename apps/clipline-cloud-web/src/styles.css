@@ -333,6 +333,26 @@ a:hover {
   padding-top: 1rem;
 }
 
+.sidebar-recommendations {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.65rem;
+  padding-top: 0.9rem;
+}
+
+.sidebar-recommendations[hidden] {
+  display: none;
+}
+
+.sidebar-recommendations h2,
+.public-recommendation-rail h2 {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
 .sidebar-collapsed .sidebar {
   padding: 1rem 0.7rem;
 }
@@ -347,7 +367,8 @@ a:hover {
 
 .sidebar-collapsed .nav-link span,
 .sidebar-collapsed .sidebar-action span,
-.sidebar-collapsed .user-chip {
+.sidebar-collapsed .user-chip,
+.sidebar-collapsed .sidebar-recommendations {
   display: none;
 }
 
@@ -1153,8 +1174,21 @@ a:hover {
   display: grid;
   gap: 0.95rem;
   margin: 0 auto;
-  max-width: 72rem;
-  width: min(100%, 72rem);
+  max-width: 94rem;
+  width: min(100%, 94rem);
+}
+
+.public-watch-layout {
+  align-items: start;
+  display: grid;
+  gap: 1.2rem;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+}
+
+.public-watch-main {
+  display: grid;
+  gap: 0.95rem;
+  min-width: 0;
 }
 
 .public-share-heading h1 {
@@ -1229,6 +1263,88 @@ a:hover {
   margin-top: 0.12rem;
 }
 
+.public-recommendation-rail {
+  border-left: 1px solid rgba(121, 132, 150, 0.18);
+  display: grid;
+  gap: 0.75rem;
+  padding-left: 1rem;
+  position: sticky;
+  top: calc(var(--topbar-height) + 1rem);
+}
+
+.recommendation-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.recommendation-list-sidebar {
+  gap: 0.55rem;
+}
+
+.recommendation-card {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  gap: 0.62rem;
+  grid-template-columns: 7.25rem minmax(0, 1fr);
+  padding: 0.3rem;
+  text-decoration: none;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.recommendation-card:hover {
+  background: #1e2a3a;
+  border-color: rgba(139, 188, 255, 0.12);
+  text-decoration: none;
+}
+
+.recommendation-card-sidebar {
+  gap: 0.5rem;
+  grid-template-columns: 4.85rem minmax(0, 1fr);
+  padding: 0.22rem;
+}
+
+.recommendation-thumb {
+  aspect-ratio: 16 / 9;
+  background: #0a0f17;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+
+.recommendation-thumb img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.recommendation-body {
+  align-content: start;
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.recommendation-body strong {
+  color: var(--ink);
+  display: -webkit-box;
+  font-size: 0.88rem;
+  line-height: 1.25;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.recommendation-body span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .public-search-form {
   display: grid;
   gap: 0.7rem;
@@ -1259,6 +1375,7 @@ a:hover {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
+  line-height: 1;
   text-transform: uppercase;
 }
 
@@ -1267,10 +1384,15 @@ a:hover {
   background: transparent;
   border: 0;
   color: var(--ink);
+  display: block;
   font: inherit;
-  min-height: 2rem;
+  height: 2rem;
+  line-height: 2rem;
+  margin: 0;
   min-width: 0;
   outline: 0;
+  padding: 0;
+  transform: translateY(-1px);
 }
 
 .public-filter-control input {
@@ -1440,8 +1562,17 @@ th {
   .account-grid,
   .clip-row,
   .detail-layout,
+  .public-watch-layout,
   .admin-grid {
     grid-template-columns: 1fr;
+  }
+
+  .public-recommendation-rail {
+    border-left: 0;
+    border-top: 1px solid rgba(121, 132, 150, 0.18);
+    padding-left: 0;
+    padding-top: 1rem;
+    position: static;
   }
 
   .actions {
@@ -1527,6 +1658,10 @@ th {
     justify-content: space-between;
   }
 
+  .sidebar-recommendations {
+    display: none;
+  }
+
   .page-heading {
     align-items: flex-start;
     flex-direction: column;
@@ -1589,5 +1724,9 @@ th {
 
   .player-volume {
     width: 3.8rem;
+  }
+
+  .recommendation-card {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
   }
 }
