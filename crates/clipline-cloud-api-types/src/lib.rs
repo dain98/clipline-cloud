@@ -42,6 +42,8 @@ pub struct UserResponse {
     pub is_disabled: bool,
     #[serde(default)]
     pub storage_bytes: u64,
+    #[serde(default)]
+    pub storage_quota_bytes: Option<u64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub last_login_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -93,6 +95,7 @@ pub struct SessionResponse {
 pub struct CreateUploadRequest {
     pub client_clip_id: Option<String>,
     pub title: String,
+    pub description: Option<String>,
     pub game_name: Option<String>,
     pub game_id: Option<String>,
     pub game_executable: Option<String>,
@@ -205,6 +208,7 @@ pub struct ClipListResponse {
 pub struct ClipSummaryResponse {
     pub id: String,
     pub title: String,
+    pub description: Option<String>,
     pub game_name: Option<String>,
     pub game_id: Option<String>,
     pub recorded_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -226,6 +230,7 @@ pub struct ClipDetailResponse {
     pub id: String,
     pub client_clip_id: Option<String>,
     pub title: String,
+    pub description: Option<String>,
     pub game_name: Option<String>,
     pub game_id: Option<String>,
     pub game_executable: Option<String>,

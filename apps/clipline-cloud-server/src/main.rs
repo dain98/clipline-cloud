@@ -80,7 +80,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
     if process_role.runs_http() {
         auth::ensure_first_admin(&config, &repositories)
             .await
-            .context("failed to ensure first admin user")?;
+            .context("failed to ensure first owner user")?;
     } else {
         info!(
             event = "auth.bootstrap_admin.skipped",

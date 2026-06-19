@@ -12,8 +12,7 @@ use clipline_cloud_api_types::{
 };
 use clipline_cloud_core::jobs::enqueue_validate_object;
 use clipline_cloud_db::{
-    now_utc, Clip, NewClip, NewClipMarker, NewUploadPart, NewUploadSession, UploadPart,
-    UploadSession,
+    now_utc, Clip, NewClip, NewUploadPart, NewUploadSession, UploadPart, UploadSession,
 };
 use clipline_cloud_storage::{
     CompletedUploadPart, MediaObjectKeys, ObjectKey, PutObjectMetadata, StorageError,
@@ -70,6 +69,7 @@ async fn create_upload(
             return Ok(Json(create_response(&state.config, &existing_session)?));
         }
     }
+    enforce_upload_policy(&state, &request).await?;
 
     let active_uploads = state
         .repositories
@@ -81,7 +81,7 @@ async fn create_upload(
             "too many active upload sessions for this user",
         ));
     }
-    enforce_user_storage_quota(&state, &auth.user.id, request.file_size_bytes).await?;
+    enforce_user_storage_quota(&state, &auth.user, request.file_size_bytes).await?;
 
     let keys = MediaObjectKeys::generate().map_err(storage_error)?;
     let is_s3 = is_s3_storage(&state.config);
@@ -113,6 +113,7 @@ async fn create_upload(
         state.config.storage_backend_name(),
     );
     new_clip.client_clip_id = client_clip_id.clone();
+    new_clip.description = normalized_optional(&request.description);
     new_clip.game_name = normalized_optional(&request.game_name);
     new_clip.game_id = normalized_optional(&request.game_id);
     new_clip.game_executable = normalized_optional(&request.game_executable);
@@ -153,13 +154,6 @@ async fn create_upload(
             return Err(error.into());
         }
     };
-    for marker in request.markers.unwrap_or_default() {
-        let mut new_marker = NewClipMarker::new(&clip.id, marker.kind.trim(), marker.timestamp_ms);
-        new_marker.label = normalized_optional(&marker.label);
-        new_marker.metadata_json = marker.metadata.map(sqlx::types::Json);
-        state.repositories.clip_markers.create(&new_marker).await?;
-    }
-
     let expires_at = now_utc() + upload_session_ttl(&state.config);
     let mut new_session = NewUploadSession::new(
         &clip.id,
@@ -665,30 +659,29 @@ fn validate_create_request(config: &Config, request: &CreateUploadRequest) -> Re
             "duration, dimensions, and fps must be positive when provided",
         ));
     }
-    for marker in request.markers.as_deref().unwrap_or_default() {
-        if marker.kind.trim().is_empty() || marker.timestamp_ms < 0 {
-            return Err(ApiError::bad_request(
-                "markers require a kind and a non-negative timestamp",
-            ));
-        }
-    }
-
     Ok(())
 }
 
 async fn enforce_user_storage_quota(
     state: &AppState,
-    user_id: &str,
+    user: &clipline_cloud_db::User,
     requested_size_bytes: u64,
 ) -> Result<(), ApiError> {
-    let Some(quota_bytes) = state.config.user_storage_quota_bytes else {
+    let quota_bytes = match user.storage_quota_bytes {
+        Some(value) => Some(
+            u64::try_from(value)
+                .map_err(|_| ApiError::internal("stored user storage quota is negative"))?,
+        ),
+        None => state.config.user_storage_quota_bytes,
+    };
+    let Some(quota_bytes) = quota_bytes else {
         return Ok(());
     };
 
     let used_bytes = state
         .repositories
         .clips
-        .active_storage_bytes_for_owner(user_id)
+        .active_storage_bytes_for_owner(&user.id)
         .await?;
     let used_bytes = u64::try_from(used_bytes)
         .map_err(|_| ApiError::internal("stored user storage usage is negative"))?;
@@ -697,6 +690,48 @@ async fn enforce_user_storage_quota(
         return Err(ApiError::payload_too_large(format!(
             "upload would exceed user storage quota ({projected_bytes}/{quota_bytes} bytes)"
         )));
+    }
+
+    Ok(())
+}
+
+async fn enforce_upload_policy(
+    state: &AppState,
+    request: &CreateUploadRequest,
+) -> Result<(), ApiError> {
+    let settings = state.repositories.settings.get().await?;
+    if settings.allow_vod_uploads {
+        return Ok(());
+    }
+
+    enforce_vod_policy(
+        settings.allow_vod_uploads,
+        settings.vod_threshold_minutes,
+        request.duration_ms,
+    )
+}
+
+fn enforce_vod_policy(
+    allow_vod_uploads: bool,
+    vod_threshold_minutes: i64,
+    duration_ms: Option<i64>,
+) -> Result<(), ApiError> {
+    if allow_vod_uploads {
+        return Ok(());
+    }
+
+    let threshold_ms = vod_threshold_minutes
+        .saturating_mul(60)
+        .saturating_mul(1000);
+    let Some(duration_ms) = duration_ms else {
+        return Err(ApiError::bad_request(
+            "duration_ms is required when full-length VOD uploads are disabled",
+        ));
+    };
+    if duration_ms >= threshold_ms {
+        return Err(ApiError::bad_request(
+            "full-length VOD uploads are disabled for this instance",
+        ));
     }
 
     Ok(())
@@ -1364,6 +1399,13 @@ mod tests {
         config
     }
 
+    fn error_status(result: Result<(), ApiError>) -> StatusCode {
+        result
+            .expect_err("expected handler error")
+            .into_response()
+            .status()
+    }
+
     #[test]
     fn part_size_rounds_up_to_mib_and_respects_s3_minimum() {
         assert_eq!(choose_part_size(1, 1, false).unwrap(), MIB);
@@ -1434,6 +1476,20 @@ mod tests {
             response.direct_part_ack_url_template.as_deref(),
             Some("/api/v1/uploads/upload/parts/{part_number}/ack")
         );
+    }
+
+    #[test]
+    fn vod_policy_blocks_threshold_and_missing_duration_when_disabled() {
+        assert!(enforce_vod_policy(false, 30, Some(29 * 60 * 1000)).is_ok());
+        assert_eq!(
+            error_status(enforce_vod_policy(false, 30, Some(30 * 60 * 1000))),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            error_status(enforce_vod_policy(false, 30, None)),
+            StatusCode::BAD_REQUEST
+        );
+        assert!(enforce_vod_policy(true, 30, None).is_ok());
     }
 
     #[test]

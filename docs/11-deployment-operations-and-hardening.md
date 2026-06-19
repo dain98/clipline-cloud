@@ -108,7 +108,7 @@ secrets:
     file: ./secrets/session_secret.txt
 ```
 
-After first login, rotate the bootstrap admin password through the app. For production, pin
+After first login, rotate the bootstrap owner password through the app. For production, pin
 `CLIPLINE_IMAGE` to a release tag instead of using `:latest`.
 
 S3 mode adds the `CLIPLINE_S3_*` block and sets `CLIPLINE_STORAGE_BACKEND: s3`. Postgres mode swaps
@@ -187,7 +187,7 @@ Self-hosting diagnostics without a full observability stack.
 - [x] Backups restore to a working instance (DB + media point-in-time consistent) following the docs
 - [x] `/readyz` flips to not-ready when DB or storage is down; admin diagnostics reflect real state
 - [x] Pulling each failure mode (storage down, disk full, bad S3 creds, killed mid-upload/mid-processing) yields a clear, recoverable state — no stranded clips, no data loss
-- [x] **v1 gate:** the full loop (Compose → first-run admin → user creation → desktop upload → library → share) works on local disk, with the same API/storage path smoke-tested against S3
+- [x] **v1 gate:** the full loop (Compose → first-run owner → user creation → desktop upload → library → share) works on local disk, with the same API/storage path smoke-tested against S3
 
 ## Progress log
 
@@ -204,7 +204,7 @@ Self-hosting diagnostics without a full observability stack.
   secure-header smoke test.
 - 2026-06-16 — Built local Docker image `clipline-cloud:milestone11-smoke` and ran isolated Compose
   smoke tests for the default SQLite/local-disk profile and the bundled MinIO/S3 profile. Both
-  reported `/readyz` OK, generated a first-run admin password, accepted admin login/device-token
+  reported `/readyz` OK, generated a first-run owner password, accepted owner login/device-token
   auth, returned admin diagnostics, and emitted secure headers. The MinIO profile also created an
   upload session and completed a single-PUT S3-backed upload.
 - 2026-06-16 — Tightened deployment review issues: default/MinIO local-test profiles now use
@@ -237,7 +237,7 @@ Self-hosting diagnostics without a full observability stack.
 - 2026-06-17 — Ran the Docker-only server smoke on an operator host with only Docker available:
   built `clipline-cloud:ops-smoke`, validated all five Compose files, started the default
   SQLite/local profile, the bundled MinIO/S3 profile, and the Postgres/local profile, verified
-  first-run admin/device-token auth and admin diagnostics, exercised SQLite/local and
+  first-run owner/device-token auth and admin diagnostics, exercised SQLite/local and
   Postgres/local backup/restore, and confirmed storage/database outages flip `/readyz` to not-ready.
   Port conflicts on the host exposed two operator hardening fixes that were merged: configurable
   Caddy subnet/static IPs and a retried Caddy HTTPS probe while local TLS initializes.

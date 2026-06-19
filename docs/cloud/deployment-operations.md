@@ -34,14 +34,14 @@ For production-style local disk deployments without a git clone, prefer
 `docker-compose.standalone.yml`. It avoids the `clipline-secrets` helper container and reads the
 session secret from `./secrets/session_secret.txt`.
 
-The first boot creates the initial admin account. If no bootstrap password is configured, read the
+The first boot creates the initial owner account. If no bootstrap password is configured, read the
 generated one-time password from logs:
 
 ```sh
 docker compose -f docker-compose.yml logs clipline-cloud
 ```
 
-Rotate the bootstrap admin password after first login, especially when using a fixed
+Rotate the bootstrap owner password after first login, especially when using a fixed
 `admin_password.txt` secret.
 
 The Caddy, Postgres, and external-S3 profiles expect operator-provided files in

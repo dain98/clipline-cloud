@@ -36,8 +36,8 @@ v1** — local is the default Compose path, but S3 support is required before th
 
 ## 2. Goals and Non-Goals
 
-**v1 delivers a complete self-hosted clip-sharing loop:** deploy with Compose → first-run admin →
-admin creates users → desktop app connects with a host URL + credentials, receives a revocable
+**v1 delivers a complete self-hosted clip-sharing loop:** deploy with Compose → first-run owner →
+owner/admin creates users → desktop app connects with a host URL + credentials, receives a revocable
 device token, and uploads → clips appear in the owner's library → owner sorts/filters, sets
 private/public, and shares public clips via non-guessable URLs. Storage works identically on local
 disk or S3.

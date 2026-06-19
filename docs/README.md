@@ -52,7 +52,7 @@ that shows where the project stands.
 ## What "v1 complete" means
 
 Docs **01–11** are the Phase-1 / v1 completeness target. When all eleven are `☑ Complete`, the
-self-hosted clip-sharing loop works end to end: deploy with Compose → first-run admin → admin
+self-hosted clip-sharing loop works end to end: deploy with Compose → first-run owner → owner/admin
 creates users → desktop connects and uploads → clips appear in the owner's library → owner
 sorts/filters, sets private/public, and shares public clips via non-guessable URLs — identically on
 local disk or S3. Docs **12–14** are post-v1 phases; build them as demand appears.

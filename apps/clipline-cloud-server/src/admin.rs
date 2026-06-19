@@ -1,17 +1,19 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::HeaderMap,
     routing::get,
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use clipline_cloud_db::{AuditLogEntry, DatabaseKind, Job, UploadSession};
+use clipline_cloud_db::{
+    AppSettings, AuditLogEntry, DatabaseKind, Job, UpdateAppSettings, UploadSession,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{self, ApiError},
     config::StorageConfig,
-    AppState,
+    AppState, ClientIp,
 };
 
 const DEFAULT_LIMIT: i64 = 50;
@@ -19,11 +21,37 @@ const MAX_LIMIT: i64 = 200;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/about", get(about))
+        .route(
+            "/api/v1/admin/settings",
+            get(settings).patch(update_settings),
+        )
         .route("/api/v1/admin/overview", get(overview))
         .route("/api/v1/admin/uploads/failed", get(failed_uploads))
         .route("/api/v1/admin/jobs/dead", get(dead_jobs))
         .route("/api/v1/admin/jobs/recent-errors", get(recent_job_errors))
         .route("/api/v1/admin/audit/recent", get(recent_audit_log))
+}
+
+#[derive(Debug, Serialize)]
+struct PublicAboutResponse {
+    about_text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminSettingsResponse {
+    owner_user_id: Option<String>,
+    allow_vod_uploads: bool,
+    vod_threshold_minutes: i64,
+    about_text: String,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateAdminSettingsRequest {
+    allow_vod_uploads: Option<bool>,
+    vod_threshold_minutes: Option<i64>,
+    about_text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +131,82 @@ struct AuditLogEntryResponse {
     ip_address: Option<String>,
     metadata: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
+}
+
+async fn about(State(state): State<AppState>) -> Result<Json<PublicAboutResponse>, ApiError> {
+    let settings = state.repositories.settings.get().await?;
+    Ok(Json(PublicAboutResponse {
+        about_text: settings.about_text,
+    }))
+}
+
+async fn settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AdminSettingsResponse>, ApiError> {
+    let _auth = auth::require_admin(&state, &headers).await?;
+    Ok(Json(AdminSettingsResponse::from(
+        state.repositories.settings.get().await?,
+    )))
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateAdminSettingsRequest>,
+) -> Result<Json<AdminSettingsResponse>, ApiError> {
+    let auth = auth::require_admin(&state, &headers).await?;
+    auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+
+    let mut update = UpdateAppSettings {
+        allow_vod_uploads: request.allow_vod_uploads,
+        vod_threshold_minutes: None,
+        about_text: None,
+    };
+
+    if let Some(threshold) = request.vod_threshold_minutes {
+        if !(1..=1440).contains(&threshold) {
+            return Err(ApiError::bad_request(
+                "VOD threshold must be between 1 and 1440 minutes",
+            ));
+        }
+        update.vod_threshold_minutes = Some(threshold);
+    }
+
+    if let Some(about_text) = request.about_text {
+        if !auth::user_is_owner(&state, &auth.user).await? {
+            return Err(ApiError::forbidden("owner role required to edit About"));
+        }
+        let about_text = about_text.trim();
+        if about_text.is_empty() {
+            return Err(ApiError::bad_request("About text is required"));
+        }
+        if about_text.len() > 5000 {
+            return Err(ApiError::bad_request(
+                "About text must be at most 5000 bytes",
+            ));
+        }
+        update.about_text = Some(about_text.to_string());
+    }
+
+    let updated = state.repositories.settings.update(&update).await?;
+    auth::audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "settings.updated",
+        Some("app_settings"),
+        Some("1"),
+        Some(serde_json::json!({
+            "allow_vod_uploads": update.allow_vod_uploads,
+            "vod_threshold_minutes": update.vod_threshold_minutes,
+            "about_text_updated": update.about_text.is_some(),
+        })),
+    )
+    .await?;
+
+    Ok(Json(AdminSettingsResponse::from(updated)))
 }
 
 async fn overview(
@@ -245,6 +349,18 @@ fn database_kind_name(kind: DatabaseKind) -> &'static str {
     match kind {
         DatabaseKind::Sqlite => "sqlite",
         DatabaseKind::Postgres => "postgres",
+    }
+}
+
+impl From<AppSettings> for AdminSettingsResponse {
+    fn from(value: AppSettings) -> Self {
+        Self {
+            owner_user_id: value.owner_user_id,
+            allow_vod_uploads: value.allow_vod_uploads,
+            vod_threshold_minutes: value.vod_threshold_minutes,
+            about_text: value.about_text,
+            updated_at: value.updated_at,
+        }
     }
 }
 

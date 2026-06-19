@@ -416,6 +416,7 @@ mod tests {
         assert_eq!(
             tables,
             vec![
+                "app_settings",
                 "audit_log",
                 "clip_markers",
                 "clips",
@@ -488,8 +489,33 @@ mod tests {
 
         let mut new_user = NewUser::new(&username, "argon2id-hash", "admin");
         new_user.display_name = Some("Dain".to_string());
+        new_user.storage_quota_bytes = Some(1024);
         let user = repos.users.create(&new_user).await.expect("create user");
         assert_eq!(user.username, username);
+        assert_eq!(user.storage_quota_bytes, Some(1024));
+
+        let settings = repos.settings.get().await.expect("settings");
+        assert!(settings.allow_vod_uploads);
+        assert_eq!(settings.vod_threshold_minutes, 30);
+        assert!(settings.about_text.contains("Clipline"));
+        let settings = repos
+            .settings
+            .set_owner_user_id(&user.id)
+            .await
+            .expect("set owner");
+        assert_eq!(settings.owner_user_id.as_deref(), Some(user.id.as_str()));
+        let settings = repos
+            .settings
+            .update(&UpdateAppSettings {
+                allow_vod_uploads: Some(false),
+                vod_threshold_minutes: Some(45),
+                about_text: Some("Custom About".to_string()),
+            })
+            .await
+            .expect("update settings");
+        assert!(!settings.allow_vod_uploads);
+        assert_eq!(settings.vod_threshold_minutes, 45);
+        assert_eq!(settings.about_text, "Custom About");
 
         repos
             .users

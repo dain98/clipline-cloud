@@ -3,11 +3,14 @@ use serde_json::json;
 use sqlx::{types::Json, Postgres, QueryBuilder, Sqlite};
 
 use crate::{
-    db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AuditLogEntry, Clip,
-    ClipMarker, Database, DbResult, DeviceToken, Job, NewAuditLogEntry, NewClip, NewClipMarker,
-    NewDeviceToken, NewJob, NewResetPasswordToken, NewSession, NewUploadPart, NewUploadSession,
-    NewUser, ResetPasswordToken, Session, UploadPart, UploadSession, User,
+    db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AppSettings,
+    AuditLogEntry, Clip, ClipMarker, Database, DbResult, DeviceToken, Job, NewAuditLogEntry,
+    NewClip, NewClipMarker, NewDeviceToken, NewJob, NewResetPasswordToken, NewSession,
+    NewUploadPart, NewUploadSession, NewUser, ResetPasswordToken, Session, UploadPart,
+    UploadSession, User,
 };
+
+pub const DEFAULT_ABOUT_TEXT: &str = "Self-hosted clip sharing for Clipline. Upload clips from the desktop app, manage your own library, and share public links without relying on a hosted service.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipSort {
@@ -63,6 +66,7 @@ pub struct BulkVisibilityUpdate {
 
 #[derive(Clone)]
 pub struct Repositories {
+    pub settings: AppSettingsRepository,
     pub users: UserRepository,
     pub sessions: SessionRepository,
     pub device_tokens: DeviceTokenRepository,
@@ -78,6 +82,7 @@ pub struct Repositories {
 impl Repositories {
     pub fn new(database: Database) -> Self {
         Self {
+            settings: AppSettingsRepository::new(database.clone()),
             users: UserRepository::new(database.clone()),
             sessions: SessionRepository::new(database.clone()),
             device_tokens: DeviceTokenRepository::new(database.clone()),
@@ -304,6 +309,78 @@ async fn insert_audit_postgres(
         .map(|_| ())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct UpdateAppSettings {
+    pub allow_vod_uploads: Option<bool>,
+    pub vod_threshold_minutes: Option<i64>,
+    pub about_text: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct AppSettingsRepository {
+    database: Database,
+}
+
+impl AppSettingsRepository {
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    pub async fn get(&self) -> DbResult<AppSettings> {
+        self.ensure_default().await?;
+        Ok(db_fetch_optional!(
+            &self.database,
+            AppSettings,
+            "SELECT id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text, created_at, updated_at
+             FROM app_settings WHERE id = 1",
+            []
+        )?
+        .expect("app settings row should exist"))
+    }
+
+    pub async fn update(&self, update: &UpdateAppSettings) -> DbResult<AppSettings> {
+        self.ensure_default().await?;
+        db_execute!(
+            &self.database,
+            "UPDATE app_settings
+             SET allow_vod_uploads = COALESCE(?, allow_vod_uploads),
+                 vod_threshold_minutes = COALESCE(?, vod_threshold_minutes),
+                 about_text = COALESCE(?, about_text),
+                 updated_at = ?
+             WHERE id = 1",
+            [
+                update.allow_vod_uploads,
+                update.vod_threshold_minutes,
+                update.about_text.as_deref(),
+                now_utc(),
+            ]
+        )?;
+        self.get().await
+    }
+
+    pub async fn set_owner_user_id(&self, owner_user_id: &str) -> DbResult<AppSettings> {
+        self.ensure_default().await?;
+        db_execute!(
+            &self.database,
+            "UPDATE app_settings SET owner_user_id = ?, updated_at = ? WHERE id = 1",
+            [owner_user_id, now_utc()]
+        )?;
+        self.get().await
+    }
+
+    async fn ensure_default(&self) -> DbResult<()> {
+        let now = now_utc();
+        db_execute!(
+            &self.database,
+            "INSERT INTO app_settings (id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text, created_at, updated_at)
+             VALUES (1, NULL, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO NOTHING",
+            [true, 30_i64, DEFAULT_ABOUT_TEXT, now, now]
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct UserRepository {
     database: Database,
@@ -317,8 +394,8 @@ impl UserRepository {
     pub async fn create(&self, new: &NewUser) -> DbResult<User> {
         db_execute!(
             &self.database,
-            "INSERT INTO users (id, username, display_name, password_hash, role, is_disabled, created_at, updated_at, last_login_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.username,
@@ -326,6 +403,7 @@ impl UserRepository {
                 &new.password_hash,
                 &new.role,
                 new.is_disabled,
+                new.storage_quota_bytes,
                 new.created_at,
                 new.updated_at,
                 new.last_login_at,
@@ -342,7 +420,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE id = ?",
             [id]
         )?)
@@ -352,7 +430,7 @@ impl UserRepository {
         Ok(db_fetch_optional!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE username = ?",
             [username]
         )?)
@@ -362,7 +440,7 @@ impl UserRepository {
         Ok(db_fetch_all!(
             &self.database,
             User,
-            "SELECT id, username, display_name, password_hash, role, is_disabled, created_at, updated_at, last_login_at
+            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users ORDER BY username ASC",
             []
         )?)
@@ -387,17 +465,35 @@ impl UserRepository {
         .unwrap_or_default())
     }
 
+    pub async fn first_admin(&self) -> DbResult<Option<User>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            User,
+            "SELECT id, username, display_name, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at
+             FROM users WHERE role = 'admin' ORDER BY created_at ASC, id ASC LIMIT 1",
+            []
+        )?)
+    }
+
     pub async fn update_profile(
         &self,
         id: &str,
         display_name: Option<&str>,
         role: &str,
         is_disabled: bool,
+        storage_quota_bytes: Option<i64>,
     ) -> DbResult<()> {
         db_execute!(
             &self.database,
-            "UPDATE users SET display_name = ?, role = ?, is_disabled = ?, updated_at = ? WHERE id = ?",
-            [display_name, role, is_disabled, now_utc(), id]
+            "UPDATE users SET display_name = ?, role = ?, is_disabled = ?, storage_quota_bytes = ?, updated_at = ? WHERE id = ?",
+            [
+                display_name,
+                role,
+                is_disabled,
+                storage_quota_bytes,
+                now_utc(),
+                id,
+            ]
         )?;
         Ok(())
     }
@@ -684,17 +780,18 @@ impl ClipRepository {
         db_execute!(
             &self.database,
             "INSERT INTO clips (
-               id, owner_user_id, client_clip_id, title, game_name, game_id, game_executable, source_type,
+               id, owner_user_id, client_clip_id, title, description, game_name, game_id, game_executable, source_type,
                recorded_at, uploaded_at, duration_ms, file_size_bytes, width, height, fps, container,
                video_codec, audio_codec, checksum_sha256, visibility, status, storage_backend, storage_key,
                poster_key, thumbnail_key, public_share_id, created_at, updated_at, deleted_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.owner_user_id,
                 new.client_clip_id.as_deref(),
                 &new.title,
+                new.description.as_deref(),
                 new.game_name.as_deref(),
                 new.game_id.as_deref(),
                 new.game_executable.as_deref(),
@@ -1014,6 +1111,7 @@ impl ClipRepository {
         &self,
         id: &str,
         title: &str,
+        description: Option<&str>,
         game_name: Option<&str>,
         game_id: Option<&str>,
         game_executable: Option<&str>,
@@ -1024,11 +1122,12 @@ impl ClipRepository {
         db_execute!(
             &self.database,
             "UPDATE clips
-             SET title = ?, game_name = ?, game_id = ?, game_executable = ?, source_type = ?,
-                 recorded_at = ?, duration_ms = ?, updated_at = ?
+             SET title = ?, description = ?, game_name = ?, game_id = ?, game_executable = ?,
+                 source_type = ?, recorded_at = ?, duration_ms = ?, updated_at = ?
              WHERE id = ?",
             [
                 title,
+                description,
                 game_name,
                 game_id,
                 game_executable,
@@ -1158,7 +1257,7 @@ impl ClipRepository {
 }
 
 const CLIP_SELECT_SQL: &str = "SELECT
-  id, owner_user_id, client_clip_id, title, game_name, game_id, game_executable, source_type,
+  id, owner_user_id, client_clip_id, title, description, game_name, game_id, game_executable, source_type,
   recorded_at, uploaded_at, duration_ms, file_size_bytes, width, height, fps, container,
   video_codec, audio_codec, checksum_sha256, visibility, status, storage_backend, storage_key,
   poster_key, thumbnail_key, public_share_id, created_at, updated_at, deleted_at
