@@ -50,6 +50,7 @@ const icons = {
   film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 8h4"/><path d="M3 16h4"/><path d="M17 8h4"/><path d="M17 16h4"/>',
   fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
+  home: '<path d="m3 10 9-7 9 7"/><path d="M5 8.5V20a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5"/><path d="M9 22V12h6v10"/>',
   library: '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
@@ -276,7 +277,7 @@ function renderShell({ active, title, subtitle, body }) {
           </div>
         </div>
         <nav class="nav-stack" aria-label="Primary">
-          ${navLink("/", "public", active, icon("globe"), "Public")}
+          ${navLink("/", "public", active, icon("home"), "Home")}
           ${navLink("/library", "library", active, icon("library"), "Library")}
           ${navLink("/account", "account", active, icon("user"), "Account")}
           ${adminLink}
@@ -295,7 +296,7 @@ function renderShell({ active, title, subtitle, body }) {
         <header class="topbar">
           <div>
             <h1>${escapeHtml(title)}</h1>
-            <p>${escapeHtml(subtitle || "")}</p>
+            ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
           </div>
         </header>
         <div class="content">
@@ -565,24 +566,27 @@ function bindLibraryEvents() {
 
 async function renderPublicLibrary() {
   renderPublicLibraryPage({
-    title: "Public",
-    subtitle: "Public clips from this instance.",
-    body: `<div class="empty-state">Loading public clips...</div>`,
+    title: "Home",
+    body: publicLibraryView([], {
+      statusHtml: `<div class="empty-state">Loading public clips...</div>`,
+    }),
   });
 
   try {
     const data = await api(`/api/v1/public/clips?${publicLibraryParams().toString()}`);
     renderPublicLibraryPage({
-      title: "Public",
-      subtitle: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"} in this view.`,
-      body: publicLibraryView(data.clips),
+      title: "Home",
+      body: publicLibraryView(data.clips, {
+        resultText: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"}`,
+      }),
     });
     bindPublicLibraryEvents();
   } catch (error) {
     renderPublicLibraryPage({
-      title: "Public",
-      subtitle: "Public clips from this instance.",
-      body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+      title: "Home",
+      body: publicLibraryView([], {
+        statusHtml: `<div class="error-box">${escapeHtml(error.message)}</div>`,
+      }),
     });
   }
 }
@@ -605,16 +609,12 @@ function renderPublicLibraryPage({ title, subtitle, body }) {
           <div class="brand-mark" aria-hidden="true">CL</div>
           <div>
             <strong>Clipline</strong>
-            <span>Public</span>
+            <span>Home</span>
           </div>
         </a>
         <a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>
       </header>
       <section class="public-browse-content">
-        <div>
-          <h1>${escapeHtml(title)}</h1>
-          <p>${escapeHtml(subtitle || "")}</p>
-        </div>
         ${renderFlash()}
         ${body}
       </section>
@@ -634,12 +634,30 @@ function publicLibraryParams() {
   return params;
 }
 
-function publicLibraryView(clips) {
+function publicLibraryView(clips, options = {}) {
   return `
-    <section class="section">
-      <form id="public-filter-form" class="panel toolbar">
-        ${field("Search", "q", "search", state.publicQuery.q, "Title or game")}
-        ${selectField("Sort", "sort", state.publicQuery.sort, [
+    <section class="section public-home">
+      ${publicSearchForm(options.resultText || "")}
+      ${
+        options.statusHtml
+          ? options.statusHtml
+          : clips.length
+          ? `<div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>`
+          : `<div class="empty-state">No public clips match this view.</div>`
+      }
+    </section>
+  `;
+}
+
+function publicSearchForm(resultText) {
+  return `
+    <form id="public-filter-form" class="public-search-form" role="search">
+      <div class="public-search-row">
+        <input name="q" type="search" value="${escapeAttr(state.publicQuery.q)}" placeholder="Search" aria-label="Search public clips" autocomplete="off">
+        <button class="public-search-button" type="submit" aria-label="Search">${icon("search")}</button>
+      </div>
+      <div class="public-search-controls">
+        ${publicSelectControl("Sort", "sort", state.publicQuery.sort, [
           ["uploaded_at_desc", "Uploaded newest"],
           ["uploaded_at_asc", "Uploaded oldest"],
           ["recorded_at_desc", "Recorded newest"],
@@ -651,15 +669,26 @@ function publicLibraryView(clips) {
           ["title_asc", "Title A-Z"],
           ["title_desc", "Title Z-A"],
         ])}
-        ${field("Game", "game", "text", state.publicQuery.game, "Name or ID")}
-        <button class="btn-primary" type="submit">${icon("search")} Apply</button>
-      </form>
-      ${
-        clips.length
-          ? `<div class="public-clip-grid">${clips.map(publicClipCard).join("")}</div>`
-          : `<div class="empty-state">No public clips match this view.</div>`
-      }
-    </section>
+        <label class="public-filter-control">
+          <span>Game</span>
+          <input name="game" type="text" value="${escapeAttr(state.publicQuery.game)}" placeholder="Any game">
+        </label>
+        ${resultText ? `<span class="public-result-count">${escapeHtml(resultText)}</span>` : ""}
+      </div>
+    </form>
+  `;
+}
+
+function publicSelectControl(label, name, value, options) {
+  return `
+    <label class="public-filter-control">
+      <span>${escapeHtml(label)}</span>
+      <select name="${escapeAttr(name)}">
+        ${options
+          .map(([optionValue, optionLabel]) => `<option value="${escapeAttr(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`)
+          .join("")}
+      </select>
+    </label>
   `;
 }
 
