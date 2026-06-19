@@ -1012,6 +1012,65 @@ a:hover {
   z-index: 2;
 }
 
+.clip-player-skip-feedback {
+  align-items: center;
+  background: rgba(8, 10, 14, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  color: #f7fbff;
+  display: inline-flex;
+  font-size: 0.95rem;
+  font-weight: 800;
+  gap: 0.35rem;
+  left: 50%;
+  letter-spacing: 0;
+  line-height: 1;
+  opacity: 0;
+  padding: 0.5rem 0.72rem;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(0.94);
+  z-index: 5;
+}
+
+.clip-player-skip-feedback::before {
+  color: rgba(247, 251, 255, 0.82);
+  font-size: 0.78rem;
+}
+
+.clip-player-skip-feedback.is-back::before {
+  content: "<<";
+}
+
+.clip-player-skip-feedback.is-forward::before {
+  content: ">>";
+}
+
+.clip-player-skip-feedback.is-visible {
+  animation: player-skip-feedback 620ms ease both;
+}
+
+@keyframes player-skip-feedback {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.92);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.04);
+  }
+}
+
 .clip-player-overlay {
   align-self: end;
   background: linear-gradient(transparent, rgba(5, 7, 10, 0.84));
@@ -1835,6 +1894,16 @@ a:hover {
 .public-card-meta {
   gap: 0.3rem;
   margin-top: 0;
+}
+
+.public-game-link {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.public-game-link:hover {
+  color: #8bbcff;
+  text-decoration: none;
 }
 
 .public-copy {

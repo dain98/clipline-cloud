@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/clips/{id}/thumbnail", get(get_owned_thumbnail))
         .route("/api/v1/clips/{id}/poster", get(get_owned_poster))
         .route("/api/v1/public/clips", get(list_public_clips))
+        .route("/api/v1/public/games", get(list_public_games))
         .route("/api/v1/public/users/{username}", get(get_public_user))
         .route(
             "/api/v1/public/users/{username}/avatar",
@@ -100,6 +101,17 @@ struct PublicClipListResponse {
 #[derive(Debug, Serialize)]
 struct PublicRecommendationResponse {
     clips: Vec<PublicClipSummaryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicGameListResponse {
+    games: Vec<PublicGameResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicGameResponse {
+    game: String,
+    clip_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -288,6 +300,23 @@ async fn list_public_recommendations(
     Ok(Json(PublicRecommendationResponse {
         clips: public_clips,
     }))
+}
+
+async fn list_public_games(
+    State(state): State<AppState>,
+) -> Result<Json<PublicGameListResponse>, ApiError> {
+    let games = state
+        .repositories
+        .clips
+        .list_public_games()
+        .await?
+        .into_iter()
+        .map(|game| PublicGameResponse {
+            game: game.game,
+            clip_count: game.clip_count,
+        })
+        .collect();
+    Ok(Json(PublicGameListResponse { games }))
 }
 
 async fn get_public_user(

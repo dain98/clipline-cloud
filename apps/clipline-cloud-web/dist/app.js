@@ -14,6 +14,7 @@ import {
 const app = document.querySelector("#app");
 const sidebarStorageKey = "clipline.sidebarCollapsed";
 const playerVolumeStorageKey = "clipline.playerVolume";
+let activePlayerCleanup = null;
 
 const state = {
   user: null,
@@ -42,6 +43,7 @@ const state = {
     q: "",
     page: 1,
   },
+  publicGames: [],
   adminResetLink: null,
 };
 
@@ -100,11 +102,11 @@ async function route() {
     await renderPublicShare(current.shareId);
     return;
   }
-  if (current.name === "publicLibrary") {
+  if (current.name === "publicLibrary" || current.name === "publicGame") {
     if (!state.user) {
       await refreshSession();
     }
-    await renderPublicLibrary();
+    await renderPublicLibrary(current);
     return;
   }
   if (current.name === "about") {
@@ -166,8 +168,15 @@ function currentRoute() {
   if (path.startsWith("/c/")) {
     return { name: "public", shareId: decodeURIComponent(path.slice(3)) };
   }
-  if (path === "/" || path === "/public") {
-    return { name: "publicLibrary" };
+  if (path === "/" || path === "/public" || path === "/search") {
+    return { name: "publicLibrary", query: publicRouteQuery() };
+  }
+  if (path.startsWith("/game/")) {
+    return {
+      name: "publicGame",
+      game: decodeURIComponent(path.slice(6)),
+      query: publicRouteQuery(),
+    };
   }
   if (path === "/about") {
     return { name: "about" };
@@ -208,6 +217,17 @@ function currentRoute() {
 function navigate(path) {
   window.history.pushState({}, "", path);
   route();
+}
+
+function publicRouteQuery() {
+  const params = new URLSearchParams(window.location.search);
+  const page = Number(params.get("page") || 1);
+  return {
+    sort: params.get("sort") || "uploaded_at_desc",
+    game: params.get("game") || "",
+    q: params.get("q") || "",
+    page: Number.isFinite(page) ? Math.max(1, page) : 1,
+  };
 }
 
 function onDocumentClick(event) {
@@ -271,6 +291,7 @@ async function api(path, options = {}) {
 }
 
 function renderLogin(error = "") {
+  disposeActivePlayer();
   app.innerHTML = `
     <main class="login-shell">
       <section class="login-panel" aria-labelledby="login-title">
@@ -313,6 +334,7 @@ function renderLogin(error = "") {
 }
 
 function renderResetPassword(token, error = "") {
+  disposeActivePlayer();
   app.innerHTML = `
     <main class="login-shell">
       <section class="login-panel" aria-labelledby="reset-title">
@@ -355,6 +377,7 @@ function renderResetPassword(token, error = "") {
 }
 
 function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
+  disposeActivePlayer();
   const sidebarLabel = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
   const privateLinks = state.user
     ? `
@@ -521,9 +544,29 @@ function toggleSidebar() {
 function submitAppSearch(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  state.publicQuery.q = String(form.get("q") || "");
-  state.publicQuery.page = 1;
-  navigate("/");
+  navigate(
+    publicLibraryPath({
+      sort: state.publicQuery.sort,
+      game: state.publicQuery.game,
+      q: String(form.get("q") || ""),
+      page: 1,
+    }),
+  );
+}
+
+function disposeActivePlayer() {
+  if (!activePlayerCleanup) {
+    return;
+  }
+  activePlayerCleanup();
+  activePlayerCleanup = null;
+}
+
+function isPlayerShortcutBlockedTarget(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  return Boolean(target.closest("input, textarea, select, button, a, [contenteditable='true'], [contenteditable='']"));
 }
 
 function setSidebarCollapsed(collapsed) {
@@ -804,19 +847,24 @@ function bindLibraryEvents() {
   bindBulkEvents();
 }
 
-async function renderPublicLibrary() {
+async function renderPublicLibrary(routeState = currentRoute()) {
+  syncPublicQueryFromRoute(routeState);
   renderPublicLibraryPage({
-    title: "Home",
+    title: publicLibraryTitle(),
     body: publicLibraryView([], {
       statusHtml: `<div class="empty-state">Loading public clips...</div>`,
     }),
   });
 
   try {
-    const data = await api(`/api/v1/public/clips?${publicLibraryParams().toString()}`);
+    const [data, gamesData] = await Promise.all([
+      api(`/api/v1/public/clips?${publicLibraryParams().toString()}`),
+      api("/api/v1/public/games").catch(() => ({ games: [] })),
+    ]);
+    state.publicGames = Array.isArray(gamesData.games) ? gamesData.games : [];
     state.publicQuery.page = Number(data.page || state.publicQuery.page || 1);
     renderPublicLibraryPage({
-      title: "Home",
+      title: publicLibraryTitle(),
       body: publicLibraryView(data.clips, {
         resultText: `${data.clips.length} clip${data.clips.length === 1 ? "" : "s"}`,
         page: data.page,
@@ -826,12 +874,31 @@ async function renderPublicLibrary() {
     bindPublicLibraryEvents();
   } catch (error) {
     renderPublicLibraryPage({
-      title: "Home",
+      title: publicLibraryTitle(),
       body: publicLibraryView([], {
         statusHtml: `<div class="error-box">${escapeHtml(error.message)}</div>`,
       }),
     });
   }
+}
+
+function syncPublicQueryFromRoute(routeState = currentRoute()) {
+  const query = routeState.query || publicRouteQuery();
+  state.publicQuery.sort = query.sort || "uploaded_at_desc";
+  state.publicQuery.q = query.q || "";
+  state.publicQuery.game = routeState.name === "publicGame" ? routeState.game || "" : query.game || "";
+  const page = Number(query.page || 1);
+  state.publicQuery.page = Number.isFinite(page) ? Math.max(1, page) : 1;
+}
+
+function publicLibraryTitle() {
+  if (state.publicQuery.q) {
+    return "Search";
+  }
+  if (state.publicQuery.game) {
+    return state.publicQuery.game;
+  }
+  return "Home";
 }
 
 function renderPublicLibraryPage({ title, subtitle, body }) {
@@ -855,6 +922,33 @@ function publicLibraryParams() {
     }
   }
   return params;
+}
+
+function publicLibraryPath({ sort = "uploaded_at_desc", game = "", q = "", page = 1 } = {}) {
+  const params = new URLSearchParams();
+  const normalizedSort = sort || "uploaded_at_desc";
+  const normalizedGame = String(game || "").trim();
+  const normalizedQuery = String(q || "").trim();
+  const normalizedPage = Math.max(1, Number(page || 1));
+  if (normalizedSort !== "uploaded_at_desc") {
+    params.set("sort", normalizedSort);
+  }
+  if (normalizedPage > 1) {
+    params.set("page", String(normalizedPage));
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+    if (normalizedGame) {
+      params.set("game", normalizedGame);
+    }
+    return `/search?${params.toString()}`;
+  }
+  if (normalizedGame) {
+    const query = params.toString();
+    return `/game/${encodeURIComponent(normalizedGame)}${query ? `?${query}` : ""}`;
+  }
+  const query = params.toString();
+  return query ? `/search?${query}` : "/";
 }
 
 function publicLibraryView(clips, options = {}) {
@@ -905,14 +999,31 @@ function publicSearchForm(resultText) {
           ["title_asc", "Title A-Z"],
           ["title_desc", "Title Z-A"],
         ])}
-        <label class="public-filter-control">
-          <span>Game</span>
-          <input name="game" type="text" value="${escapeAttr(state.publicQuery.game)}" placeholder="Any game">
-        </label>
+        ${publicSelectControl("Game", "game", state.publicQuery.game, publicGameOptions())}
         ${resultText ? `<span class="public-result-count">${escapeHtml(resultText)}</span>` : ""}
       </div>
     </form>
   `;
+}
+
+function publicGameOptions() {
+  const options = [["", "Any game"]];
+  const selectedGame = state.publicQuery.game;
+  const games = Array.isArray(state.publicGames) ? state.publicGames : [];
+  if (selectedGame && !games.some((game) => game.game === selectedGame)) {
+    options.push([selectedGame, selectedGame]);
+  }
+  for (const game of games) {
+    if (!game?.game) {
+      continue;
+    }
+    const count = Number(game.clip_count || 0);
+    options.push([
+      game.game,
+      count > 0 ? `${game.game} (${count})` : game.game,
+    ]);
+  }
+  return options;
 }
 
 function publicSelectControl(label, name, value, options) {
@@ -951,7 +1062,7 @@ function publicClipCard(clip) {
             : `<p class="public-author">${escapeHtml(authorName)}</p>`
         }
         <div class="meta-line public-card-meta">
-          <span>${escapeHtml(gameLabel(clip))}</span>
+          ${publicGameLink(clip)}
           ${uploadedAgo !== "Unknown" ? `<span aria-hidden="true">&middot;</span><span>${escapeHtml(uploadedAgo)}</span>` : ""}
           <span aria-hidden="true">&middot;</span><span>${escapeHtml(formatViews(clip.view_count))}</span>
         </div>
@@ -968,10 +1079,14 @@ function bindPublicLibraryEvents() {
 
   const applyFilters = () => {
     const data = new FormData(form);
-    state.publicQuery.sort = String(data.get("sort") || "uploaded_at_desc");
-    state.publicQuery.game = String(data.get("game") || "");
-    state.publicQuery.page = 1;
-    renderPublicLibrary();
+    navigate(
+      publicLibraryPath({
+        sort: String(data.get("sort") || "uploaded_at_desc"),
+        game: String(data.get("game") || ""),
+        q: state.publicQuery.q,
+        page: 1,
+      }),
+    );
   };
 
   form.addEventListener("submit", (event) => {
@@ -987,14 +1102,32 @@ function bindPublicLibraryEvents() {
       if (!Number.isFinite(page) || page < 1) {
         return;
       }
-      state.publicQuery.page = page;
-      renderPublicLibrary();
+      navigate(
+        publicLibraryPath({
+          sort: state.publicQuery.sort,
+          game: state.publicQuery.game,
+          q: state.publicQuery.q,
+          page,
+        }),
+      );
     });
   });
 }
 
 function gameLabel(clip) {
   return clip.game_name || clip.game_id || "No game";
+}
+
+function gamePathForLabel(game) {
+  return `/game/${encodeURIComponent(game)}`;
+}
+
+function publicGameLink(clip, className = "public-game-link") {
+  const label = gameLabel(clip);
+  if (label === "No game") {
+    return `<span>${escapeHtml(label)}</span>`;
+  }
+  return `<a class="${escapeAttr(className)}" href="${escapeAttr(gamePathForLabel(label))}" data-route>${escapeHtml(label)}</a>`;
 }
 
 function publicAuthorName(clip) {
@@ -1305,6 +1438,7 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
           ${safeSrc ? `src="${safeSrc}"` : ""}
         ></video>
         <div class="clip-player-note" data-player-note>${escapeHtml(durationLabel)}</div>
+        <div class="clip-player-skip-feedback" data-player-skip-feedback aria-hidden="true"></div>
         <div class="clip-player-overlay">
           <div class="clip-player-transport" data-player-transport>
             <div class="player-cluster" data-player-marker-cluster>
@@ -1351,6 +1485,7 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
 }
 
 function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
+  disposeActivePlayer();
   if (!root) {
     return;
   }
@@ -1372,6 +1507,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   const fullscreenButton = root.querySelector("[data-player-fullscreen]");
   const playbackRate = root.querySelector("[data-player-rate]");
   const playButtons = Array.from(root.querySelectorAll("[data-player-toggle]"));
+  const skipFeedback = root.querySelector("[data-player-skip-feedback]");
   const fallbackDuration = secondsFromMilliseconds(durationMs);
   let duration = fallbackDuration;
   let normalizedMarkers = normalizeMarkers(markers, duration);
@@ -1379,6 +1515,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   let scrubbing = false;
   let resumeAfterScrub = false;
   let controlsTimer = null;
+  let skipFeedbackTimer = null;
 
   video.controls = false;
   video.playbackRate = Number(playbackRate.value);
@@ -1498,6 +1635,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
 
   function seekBy(seconds) {
     seekTo((video.currentTime || 0) + seconds);
+    showSeekFeedback(seconds);
   }
 
   async function playVideo() {
@@ -1611,6 +1749,60 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     scheduleControlsHide();
   }
 
+  function formatSeekDelta(seconds) {
+    const amount = Math.abs(Number(seconds) || 0);
+    return `${Number.isInteger(amount) ? amount : amount.toFixed(1)}s`;
+  }
+
+  function showSeekFeedback(seconds) {
+    if (!skipFeedback || !Number.isFinite(seconds) || seconds === 0) {
+      return;
+    }
+    window.clearTimeout(skipFeedbackTimer);
+    skipFeedback.textContent = `${seconds > 0 ? "+" : "-"}${formatSeekDelta(seconds)}`;
+    skipFeedback.className = `clip-player-skip-feedback is-${seconds > 0 ? "forward" : "back"}`;
+    // Restart the CSS animation even when the same shortcut repeats quickly.
+    void skipFeedback.offsetWidth;
+    skipFeedback.classList.add("is-visible");
+    skipFeedbackTimer = window.setTimeout(() => {
+      skipFeedback.classList.remove("is-visible");
+    }, 620);
+  }
+
+  function handlePlayerShortcut(event) {
+    if (event.defaultPrevented || !root.isConnected || isPlayerShortcutBlockedTarget(event.target)) {
+      return;
+    }
+    const intent = playerKeyIntent(event.code, event.shiftKey);
+    if (!intent) {
+      return;
+    }
+    event.preventDefault();
+    switch (intent.kind) {
+      case "toggle-play":
+        togglePlay();
+        break;
+      case "seek-by":
+        seekBy(intent.seconds);
+        break;
+      case "seek-to":
+        seekTo(intent.seconds);
+        break;
+      case "seek-to-end":
+        seekTo(duration);
+        break;
+      case "next-marker":
+        jumpMarker(1);
+        break;
+      case "previous-marker":
+        jumpMarker(-1);
+        break;
+      case "fullscreen":
+        toggleFullscreen().catch(() => {});
+        break;
+    }
+  }
+
   playButtons.forEach((button) => button.addEventListener("click", togglePlay));
   video.addEventListener("click", togglePlay);
   root.querySelector("[data-player-back]").addEventListener("click", () => seekBy(-5));
@@ -1648,40 +1840,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     showControls();
     root.focus({ preventScroll: true });
   });
-  root.addEventListener("keydown", (event) => {
-    const tag = event.target && event.target.tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") {
-      return;
-    }
-    const intent = playerKeyIntent(event.code, event.shiftKey);
-    if (!intent) {
-      return;
-    }
-    event.preventDefault();
-    switch (intent.kind) {
-      case "toggle-play":
-        togglePlay();
-        break;
-      case "seek-by":
-        seekBy(intent.seconds);
-        break;
-      case "seek-to":
-        seekTo(intent.seconds);
-        break;
-      case "seek-to-end":
-        seekTo(duration);
-        break;
-      case "next-marker":
-        jumpMarker(1);
-        break;
-      case "previous-marker":
-        jumpMarker(-1);
-        break;
-      case "fullscreen":
-        toggleFullscreen().catch(() => {});
-        break;
-    }
-  });
+  document.addEventListener("keydown", handlePlayerShortcut);
 
   video.addEventListener("loadedmetadata", () => {
     setDuration(resolveDuration());
@@ -1733,6 +1892,11 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   updatePlayState();
   updateVolumeState();
   updateMediaNote();
+  activePlayerCleanup = () => {
+    document.removeEventListener("keydown", handlePlayerShortcut);
+    window.clearTimeout(controlsTimer);
+    window.clearTimeout(skipFeedbackTimer);
+  };
 }
 
 function clipDetailView(clip) {
@@ -2012,9 +2176,8 @@ function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendatio
 function publicShareInfo(clip, authorName) {
   const uploadedAgo = formatRelativeTime(clip.uploaded_at);
   const meta = [
-    gameLabel(clip),
-    uploadedAgo !== "Unknown" ? uploadedAgo : "",
-    formatDuration(clip.duration_ms),
+    publicGameLink(clip, "public-game-link public-watch-game-link"),
+    uploadedAgo !== "Unknown" ? `<span>${escapeHtml(uploadedAgo)}</span>` : "",
   ].filter(Boolean);
   const editHref =
     clip.viewer_can_edit && clip.viewer_clip_id
@@ -2027,7 +2190,7 @@ function publicShareInfo(clip, authorName) {
         ${editHref ? `<a class="btn-secondary" href="${escapeAttr(editHref)}" data-route>${icon("edit")} Edit</a>` : ""}
       </div>
       <div class="public-watch-meta">
-        ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('<span aria-hidden="true">&middot;</span>')}
+        ${meta.join('<span aria-hidden="true">&middot;</span>')}
         ${meta.length ? '<span aria-hidden="true">&middot;</span>' : ""}
         <span data-public-view-count>${escapeHtml(formatViews(clip.view_count))}</span>
       </div>

@@ -304,6 +304,8 @@ fn router(
         .route("/reset-password", get(spa_index))
         .route("/about", get(spa_index))
         .route("/public", get(spa_index))
+        .route("/search", get(spa_index))
+        .route("/game/{*path}", get(spa_index))
         .route("/library", get(spa_index))
         .route("/admin", get(spa_index))
         .route("/account", get(spa_index))
