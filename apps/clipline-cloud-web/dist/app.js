@@ -1759,7 +1759,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       return;
     }
     window.clearTimeout(skipFeedbackTimer);
-    skipFeedback.textContent = `${seconds > 0 ? "+" : "-"}${formatSeekDelta(seconds)}`;
+    skipFeedback.textContent = formatSeekDelta(seconds);
     skipFeedback.className = `clip-player-skip-feedback is-${seconds > 0 ? "forward" : "back"}`;
     // Restart the CSS animation even when the same shortcut repeats quickly.
     void skipFeedback.offsetWidth;
