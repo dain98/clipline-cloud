@@ -1112,7 +1112,7 @@ a:hover {
 }
 
 .clip-player-state-feedback.is-play .icon {
-  margin-left: 0.12rem;
+  margin-left: -0.05rem;
 }
 
 .clip-player-state-feedback.is-visible {

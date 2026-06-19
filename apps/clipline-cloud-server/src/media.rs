@@ -1071,6 +1071,7 @@ fn public_share_html(data: PublicShareHtml<'_>) -> String {
     <meta name="twitter:title" content="{title}">
     <meta name="twitter:description" content="{description}">{image_meta}{video_meta}
     <link rel="canonical" href="{share_url}">
+    <link rel="icon" type="image/svg+xml" href="/clipline-icon.svg">
     <link rel="stylesheet" href="/styles.css">
     <script type="module" src="/app.js"></script>
   </head>
