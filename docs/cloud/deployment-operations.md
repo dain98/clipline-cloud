@@ -44,6 +44,31 @@ docker compose -f docker-compose.yml logs clipline-cloud
 Rotate the bootstrap owner password after first login, especially when using a fixed
 `admin_password.txt` secret.
 
+If the owner password is lost after first boot, reset it with the operator command. Run the command
+against the same Compose file/profile that normally starts the app. With the standalone file, run it
+from `/opt/cl-cloud`:
+
+```sh
+docker compose run --rm clipline-cloud admin reset-password
+```
+
+With a cloned profile file, include the profile file:
+
+```sh
+docker compose -f docker-compose.yml run --rm clipline-cloud admin reset-password
+```
+
+The command defaults to the configured owner account, generates and prints a one-time password when
+no password is provided, re-enables a disabled target account unless `--keep-disabled` is set, and
+revokes existing browser sessions, device tokens, and outstanding reset links. To reset a named user
+or provide a fixed password:
+
+```sh
+docker compose run --rm clipline-cloud admin reset-password admin
+docker compose run --rm -e CLIPLINE_ADMIN_RESET_PASSWORD='replace-with-temporary-password' \
+  clipline-cloud admin reset-password admin
+```
+
 The Caddy, Postgres, and external-S3 profiles expect operator-provided files in
 `deploy/compose/secrets/`. That directory is ignored except for its `.gitignore`.
 

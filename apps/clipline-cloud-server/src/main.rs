@@ -5,6 +5,7 @@ mod config;
 mod logging;
 mod mail;
 mod media;
+mod operator;
 mod uploads;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -53,6 +54,18 @@ impl ClientIp {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match operator::parse_invocation(std::env::args().skip(1))? {
+        operator::Invocation::Server => {}
+        operator::Invocation::Help => {
+            operator::print_help();
+            return Ok(());
+        }
+        operator::Invocation::ResetPassword(command) => {
+            let config = Config::from_env().context("failed to load configuration")?;
+            return operator::reset_password(command, &config).await;
+        }
+    }
+
     let config = Config::from_env().context("failed to load configuration")?;
     logging::init(&config.log_level).context("failed to initialize logging")?;
 

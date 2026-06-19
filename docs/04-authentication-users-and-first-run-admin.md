@@ -138,8 +138,10 @@ One-time password: <generated-password>
 Save this password now. It will not be shown again.
 ```
 
-After an owner exists, bootstrap credentials are ignored. A later CLI adds
-`clipline-cloud admin reset-password <user>`.
+After an owner exists, bootstrap credentials are ignored. Operators with database access through the
+Docker image can run `clipline-cloud-server admin reset-password [username]` to reset the configured
+owner or a named user, re-enable the account by default, and revoke existing sessions/device
+tokens/reset links.
 
 Owners and admins can use the admin API. Only the owner can create admin accounts, disable admin
 accounts, modify the owner account, edit the public About text, or configure SMTP invite settings.
@@ -168,6 +170,7 @@ one-time password setup link when SMTP is enabled.
 - [x] `POST /auth/device-token` (validate credentials, create named token, return once); `GET`/`DELETE` device-tokens with `last_used_at`
 - [x] Auth middleware: cookie-session for browser, `Authorization: Bearer` for desktop; updates `last_used_at`; immediate revocation honored
 - [x] First-run owner bootstrap: env password, `_FILE`, or generated-and-printed-once; ignored after an owner exists
+- [x] Docker image operator password reset for owner/admin lockout recovery
 - [x] Users API (admin-only) + `POST /me/change-password` (self)
 - [x] Owner guardrails: only owner can create/disable admins, modify the owner account, and edit About text
 - [x] Re-authentication required for sensitive admin actions (create/disable user, reset password)
