@@ -59,6 +59,12 @@ pub struct PublicClipListParams {
     pub offset: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicGameSummary {
+    pub game: String,
+    pub clip_count: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct BulkVisibilityUpdate {
     pub clip_id: String,
@@ -1041,6 +1047,30 @@ impl ClipRepository {
                 Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
             }
         }
+    }
+
+    pub async fn list_public_games(&self) -> DbResult<Vec<PublicGameSummary>> {
+        let rows = db_fetch_all!(
+            &self.database,
+            (String, i64),
+            "SELECT game, CAST(COUNT(*) AS BIGINT) AS clip_count
+             FROM (
+               SELECT COALESCE(NULLIF(TRIM(game_name), ''), NULLIF(TRIM(game_id), '')) AS game
+               FROM clips
+               WHERE visibility = 'public'
+                 AND status = 'ready'
+                 AND deleted_at IS NULL
+                 AND public_share_id IS NOT NULL
+             ) public_games
+             WHERE game IS NOT NULL
+             GROUP BY game
+             ORDER BY LOWER(game) ASC, game ASC",
+            []
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|(game, clip_count)| PublicGameSummary { game, clip_count })
+            .collect())
     }
 
     pub async fn count_public_for_owner(&self, owner_user_id: &str) -> DbResult<i64> {

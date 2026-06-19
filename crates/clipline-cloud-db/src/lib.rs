@@ -1408,6 +1408,7 @@ mod tests {
         other_public.status = "ready".to_string();
         other_public.visibility = "public".to_string();
         other_public.public_share_id = Some(format!("other-public-{test_id}"));
+        other_public.game_id = Some("Factorio".to_string());
         repos
             .clips
             .create(&other_public)
@@ -1434,6 +1435,23 @@ mod tests {
                 .expect("filter other public clips by owner")
                 .len(),
             1
+        );
+        assert_eq!(
+            repos
+                .clips
+                .list_public_games()
+                .await
+                .expect("list public games"),
+            vec![
+                PublicGameSummary {
+                    game: "Factorio".to_string(),
+                    clip_count: 1,
+                },
+                PublicGameSummary {
+                    game: "Renata Glasc".to_string(),
+                    clip_count: 1,
+                },
+            ]
         );
         assert_eq!(
             repos
