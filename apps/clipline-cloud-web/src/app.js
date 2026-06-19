@@ -1439,6 +1439,7 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
         ></video>
         <div class="clip-player-note" data-player-note>${escapeHtml(durationLabel)}</div>
         <div class="clip-player-skip-feedback" data-player-skip-feedback aria-hidden="true"></div>
+        <div class="clip-player-state-feedback" data-player-state-feedback aria-hidden="true"></div>
         <div class="clip-player-overlay">
           <div class="clip-player-transport" data-player-transport>
             <div class="player-cluster" data-player-marker-cluster>
@@ -1508,6 +1509,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   const playbackRate = root.querySelector("[data-player-rate]");
   const playButtons = Array.from(root.querySelectorAll("[data-player-toggle]"));
   const skipFeedback = root.querySelector("[data-player-skip-feedback]");
+  const stateFeedback = root.querySelector("[data-player-state-feedback]");
   const fallbackDuration = secondsFromMilliseconds(durationMs);
   let duration = fallbackDuration;
   let normalizedMarkers = normalizeMarkers(markers, duration);
@@ -1516,6 +1518,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   let resumeAfterScrub = false;
   let controlsTimer = null;
   let skipFeedbackTimer = null;
+  let stateFeedbackTimer = null;
 
   video.controls = false;
   video.playbackRate = Number(playbackRate.value);
@@ -1659,8 +1662,10 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       return;
     }
     if (video.paused || video.ended) {
+      showStateFeedback("play");
       playVideo();
     } else {
+      showStateFeedback("pause");
       video.pause();
     }
   }
@@ -1767,6 +1772,19 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     skipFeedbackTimer = window.setTimeout(() => {
       skipFeedback.classList.remove("is-visible");
     }, 620);
+  }
+
+  function showStateFeedback(kind) {
+    if (!stateFeedback) {
+      return;
+    }
+    window.clearTimeout(stateFeedbackTimer);
+    stateFeedback.className = `clip-player-state-feedback is-${kind}`;
+    void stateFeedback.offsetWidth;
+    stateFeedback.classList.add("is-visible");
+    stateFeedbackTimer = window.setTimeout(() => {
+      stateFeedback.classList.remove("is-visible");
+    }, 560);
   }
 
   function handlePlayerShortcut(event) {
@@ -1896,6 +1914,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     document.removeEventListener("keydown", handlePlayerShortcut);
     window.clearTimeout(controlsTimer);
     window.clearTimeout(skipFeedbackTimer);
+    window.clearTimeout(stateFeedbackTimer);
   };
 }
 
