@@ -696,18 +696,20 @@ function publicClipCard(clip) {
   const sharePath = `/c/${encodeURIComponent(clip.share_id)}`;
   const thumbnailPath = `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
   const authorName = publicAuthorName(clip);
+  const duration = formatDuration(clip.duration_ms);
+  const uploadedAgo = formatRelativeTime(clip.uploaded_at);
   return `
     <a class="public-clip-card" href="${escapeAttr(sharePath)}" data-route>
-      <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
+      <div class="public-thumb-wrap">
+        <img class="thumb" src="${escapeAttr(thumbnailPath)}" alt="">
+        ${duration !== "Unknown" ? `<span class="public-duration-badge">${escapeHtml(duration)}</span>` : ""}
+      </div>
       <div class="public-clip-body">
         <h2>${escapeHtml(clip.title)}</h2>
-        <p class="public-author">by ${escapeHtml(authorName)}</p>
-        <div class="meta-line">
+        <p class="public-author">${escapeHtml(authorName)}</p>
+        <div class="meta-line public-card-meta">
           <span>${escapeHtml(gameLabel(clip))}</span>
-          <span>${formatDuration(clip.duration_ms)}</span>
-        </div>
-        <div class="meta-line">
-          <span>Uploaded ${formatDate(clip.uploaded_at)}</span>
+          ${uploadedAgo !== "Unknown" ? `<span aria-hidden="true">&middot;</span><span>${escapeHtml(uploadedAgo)}</span>` : ""}
         </div>
       </div>
     </a>
@@ -1930,6 +1932,30 @@ function formatDuration(value) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatRelativeTime(value) {
+  if (!value) {
+    return "Unknown";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  const diffMs = date.getTime() - Date.now();
+  const units = [
+    ["year", 365 * 24 * 60 * 60 * 1000],
+    ["month", 30 * 24 * 60 * 60 * 1000],
+    ["week", 7 * 24 * 60 * 60 * 1000],
+    ["day", 24 * 60 * 60 * 1000],
+    ["hour", 60 * 60 * 1000],
+    ["minute", 60 * 1000],
+    ["second", 1000],
+  ];
+  const [unit, unitMs] =
+    units.find(([, size]) => Math.abs(diffMs) >= size) || units[units.length - 1];
+  const amount = Math.round(diffMs / unitMs);
+  return new Intl.RelativeTimeFormat(undefined, { numeric: "always" }).format(amount, unit);
 }
 
 function formatBytes(value) {

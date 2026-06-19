@@ -1124,36 +1124,57 @@ a:hover {
 
 .public-clip-grid {
   display: grid;
-  gap: 0.9rem;
+  gap: 1rem;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
 }
 
 .public-clip-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
   color: var(--ink);
   display: grid;
-  overflow: hidden;
+  gap: 0.58rem;
+  padding: 0.45rem;
   text-decoration: none;
+  transition: background-color 140ms ease, border-color 140ms ease;
 }
 
 .public-clip-card:hover {
-  background: #18202d;
-  border-color: #31405a;
+  background: #252a3d;
+  border-color: rgba(139, 188, 255, 0.12);
   text-decoration: none;
+}
+
+.public-thumb-wrap {
+  background: #0a0f17;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
 }
 
 .public-clip-card .thumb {
   border: 0;
-  border-bottom: 1px solid var(--line);
   border-radius: 0;
+}
+
+.public-duration-badge {
+  background: rgba(0, 0, 0, 0.82);
+  border-radius: 4px;
+  bottom: 0.42rem;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.2rem 0.34rem;
+  position: absolute;
+  right: 0.42rem;
 }
 
 .public-clip-body {
   display: grid;
-  gap: 0.35rem;
-  padding: 0.72rem;
+  gap: 0.25rem;
+  padding: 0 0.08rem 0.12rem;
 }
 
 .public-clip-body h2 {
@@ -1164,10 +1185,15 @@ a:hover {
 }
 
 .public-author {
-  color: var(--muted);
+  color: #8bbcff;
   font-size: 0.85rem;
-  margin: -0.08rem 0 0;
+  margin: 0;
   overflow-wrap: anywhere;
+}
+
+.public-card-meta {
+  gap: 0.3rem;
+  margin-top: 0;
 }
 
 .public-copy {
