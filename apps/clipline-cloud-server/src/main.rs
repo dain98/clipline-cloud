@@ -287,6 +287,7 @@ fn router(
         .route("/readyz", get(readyz))
         .route("/", get(spa_index))
         .route("/login", get(spa_index))
+        .route("/about", get(spa_index))
         .route("/public", get(spa_index))
         .route("/library", get(spa_index))
         .route("/admin", get(spa_index))
