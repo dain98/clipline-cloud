@@ -13,6 +13,7 @@ import {
 
 const app = document.querySelector("#app");
 const sidebarStorageKey = "clipline.sidebarCollapsed";
+const playerVolumeStorageKey = "clipline.playerVolume";
 
 const state = {
   user: null,
@@ -48,6 +49,7 @@ const icons = {
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   fastForward: '<path d="m13 19 9-7-9-7v14Z"/><path d="m2 19 9-7-9-7v14Z"/>',
   film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 8h4"/><path d="M3 16h4"/><path d="M17 8h4"/><path d="M17 16h4"/>',
   fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
@@ -58,9 +60,11 @@ const icons = {
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
   menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+  notepad: '<path d="M8 2v4"/><path d="M16 2v4"/><path d="M3 10h18"/><path d="M6 4h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z"/><path d="M8 14h8"/><path d="M8 18h5"/>',
   pause: '<path d="M8 5v14"/><path d="M16 5v14"/>',
   play: '<path d="m8 5 11 7-11 7V5Z"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.7L21 8"/><path d="M21 3v5h-5"/>',
   rewind: '<path d="m11 19-9-7 9-7v14Z"/><path d="m22 19-9-7 9-7v14Z"/>',
   save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
@@ -69,6 +73,7 @@ const icons = {
   skipBack: '<path d="M19 20 9 12l10-8v16Z"/><path d="M5 19V5"/>',
   skipForward: '<path d="m5 4 10 8-10 8V4Z"/><path d="M19 5v14"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 8.8a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V5l8-3 8 3v8Z"/>',
+  sliders: '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
@@ -103,7 +108,7 @@ async function route() {
     if (!state.user) {
       await refreshSession();
     }
-    renderAbout();
+    await renderAbout();
     return;
   }
 
@@ -127,7 +132,7 @@ async function route() {
   if (current.name === "clip") {
     await renderClipDetail(current.clipId);
   } else if (current.name === "admin") {
-    if (state.user.role !== "admin") {
+    if (!isAdminLike()) {
       flash("Admin access is required.", "error");
       navigate("/library");
       return;
@@ -288,7 +293,7 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
         `
     : "";
   const adminLink =
-    state.user?.role === "admin"
+    isAdminLike()
       ? navLink("/admin", "admin", active, icon("shield"), "Admin")
       : "";
   const footer = state.user
@@ -328,9 +333,9 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
       <aside class="sidebar">
         <nav class="nav-stack" aria-label="Primary">
           ${navLink("/", "public", active, icon("home"), "Home")}
-          ${navLink("/about", "about", active, icon("info"), "About")}
           ${privateLinks}
           ${adminLink}
+          ${navLink("/about", "about", active, icon("info"), "About")}
         </nav>
         <section id="sidebar-recommendations" class="sidebar-recommendations" hidden></section>
         <div class="sidebar-footer">
@@ -359,6 +364,14 @@ function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
   document.querySelector("#app-search-form")?.addEventListener("submit", submitAppSearch);
   document.querySelector("#logout-button")?.addEventListener("click", logout);
   loadSidebarRecommendations();
+}
+
+function isAdminLike() {
+  return state.user && ["owner", "admin"].includes(state.user.role);
+}
+
+function isOwner() {
+  return state.user?.role === "owner";
 }
 
 function navLink(href, key, active, iconSvg, label) {
@@ -406,6 +419,23 @@ function writeSidebarCollapsed(collapsed) {
     window.localStorage.setItem(sidebarStorageKey, String(collapsed));
   } catch (_) {
     // The layout still updates if storage is unavailable.
+  }
+}
+
+function readPlayerVolume() {
+  try {
+    const value = Number(window.localStorage.getItem(playerVolumeStorageKey));
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+  } catch (_) {
+    return 1;
+  }
+}
+
+function writePlayerVolume(value) {
+  try {
+    window.localStorage.setItem(playerVolumeStorageKey, String(Math.max(0, Math.min(1, value))));
+  } catch (_) {
+    // Playback still works if storage is unavailable.
   }
 }
 
@@ -675,7 +705,16 @@ function bindLibraryEvents() {
             body: { visibility: button.dataset.nextVisibility },
           });
           flash(button.dataset.nextVisibility === "private" ? "Public access removed." : "Public link created.");
-        } else if (action === "delete" && window.confirm("Delete this clip?")) {
+        } else if (action === "delete") {
+          const confirmed = await confirmModal(
+            "Delete clip?",
+            "This removes the clip from your library and public links stop working.",
+            "Delete",
+            true,
+          );
+          if (!confirmed) {
+            return;
+          }
           await api(`/api/v1/clips/${encodeURIComponent(id)}`, { method: "DELETE", body: {} });
           flash("Clip deleted.");
         }
@@ -846,7 +885,22 @@ function publicAuthorName(clip) {
   return clip.author_name || "Unknown creator";
 }
 
-function renderAbout() {
+async function renderAbout() {
+  renderShell({
+    active: "about",
+    title: "About",
+    subtitle: "Clipline Cloud",
+    body: `<div class="empty-state">Loading About...</div>`,
+  });
+
+  let aboutText = "Clipline is a self-hosted clip library for saved gameplay moments.";
+  try {
+    const data = await api("/api/v1/about");
+    aboutText = data.about_text || aboutText;
+  } catch (error) {
+    flash(error.message, "error");
+  }
+
   renderShell({
     active: "about",
     title: "About",
@@ -855,7 +909,7 @@ function renderAbout() {
       <section class="about-page">
         <div class="panel section about-panel">
           <h2>Clipline Cloud</h2>
-          <p>Clipline is a self-hosted clip library for saved gameplay moments.</p>
+          <p class="about-text">${escapeHtml(aboutText)}</p>
           <dl class="data-list about-list">
             ${dataRow("Home", "Public clips that are ready for discovery.")}
             ${dataRow("Unlisted", "Shareable by link, but not listed on Home.")}
@@ -938,7 +992,16 @@ function bindBulkEvents() {
 
   document.querySelector("#bulk-delete-button")?.addEventListener("click", async () => {
     const ids = selectedClipIds();
-    if (!ids.length || !window.confirm(`Delete ${ids.length} selected clip${ids.length === 1 ? "" : "s"}?`)) {
+    if (!ids.length) {
+      return;
+    }
+    const confirmed = await confirmModal(
+      "Delete selected clips?",
+      `This removes ${ids.length} clip${ids.length === 1 ? "" : "s"} from your library.`,
+      "Delete",
+      true,
+    );
+    if (!confirmed) {
       return;
     }
     try {
@@ -977,7 +1040,8 @@ async function renderClipDetail(id) {
   renderShell({
     active: "library",
     title: "Clip detail",
-    subtitle: "Playback, metadata, markers, and visibility.",
+    subtitle: "Playback and clip controls.",
+    hideTopbar: true,
     body: `<div class="empty-state">Loading clip...</div>`,
   });
 
@@ -985,8 +1049,9 @@ async function renderClipDetail(id) {
     const clip = await api(`/api/v1/clips/${encodeURIComponent(id)}`);
     renderShell({
       active: "library",
-      title: clip.title,
-      subtitle: clip.game_name || clip.game_id || "No game metadata",
+      title: "Clip detail",
+      subtitle: "",
+      hideTopbar: true,
       body: clipDetailView(clip),
     });
     bindClipDetailEvents(clip);
@@ -994,7 +1059,8 @@ async function renderClipDetail(id) {
     renderShell({
       active: "library",
       title: "Clip detail",
-      subtitle: "Playback, metadata, markers, and visibility.",
+      subtitle: "Playback and clip controls.",
+      hideTopbar: true,
       body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
     });
   }
@@ -1051,6 +1117,7 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
           </div>
         </div>
         <div class="clip-player-timeline" data-player-timeline>
+          <div class="clip-player-buffered" data-player-buffered></div>
           <div class="clip-player-progress" data-player-progress></div>
           <div class="clip-player-marker-layer" data-player-marker-layer></div>
           <input class="clip-player-scrubber" data-player-scrubber type="range" min="0" max="0" step="0.01" value="0" aria-label="Seek">
@@ -1069,6 +1136,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   const note = root.querySelector("[data-player-note]");
   const time = root.querySelector("[data-player-time]");
   const progress = root.querySelector("[data-player-progress]");
+  const buffered = root.querySelector("[data-player-buffered]");
   const scrubber = root.querySelector("[data-player-scrubber]");
   const markerLayer = root.querySelector("[data-player-marker-layer]");
   const markerCount = root.querySelector("[data-player-marker-count]");
@@ -1091,6 +1159,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
 
   video.controls = false;
   video.playbackRate = Number(playbackRate.value);
+  video.volume = readPlayerVolume();
   root.classList.add("is-controls-visible");
 
   function playable() {
@@ -1124,6 +1193,29 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     }
     setRangeFill(scrubber, current, duration);
     time.textContent = formatReadout(current, duration);
+    updateBuffered();
+  }
+
+  function updateBuffered() {
+    if (!buffered) {
+      return;
+    }
+    if (duration <= 0 || !video.buffered?.length) {
+      buffered.style.width = "0%";
+      return;
+    }
+    const current = video.currentTime || 0;
+    let end = 0;
+    for (let index = 0; index < video.buffered.length; index += 1) {
+      const start = video.buffered.start(index);
+      const rangeEnd = video.buffered.end(index);
+      if (current >= start && current <= rangeEnd) {
+        end = rangeEnd;
+        break;
+      }
+      end = Math.max(end, rangeEnd);
+    }
+    buffered.style.width = `${percentFor(end, duration)}%`;
   }
 
   function updatePlayState() {
@@ -1185,16 +1277,28 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     seekTo((video.currentTime || 0) + seconds);
   }
 
+  async function playVideo() {
+    if (video.networkState === HTMLMediaElement.NETWORK_EMPTY) {
+      video.load();
+    }
+    root.classList.add("is-loading");
+    try {
+      await video.play();
+    } catch (error) {
+      note.textContent = error?.message || "Playback failed";
+    } finally {
+      root.classList.remove("is-loading");
+      updatePlayState();
+    }
+  }
+
   function togglePlay() {
     if (!playable()) {
       note.textContent = "Media unavailable";
       return;
     }
     if (video.paused || video.ended) {
-      video.play().catch((error) => {
-        note.textContent = error?.message || "Playback failed";
-        updatePlayState();
-      });
+      playVideo();
     } else {
       video.pause();
     }
@@ -1215,6 +1319,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       video.muted = false;
       if (video.volume === 0) {
         video.volume = 1;
+        writePlayerVolume(video.volume);
       }
     } else {
       video.muted = true;
@@ -1301,6 +1406,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   volume.addEventListener("input", () => {
     video.volume = Number(volume.value);
     video.muted = video.volume === 0;
+    writePlayerVolume(video.volume);
     updateVolumeState();
   });
   scrubber.addEventListener("pointerdown", startScrub);
@@ -1357,9 +1463,20 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   video.addEventListener("loadedmetadata", () => {
     setDuration(resolveDuration());
     updateMediaNote();
+    updateBuffered();
   });
   video.addEventListener("durationchange", () => setDuration(resolveDuration()));
   video.addEventListener("timeupdate", () => updateProgress());
+  video.addEventListener("progress", updateBuffered);
+  video.addEventListener("canplay", () => {
+    root.classList.remove("is-loading");
+    updateBuffered();
+  });
+  video.addEventListener("waiting", () => root.classList.add("is-loading"));
+  video.addEventListener("playing", () => {
+    root.classList.remove("is-loading");
+    updateBuffered();
+  });
   video.addEventListener("play", () => {
     updatePlayState();
     scheduleControlsHide(900);
@@ -1382,6 +1499,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       video.currentTime = target;
     }
     updateProgress();
+    updateBuffered();
   });
   video.addEventListener("error", () => {
     const error = video.error;
@@ -1395,55 +1513,70 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
 }
 
 function clipDetailView(clip) {
+  const description = clip.description || "";
   return `
-    <section class="detail-layout">
-      <div class="section">
+    <section class="detail-layout clip-edit-layout">
+      <div class="clip-edit-main">
+        <div class="clip-title-editor" data-title-editor>
+          <div class="clip-title-display" data-title-display>
+            <h1>${escapeHtml(clip.title)}</h1>
+            <button class="icon-btn clip-title-button" type="button" data-title-edit title="Edit title" aria-label="Edit title">${icon("edit")}</button>
+          </div>
+          <form class="clip-title-form" data-title-form hidden>
+            <label class="sr-only" for="clip-title-input">Title</label>
+            <input id="clip-title-input" name="title" type="text" value="${escapeAttr(clip.title)}" maxlength="220" required>
+            <button class="icon-btn clip-title-button" type="submit" title="Apply title" aria-label="Apply title">${icon("check")}</button>
+            <button class="icon-btn clip-title-button" type="button" data-title-cancel title="Discard title edit" aria-label="Discard title edit">${icon("x")}</button>
+          </form>
+        </div>
         ${clipPlayerView({
           playerId: `clip-${clip.id}`,
           src: `/api/v1/clips/${encodeURIComponent(clip.id)}/media`,
           durationMs: clip.duration_ms,
         })}
-        <div class="panel">
-          <div class="section-header">
-            <h2>Markers</h2>
-            <span class="muted">${clip.markers.length} marker${clip.markers.length === 1 ? "" : "s"}</span>
+        <form id="clip-description-form" class="clip-description-form">
+          <label class="field">
+            <span>Description</span>
+            <textarea name="description" rows="5" maxlength="5000" placeholder="Add context for this clip.">${escapeHtml(description)}</textarea>
+          </label>
+          <div class="clip-inline-actions">
+            <button class="btn-secondary" type="submit">${icon("save")} Save description</button>
           </div>
-          ${
-            clip.markers.length
-              ? `<ul class="marker-list">${clip.markers.map(markerItem).join("")}</ul>`
-              : `<p class="muted">No markers on this clip.</p>`
-          }
-        </div>
-        <form id="clip-edit-form" class="panel section">
-          <h2>Metadata</h2>
-          ${field("Title", "title", "text", clip.title, "Clip title")}
-          ${field("Game name", "game_name", "text", clip.game_name || "", "Optional")}
-          ${field("Game ID", "game_id", "text", clip.game_id || "", "Optional")}
-          ${field("Duration ms", "duration_ms", "number", clip.duration_ms ?? "", "Optional")}
-          <button class="btn-primary" type="submit">${icon("save")} Save metadata</button>
         </form>
-      </div>
-      <aside class="section">
-        <div class="panel section">
-          <div class="section-header">
-            <h2>Visibility</h2>
-            ${visibilityBadge(clip.visibility)}
-          </div>
-          ${selectField("Visibility", "detail_visibility", clip.visibility, [
-            ["private", "Private"],
-            ["public", "Public"],
-            ["unlisted", "Unlisted"],
-          ])}
-          <button id="clip-visibility-button" class="btn-secondary">${icon("refresh")} Apply visibility</button>
-          ${
-            clip.public_url
-              ? `<div class="share-line">
-                  <input readonly value="${escapeAttr(clip.public_url)}" aria-label="Public URL">
-                  <button class="btn-secondary" data-copy="${escapeAttr(clip.public_url)}">${icon("copy")} Copy</button>
-                </div>`
-              : `<p class="muted">No public URL is active.</p>`
-          }
+        <div class="clip-management-row">
+          <section class="clip-management-section">
+            <div>
+              <h2>Visibility</h2>
+              <p class="muted">Control who can view this clip.</p>
+            </div>
+            <div class="clip-visibility-controls">
+              ${visibilityBadge(clip.visibility)}
+              ${selectField("Visibility", "detail_visibility", clip.visibility, [
+                ["private", "Private"],
+                ["public", "Public"],
+                ["unlisted", "Unlisted"],
+              ])}
+              <button id="clip-visibility-button" class="btn-secondary">${icon("refresh")} Apply</button>
+            </div>
+            ${
+              clip.public_url
+                ? `<div class="share-line">
+                    <input readonly value="${escapeAttr(clip.public_url)}" aria-label="Public URL">
+                    <button class="btn-secondary" data-copy="${escapeAttr(clip.public_url)}">${icon("copy")} Copy</button>
+                  </div>`
+                : `<p class="muted">No public URL is active.</p>`
+            }
+          </section>
+          <section class="clip-management-section clip-danger-section">
+            <div>
+              <h2>Danger zone</h2>
+              <p class="muted">Delete this clip and stop public links from working.</p>
+            </div>
+            <button id="clip-delete-button" class="btn-danger">${icon("trash")} Delete clip</button>
+          </section>
         </div>
+      </div>
+      <aside class="clip-detail-aside">
         <div class="panel">
           <h2>Details</h2>
           <dl class="data-list">
@@ -1459,10 +1592,6 @@ function clipDetailView(clip) {
             ${dataRow("Checksum", clip.checksum_sha256 || "Unknown", true)}
           </dl>
         </div>
-        <div class="panel section">
-          <h2>Danger zone</h2>
-          <button id="clip-delete-button" class="btn-danger">${icon("trash")} Delete clip</button>
-        </div>
       </aside>
     </section>
   `;
@@ -1471,10 +1600,26 @@ function clipDetailView(clip) {
 function bindClipDetailEvents(clip) {
   initClipPlayer(document.querySelector("[data-clip-player]"), {
     durationMs: clip.duration_ms,
-    markers: clip.markers,
+    markers: [],
   });
 
-  document.querySelector("#clip-edit-form").addEventListener("submit", async (event) => {
+  const titleDisplay = document.querySelector("[data-title-display]");
+  const titleForm = document.querySelector("[data-title-form]");
+  const titleInput = titleForm?.querySelector("input[name='title']");
+  document.querySelector("[data-title-edit]")?.addEventListener("click", () => {
+    titleDisplay.hidden = true;
+    titleForm.hidden = false;
+    titleInput?.focus();
+    titleInput?.select();
+  });
+  document.querySelector("[data-title-cancel]")?.addEventListener("click", () => {
+    titleForm.hidden = true;
+    titleDisplay.hidden = false;
+    if (titleInput) {
+      titleInput.value = clip.title;
+    }
+  });
+  titleForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     try {
@@ -1482,12 +1627,27 @@ function bindClipDetailEvents(clip) {
         method: "PATCH",
         body: {
           title: String(form.get("title") || ""),
-          game_name: nullableString(form.get("game_name")),
-          game_id: nullableString(form.get("game_id")),
-          duration_ms: nullableNumber(form.get("duration_ms")),
         },
       });
-      flash("Clip metadata saved.");
+      flash("Title saved.");
+      renderClipDetail(clip.id);
+    } catch (error) {
+      flash(error.message, "error");
+      renderClipDetail(clip.id);
+    }
+  });
+
+  document.querySelector("#clip-description-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, {
+        method: "PATCH",
+        body: {
+          description: nullableString(form.get("description")),
+        },
+      });
+      flash("Description saved.");
       renderClipDetail(clip.id);
     } catch (error) {
       flash(error.message, "error");
@@ -1511,7 +1671,13 @@ function bindClipDetailEvents(clip) {
   });
 
   document.querySelector("#clip-delete-button").addEventListener("click", async () => {
-    if (!window.confirm("Delete this clip?")) {
+    const confirmed = await confirmModal(
+      "Delete clip?",
+      "This removes the clip from your library and public links stop working.",
+      "Delete",
+      true,
+    );
+    if (!confirmed) {
       return;
     }
     try {
@@ -1604,10 +1770,18 @@ function publicShareInfo(clip, authorName) {
     uploadedAgo !== "Unknown" ? uploadedAgo : "",
     formatDuration(clip.duration_ms),
   ].filter(Boolean);
+  const editHref =
+    clip.viewer_can_edit && clip.viewer_clip_id
+      ? `/clip/${encodeURIComponent(clip.viewer_clip_id)}`
+      : "";
   return `
     <section class="public-watch-info">
-      <h1 id="public-title">${escapeHtml(clip.title)}</h1>
+      <div class="public-watch-title-row">
+        <h1 id="public-title">${escapeHtml(clip.title)}</h1>
+        ${editHref ? `<a class="btn-secondary" href="${escapeAttr(editHref)}" data-route>${icon("edit")} Edit</a>` : ""}
+      </div>
       <div class="public-watch-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('<span aria-hidden="true">&middot;</span>')}</div>
+      ${clip.description ? `<p class="public-watch-description">${escapeHtml(clip.description)}</p>` : ""}
       <div class="public-author-row">
         <div class="public-author-avatar" aria-hidden="true">${escapeHtml(authorInitial(authorName))}</div>
         <div>
@@ -1773,7 +1947,15 @@ function deviceTokenItem(token) {
 function bindAccountEvents() {
   document.querySelectorAll("[data-session-revoke]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (!window.confirm("Revoke this browser session?")) {
+      const confirmed = await confirmModal(
+        "Revoke browser session?",
+        button.dataset.current === "true"
+          ? "This signs you out of the current browser session."
+          : "This signs out that browser session immediately.",
+        "Revoke",
+        true,
+      );
+      if (!confirmed) {
         return;
       }
       try {
@@ -1799,7 +1981,13 @@ function bindAccountEvents() {
 
   document.querySelectorAll("[data-device-token-revoke]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (!window.confirm("Revoke this device token?")) {
+      const confirmed = await confirmModal(
+        "Revoke device token?",
+        "The desktop client using this token will need to reconnect.",
+        "Revoke",
+        true,
+      );
+      if (!confirmed) {
         return;
       }
       try {
@@ -1826,8 +2014,9 @@ async function renderAdmin(tab) {
   });
 
   try {
-    const [overview, users, failedUploads, deadJobs, recentErrors] = await Promise.all([
+    const [overview, settings, users, failedUploads, deadJobs, recentErrors] = await Promise.all([
       api("/api/v1/admin/overview"),
+      api("/api/v1/admin/settings"),
       api("/api/v1/users"),
       api("/api/v1/admin/uploads/failed?limit=50"),
       api("/api/v1/admin/jobs/dead?limit=50"),
@@ -1837,7 +2026,7 @@ async function renderAdmin(tab) {
       active: "admin",
       title: "Admin",
       subtitle: "Accounts, instance summary, and processing diagnostics.",
-      body: adminView(tab, { overview, users, failedUploads, deadJobs, recentErrors }),
+      body: adminView(tab, { overview, settings, users, failedUploads, deadJobs, recentErrors }),
     });
     bindAdminEvents();
   } catch (error) {
@@ -1851,15 +2040,17 @@ async function renderAdmin(tab) {
 }
 
 function adminView(tab, data) {
-  const active = ["overview", "users", "jobs"].includes(tab) ? tab : "overview";
+  const active = ["overview", "users", "settings", "jobs"].includes(tab) ? tab : "overview";
   return `
     <section class="section">
       <div class="tabs" role="tablist" aria-label="Admin views">
         ${adminTab("/admin?tab=overview", "overview", active, icon("server"), "Overview")}
         ${adminTab("/admin?tab=users", "users", active, icon("users"), "Users")}
+        ${adminTab("/admin?tab=settings", "settings", active, icon("sliders"), "Settings")}
         ${adminTab("/admin?tab=jobs", "jobs", active, icon("alert"), "Jobs")}
       </div>
       ${active === "users" ? adminUsersView(data.users) : ""}
+      ${active === "settings" ? adminSettingsView(data.settings) : ""}
       ${active === "jobs" ? adminJobsView(data.failedUploads, data.deadJobs, data.recentErrors) : ""}
       ${active === "overview" ? adminOverviewView(data.overview) : ""}
     </section>
@@ -1905,6 +2096,10 @@ function storageWarningLabel(overview) {
 }
 
 function adminUsersView(users) {
+  const roleOptions = [["user", "User"]];
+  if (isOwner()) {
+    roleOptions.push(["admin", "Admin"]);
+  }
   return `
     <div class="admin-grid">
       <form id="create-user-form" class="panel section">
@@ -1912,11 +2107,7 @@ function adminUsersView(users) {
         ${field("Username", "username", "text", "", "Required")}
         ${field("Display name", "display_name", "text", "", "Optional")}
         ${field("Password", "password", "password", "", "At least 8 characters")}
-        ${selectField("Role", "role", "user", [
-          ["user", "User"],
-          ["admin", "Admin"],
-        ])}
-        ${field("Your password", "reauth_password", "password", "", "Required")}
+        ${selectField("Role", "role", "user", roleOptions)}
         <button class="btn-primary" type="submit">${icon("plus")} Create user</button>
       </form>
       <div class="panel">
@@ -1937,6 +2128,9 @@ function adminUsersView(users) {
 }
 
 function userRow(user) {
+  const quotaLabel =
+    user.storage_quota_bytes != null ? formatBytes(user.storage_quota_bytes) : "No limit";
+  const disableDisabled = !canDisableUser(user);
   return `
     <tr>
       <td>
@@ -1945,15 +2139,64 @@ function userRow(user) {
       </td>
       <td>${escapeHtml(user.role)}</td>
       <td>${user.is_disabled ? `<span class="badge badge-warn">Disabled</span>` : `<span class="badge badge-public">Active</span>`}</td>
-      <td>${formatBytes(user.storage_bytes || 0)}</td>
+      <td>
+        <strong>${formatBytes(user.storage_bytes || 0)}</strong>
+        <div class="muted">quota ${escapeHtml(quotaLabel)}</div>
+      </td>
       <td>${formatDate(user.last_login_at)}</td>
       <td>
         <div class="actions">
+          <button class="btn-secondary" data-user-action="quota" data-user-id="${escapeAttr(user.id)}">${icon("sliders")} Quota</button>
           <button class="btn-secondary" data-user-action="reset" data-user-id="${escapeAttr(user.id)}">${icon("clipboard")} Reset</button>
-          <button class="btn-danger" data-user-action="disable" data-user-id="${escapeAttr(user.id)}" ${user.is_disabled ? "disabled" : ""}>${icon("x")} Disable</button>
+          <button class="btn-danger" data-user-action="disable" data-user-id="${escapeAttr(user.id)}" ${disableDisabled ? "disabled" : ""}>${icon("x")} Disable</button>
         </div>
       </td>
     </tr>
+  `;
+}
+
+function canDisableUser(user) {
+  if (user.is_disabled || state.user?.id === user.id || user.role === "owner") {
+    return false;
+  }
+  if (user.role === "admin" && !isOwner()) {
+    return false;
+  }
+  return true;
+}
+
+function adminSettingsView(settings) {
+  return `
+    <form id="admin-settings-form" class="admin-settings-page">
+      <section class="settings-section">
+        <div class="settings-copy">
+          <h2>Upload policy</h2>
+          <p>Control whether long recordings can be uploaded and where Clipline classifies a clip as a full VOD.</p>
+        </div>
+        <div class="settings-controls">
+          <label class="check-field">
+            <input name="allow_vod_uploads" type="checkbox" ${settings.allow_vod_uploads ? "checked" : ""}>
+            <span>Allow full-length VOD uploads</span>
+          </label>
+          ${numberField("VOD threshold minutes", "vod_threshold_minutes", settings.vod_threshold_minutes ?? 30, "30")}
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-copy">
+          <h2>About page</h2>
+          <p>${isOwner() ? "Edit the public About page shown to all visitors." : "Only the owner can edit the public About page."}</p>
+        </div>
+        <div class="settings-controls">
+          <label class="field">
+            <span>About text</span>
+            <textarea name="about_text" maxlength="5000" ${isOwner() ? "" : "disabled"}>${escapeHtml(settings.about_text || "")}</textarea>
+          </label>
+        </div>
+      </section>
+      <div class="settings-action-row">
+        <button class="btn-primary" type="submit">${icon("save")} Save settings</button>
+      </div>
+    </form>
   `;
 }
 
@@ -2019,7 +2262,7 @@ function jobItem(job) {
   return `
     <div class="job-item">
       <strong>${escapeHtml(job.kind)} <span class="mono">${escapeHtml(job.id)}</span></strong>
-      <span class="muted">${escapeHtml(job.status)} - attempts ${job.attempts}/${job.max_attempts} - target ${escapeHtml(job.target_type || "")}:${escapeHtml(job.target_id || "")}</span>
+      <span class="muted">${escapeHtml(job.status)} - attempts ${job.attempts}/${job.max_attempts} - updated ${formatDate(job.updated_at)} - target ${escapeHtml(job.target_type || "")}:${escapeHtml(job.target_id || "")}</span>
       ${job.last_error ? `<span class="error-box">${escapeHtml(job.last_error)}</span>` : ""}
     </div>
   `;
@@ -2039,7 +2282,6 @@ function bindAdminEvents() {
             display_name: nullableString(form.get("display_name")),
             password: String(form.get("password") || ""),
             role: String(form.get("role") || "user"),
-            reauth_password: String(form.get("reauth_password") || ""),
           },
         });
         flash("User created.");
@@ -2051,28 +2293,98 @@ function bindAdminEvents() {
     });
   }
 
+  const settingsForm = document.querySelector("#admin-settings-form");
+  if (settingsForm) {
+    settingsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const body = {
+        allow_vod_uploads: form.get("allow_vod_uploads") === "on",
+        vod_threshold_minutes: Number(form.get("vod_threshold_minutes") || 30),
+      };
+      if (isOwner()) {
+        body.about_text = String(form.get("about_text") || "");
+      }
+      try {
+        await api("/api/v1/admin/settings", {
+          method: "PATCH",
+          body,
+        });
+        flash("Settings saved.");
+        renderAdmin("settings");
+      } catch (error) {
+        flash(error.message, "error");
+        renderAdmin("settings");
+      }
+    });
+  }
+
   document.querySelectorAll("[data-user-action]").forEach((button) => {
     button.addEventListener("click", async () => {
       const id = button.dataset.userId;
       const action = button.dataset.userAction;
-      const reauth = window.prompt(`Confirm your password to ${action} this user.`);
-      if (!reauth) {
-        return;
-      }
       try {
-        if (action === "disable") {
+        if (action === "quota") {
+          const result = await openModal({
+            title: "Set storage quota",
+            description: "Enter a per-user storage limit in GiB. Leave it blank to remove the per-user limit.",
+            confirmLabel: "Save quota",
+            fields: [
+              {
+                name: "quota_gib",
+                label: "Quota GiB",
+                type: "number",
+                step: "0.1",
+                min: "0",
+                placeholder: "No per-user limit",
+              },
+            ],
+          });
+          if (!result) {
+            return;
+          }
           await api(`/api/v1/users/${encodeURIComponent(id)}`, {
-            method: "DELETE",
-            body: { reauth_password: reauth },
+            method: "PATCH",
+            body: {
+              storage_quota_bytes: result.quota_gib.trim() ? gibibytesToBytes(result.quota_gib) : null,
+            },
           });
-          flash("User disabled.");
-        } else if (action === "reset") {
-          const data = await api(`/api/v1/users/${encodeURIComponent(id)}/reset-password`, {
-            method: "POST",
-            body: { reauth_password: reauth },
+          flash("Storage quota updated.");
+        } else {
+          const result = await openModal({
+            title: action === "disable" ? "Disable user?" : "Create reset token?",
+            description:
+              action === "disable"
+                ? "This immediately revokes the user's sessions and device tokens."
+                : "This creates a temporary reset token for the selected user.",
+            confirmLabel: action === "disable" ? "Disable" : "Create token",
+            danger: action === "disable",
+            fields: [
+              {
+                name: "reauth_password",
+                label: "Your password",
+                type: "password",
+                required: true,
+              },
+            ],
           });
-          state.adminResetToken = `Reset token: ${data.reset_token} (expires ${formatDate(data.expires_at)})`;
-          flash("Reset token created.");
+          if (!result) {
+            return;
+          }
+          if (action === "disable") {
+            await api(`/api/v1/users/${encodeURIComponent(id)}`, {
+              method: "DELETE",
+              body: { reauth_password: result.reauth_password },
+            });
+            flash("User disabled.");
+          } else if (action === "reset") {
+            const data = await api(`/api/v1/users/${encodeURIComponent(id)}/reset-password`, {
+              method: "POST",
+              body: { reauth_password: result.reauth_password },
+            });
+            state.adminResetToken = `Reset token: ${data.reset_token} (expires ${formatDate(data.expires_at)})`;
+            flash("Reset token created.");
+          }
         }
         renderAdmin("users");
       } catch (error) {
@@ -2142,6 +2454,84 @@ function renderFlash() {
 
 function flash(message, type = "notice") {
   state.flash = { message, type };
+}
+
+function openModal({ title, description = "", fields = [], confirmLabel = "Confirm", danger = false }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-backdrop";
+    overlay.innerHTML = `
+      <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <form class="modal-form">
+          <div class="modal-header">
+            <h2 id="modal-title">${escapeHtml(title)}</h2>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+          </div>
+          ${
+            fields.length
+              ? `<div class="modal-fields">${fields.map(modalField).join("")}</div>`
+              : ""
+          }
+          <div class="modal-actions">
+            <button class="btn-secondary" type="button" data-modal-cancel>Cancel</button>
+            <button class="${danger ? "btn-danger" : "btn-primary"}" type="submit">${escapeHtml(confirmLabel)}</button>
+          </div>
+        </form>
+      </section>
+    `;
+
+    const close = (value) => {
+      document.removeEventListener("keydown", onKeydown);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        close(null);
+      }
+    };
+
+    document.body.append(overlay);
+    document.addEventListener("keydown", onKeydown);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(null);
+      }
+    });
+    overlay.querySelector("[data-modal-cancel]").addEventListener("click", () => close(null));
+    overlay.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      close(data);
+    });
+    const firstControl = overlay.querySelector("input, textarea, select, button");
+    firstControl?.focus();
+  });
+}
+
+function modalField(field) {
+  const attrs = [
+    `name="${escapeAttr(field.name)}"`,
+    `type="${escapeAttr(field.type || "text")}"`,
+    field.required ? "required" : "",
+    field.step ? `step="${escapeAttr(field.step)}"` : "",
+    field.min != null ? `min="${escapeAttr(field.min)}"` : "",
+    field.placeholder ? `placeholder="${escapeAttr(field.placeholder)}"` : "",
+    field.value != null ? `value="${escapeAttr(field.value)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `
+    <label class="field">
+      <span>${escapeHtml(field.label)}</span>
+      <input ${attrs}>
+      ${field.help ? `<small>${escapeHtml(field.help)}</small>` : ""}
+    </label>
+  `;
+}
+
+async function confirmModal(title, description, confirmLabel = "Confirm", danger = false) {
+  return Boolean(await openModal({ title, description, confirmLabel, danger }));
 }
 
 async function copyText(value) {
@@ -2240,6 +2630,14 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function gibibytesToBytes(value) {
+  const amount = Number(String(value || "").trim());
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Storage quota must be a non-negative number");
+  }
+  return Math.round(amount * 1024 * 1024 * 1024);
 }
 
 function setNumericParam(params, name, value) {

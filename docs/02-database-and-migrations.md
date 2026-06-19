@@ -58,10 +58,22 @@ users (
   display_name  TEXT,
   password_hash TEXT NOT NULL,              -- Argon2id
   role          TEXT NOT NULL CHECK (role IN ('admin','user')),
+                                                -- instance owner is app_settings.owner_user_id
   is_disabled   BOOLEAN NOT NULL DEFAULT FALSE,
+  storage_quota_bytes BIGINT,               -- nullable = use instance default / no per-user cap
   created_at    TIMESTAMPTZ NOT NULL,
   updated_at    TIMESTAMPTZ NOT NULL,
   last_login_at TIMESTAMPTZ
+)
+
+app_settings (
+  id                    BIGINT PRIMARY KEY CHECK (id = 1),
+  owner_user_id         TEXT REFERENCES users(id), -- first account / instance owner
+  allow_vod_uploads     BOOLEAN NOT NULL DEFAULT TRUE,
+  vod_threshold_minutes BIGINT NOT NULL DEFAULT 30,
+  about_text            TEXT NOT NULL,
+  created_at            TIMESTAMPTZ NOT NULL,
+  updated_at            TIMESTAMPTZ NOT NULL
 )
 
 sessions (                                  -- browser, opaque token

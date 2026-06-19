@@ -79,18 +79,19 @@ CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.3 docker compose up -d
 docker compose logs clipline-cloud
 ```
 
-This starts the SQLite + local-disk profile on `http://localhost:8080`. On first boot a bootstrap admin
+This starts the SQLite + local-disk profile on `http://localhost:8080`. On first boot a bootstrap owner
 user (`admin`) is created. If you did not set a bootstrap password, a one-time password is printed in the
 logs:
 
 ```text
 Clipline Cloud initialized.
-Initial admin user created: admin
+Initial owner user created: admin
 One-time password: <generated-password>
 Save this password now. It will not be shown again.
 ```
 
-Log in, change the password, and create users. To set a fixed bootstrap password for this default profile
+Log in, change the password, and create users. The owner can create/disable admin accounts and edit
+the public About text. To set a fixed bootstrap password for this default profile
 instead of the generated one, set `CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD` inline before first boot, then rotate
 it after first login. (The default `docker-compose.yml` does not read an `admin_password.txt` secret — that
 file is used by the Caddy, Postgres, and S3 profiles below.)
@@ -202,7 +203,7 @@ Uses Postgres for metadata and local disk for media. Create these secret files i
 ```text
 postgres_password.txt        # the Postgres password
 database_url.txt             # full DSN matching that password
-admin_password.txt           # bootstrap admin password
+admin_password.txt           # bootstrap owner password
 session_secret.txt           # random session secret
 ```
 

@@ -482,6 +482,7 @@ mod tests {
         let request = CreateUploadRequest {
             client_clip_id: Some("local-1".to_string()),
             title: "clip".to_string(),
+            description: None,
             game_name: None,
             game_id: None,
             game_executable: None,

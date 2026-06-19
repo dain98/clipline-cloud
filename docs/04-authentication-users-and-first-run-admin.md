@@ -6,7 +6,7 @@
 **Design sections:** §9, §10, §16 (auth + users endpoints), §21 (first-run, security), §8 (tokens)
 
 > Goal: both auth flows (browser cookie session + desktop bearer device token), Argon2id passwords,
-> hashed opaque tokens, first-run admin bootstrap with **no hardcoded password**, the discovery
+> hashed opaque tokens, first-run owner bootstrap with **no hardcoded password**, the discovery
 > endpoint, and the admin user-management API. After this milestone the server has identity and
 > access control — the gate every protected endpoint in later docs relies on.
 
@@ -15,8 +15,8 @@
 ## Goal
 
 Working login for both clients, revocable hashed tokens, CSRF + origin defenses for the browser,
-the device-token connect flow with its non-HTTPS guard, first-run admin creation, and the
-admin-only user-management endpoints with re-auth and audit logging.
+the device-token connect flow with its non-HTTPS guard, first-run owner creation, and the
+owner/admin user-management endpoints with re-auth and audit logging.
 
 ## Design context
 
@@ -117,22 +117,28 @@ POST   /api/v1/users/{id}/reset-password
 POST   /api/v1/me/change-password
 ```
 
-### First-run admin creation (§21)
+### First-run owner creation (§21)
 
-On first start the backend initializes schema and ensures one admin exists. **No hardcoded
-password.** Username from `CLIPLINE_BOOTSTRAP_ADMIN_USERNAME`; password from
+On first start the backend initializes schema and ensures one owner exists. The owner is stored as
+`app_settings.owner_user_id`; in the users table that account still carries the `admin` role for
+backward-compatible admin permissions. Existing instances with admins but no owner promote the
+earliest admin to owner during migration/startup. **No hardcoded password.** Username from
+`CLIPLINE_BOOTSTRAP_ADMIN_USERNAME`; password from
 `CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD[_FILE]`; if none supplied, generate a one-time password and print
 it once:
 
 ```
 Clipline Cloud initialized.
-Initial admin user created: admin
+Initial owner user created: admin
 One-time password: <generated-password>
 Save this password now. It will not be shown again.
 ```
 
-After an admin exists, bootstrap credentials are ignored. A later CLI adds
+After an owner exists, bootstrap credentials are ignored. A later CLI adds
 `clipline-cloud admin reset-password <user>`.
+
+Owners and admins can use the admin API. Only the owner can create admin accounts, disable admin
+accounts, modify the owner account, or edit the public About text.
 
 ### Security requirements that land here (§21)
 
@@ -155,8 +161,9 @@ After an admin exists, bootstrap credentials are ignored. A later CLI adds
 - [x] Strict `Origin`/`Referer` validation as defense in depth
 - [x] `POST /auth/device-token` (validate credentials, create named token, return once); `GET`/`DELETE` device-tokens with `last_used_at`
 - [x] Auth middleware: cookie-session for browser, `Authorization: Bearer` for desktop; updates `last_used_at`; immediate revocation honored
-- [x] First-run admin bootstrap: env password, `_FILE`, or generated-and-printed-once; ignored after an admin exists
+- [x] First-run owner bootstrap: env password, `_FILE`, or generated-and-printed-once; ignored after an owner exists
 - [x] Users API (admin-only) + `POST /me/change-password` (self)
+- [x] Owner guardrails: only owner can create/disable admins, modify the owner account, and edit About text
 - [x] Re-authentication required for sensitive admin actions (create/disable user, reset password)
 - [x] Reset-password tokens: short-lived, random, stored hashed; redeeming one changes the password and revokes existing sessions/device tokens
 - [x] Login rate limiting by username/source and source, with bounded in-memory buckets
@@ -175,7 +182,7 @@ After an admin exists, bootstrap credentials are ignored. A later CLI adds
 
 - 2026-06-16: Implemented auth runtime and routes in the server: discovery, browser sessions,
   logout/me, desktop device tokens, admin users, reset-password token issuance, self password
-  change, CSRF/origin validation, login throttling, first-run admin bootstrap, and audit writes.
+  change, CSRF/origin validation, login throttling, first-run owner bootstrap, and audit writes.
 - 2026-06-16: Added reset-password token migrations and repository coverage for SQLite/Postgres,
   plus DB/server tests for hashing, token hashing, CSRF binding, migrations, and repository
   roundtrips.

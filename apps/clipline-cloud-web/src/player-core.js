@@ -120,11 +120,13 @@ export function playerKeyIntent(code, shiftKey) {
     case "KeyK":
       return { kind: "toggle-play" };
     case "ArrowLeft":
-    case "KeyJ":
       return { kind: "seek-by", seconds: shiftKey ? -1 : -5 };
     case "ArrowRight":
-    case "KeyL":
       return { kind: "seek-by", seconds: shiftKey ? 1 : 5 };
+    case "KeyJ":
+      return { kind: "seek-by", seconds: -10 };
+    case "KeyL":
+      return { kind: "seek-by", seconds: 10 };
     case "Comma":
       return { kind: "seek-by", seconds: -0.1 };
     case "Period":

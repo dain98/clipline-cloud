@@ -85,6 +85,7 @@ struct PublicRecommendationResponse {
 struct PublicClipSummaryResponse {
     share_id: String,
     title: String,
+    description: Option<String>,
     author_name: String,
     game_name: Option<String>,
     game_id: Option<String>,
@@ -99,7 +100,10 @@ struct PublicClipSummaryResponse {
 struct PublicClipResponse {
     share_id: String,
     title: String,
+    description: Option<String>,
     author_name: String,
+    viewer_can_edit: bool,
+    viewer_clip_id: Option<String>,
     game_name: Option<String>,
     game_id: Option<String>,
     recorded_at: Option<DateTime<Utc>>,
@@ -263,14 +267,23 @@ async fn get_owned_poster(
 
 async fn get_public_clip(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> Result<Json<PublicClipResponse>, ApiError> {
     let clip = load_public_clip(&state, &share_id).await?;
+    let auth = auth::optional_auth(&state, &headers).await?;
+    let viewer_can_edit = auth
+        .as_ref()
+        .is_some_and(|auth| auth.user.id == clip.owner_user_id);
+    let viewer_clip_id = viewer_can_edit.then(|| clip.id.clone());
     let author_name = public_clip_author_name(&state, &clip).await?;
     Ok(Json(PublicClipResponse {
         share_id: share_id.clone(),
         title: clip.title,
+        description: clip.description,
         author_name,
+        viewer_can_edit,
+        viewer_clip_id,
         game_name: clip.game_name,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
@@ -294,6 +307,7 @@ fn public_clip_summary_response(
         share_url: absolute_url(state, &format!("c/{share_id}")),
         share_id,
         title: clip.title,
+        description: clip.description,
         author_name,
         game_name: clip.game_name,
         game_id: clip.game_id,
@@ -831,6 +845,14 @@ fn public_author_label(display_name: Option<&str>, username: &str) -> String {
 }
 
 fn public_share_description(clip: &Clip, author_name: Option<&str>) -> String {
+    if let Some(description) = clip
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return description.to_string();
+    }
     let intro = author_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1207,6 +1229,7 @@ mod tests {
             owner_user_id: "owner".to_string(),
             client_clip_id: None,
             title: "title".to_string(),
+            description: None,
             game_name: game_name.map(ToOwned::to_owned),
             game_id: None,
             game_executable: None,

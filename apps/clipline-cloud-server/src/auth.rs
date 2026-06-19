@@ -25,8 +25,8 @@ use clipline_cloud_api_types::{
     DiscoveryResponse, MeResponse, SessionResponse, UserResponse,
 };
 use clipline_cloud_db::{
-    now_utc, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewResetPasswordToken, NewSession,
-    NewUser, Repositories, Session, User,
+    now_utc, AppSettings, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewResetPasswordToken,
+    NewSession, NewUser, Repositories, Session, User,
 };
 use cookie::{Cookie, SameSite};
 use hmac::{Hmac, Mac};
@@ -232,7 +232,18 @@ pub async fn ensure_first_admin(
     config: &Config,
     repositories: &Repositories,
 ) -> anyhow::Result<()> {
-    if repositories.users.count_admins().await? > 0 {
+    let settings = repositories.settings.get().await?;
+    if settings.owner_user_id.is_some() {
+        return Ok(());
+    }
+
+    if let Some(admin) = repositories.users.first_admin().await? {
+        repositories.settings.set_owner_user_id(&admin.id).await?;
+        info!(
+            event = "owner.bootstrap.promoted",
+            username = %admin.username,
+            message = "Existing admin account promoted to instance owner"
+        );
         return Ok(());
     }
 
@@ -250,8 +261,9 @@ pub async fn ensure_first_admin(
         .users
         .create(&NewUser::new(&username, password_hash, "admin"))
         .await?;
+    repositories.settings.set_owner_user_id(&user.id).await?;
 
-    let mut audit = NewAuditLogEntry::new("admin.bootstrap.created");
+    let mut audit = NewAuditLogEntry::new("owner.bootstrap.created");
     audit.target_type = Some("user".to_string());
     audit.target_id = Some(user.id.clone());
     audit.metadata_json = Some(sqlx::types::Json(json!({ "username": username })));
@@ -259,14 +271,14 @@ pub async fn ensure_first_admin(
 
     if generated_password {
         println!("Clipline Cloud initialized.");
-        println!("Initial admin user created: {username}");
+        println!("Initial owner user created: {username}");
         println!("One-time password: {password}");
         println!("Save this password now. It will not be shown again.");
     } else {
         info!(
-            event = "admin.bootstrap.created",
+            event = "owner.bootstrap.created",
             username = %username,
-            message = "Initial admin user created from bootstrap credentials"
+            message = "Initial owner user created from bootstrap credentials"
         );
     }
 
@@ -377,7 +389,7 @@ async fn login(
 
     let csrf_token = state.auth.csrf_token(&token_hash);
     let body = Json(LoginResponse {
-        user: user_response(user),
+        user: user_response_for_state(&state, user).await?,
         csrf_token,
     });
     let mut response = body.into_response();
@@ -425,7 +437,7 @@ async fn me(
     };
 
     Ok(Json(MeResponse {
-        user: user_response(auth.user),
+        user: user_response_for_state(&state, auth.user).await?,
         auth_kind: auth.kind.name().to_string(),
         csrf_token,
     }))
@@ -588,6 +600,7 @@ async fn list_users(
     headers: HeaderMap,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let _auth = require_admin(&state, &headers).await?;
+    let owner_user_id = state.repositories.settings.get().await?.owner_user_id;
     let storage_by_owner = state
         .repositories
         .clips
@@ -613,7 +626,7 @@ async fn list_users(
                 .get(user.id.as_str())
                 .copied()
                 .unwrap_or_default();
-            user_response_with_storage(user, storage_bytes)
+            user_response_with_storage_and_owner(user, storage_bytes, owner_user_id.as_deref())
         })
         .collect();
     Ok(Json(users))
@@ -625,7 +638,6 @@ struct CreateUserRequest {
     password: String,
     display_name: Option<String>,
     role: Option<String>,
-    reauth_password: String,
 }
 
 async fn create_user(
@@ -636,10 +648,12 @@ async fn create_user(
 ) -> Result<Json<UserResponse>, ApiError> {
     let auth = require_admin(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
-    require_reauth(&auth.user, &request.reauth_password)?;
 
     let role = request.role.unwrap_or_else(|| "user".to_string());
     validate_role(&role)?;
+    if role == "admin" && !user_is_owner(&state, &auth.user).await? {
+        return Err(ApiError::forbidden("owner role required to create admins"));
+    }
     if request.username.trim().is_empty() {
         return Err(ApiError::bad_request("username is required"));
     }
@@ -662,7 +676,7 @@ async fn create_user(
         Some(json!({ "username": created.username })),
     )
     .await?;
-    Ok(Json(user_response(created)))
+    Ok(Json(user_response_for_state(&state, created).await?))
 }
 
 async fn get_user(
@@ -674,7 +688,7 @@ async fn get_user(
     let Some(user) = state.repositories.users.get(&id).await? else {
         return Err(ApiError::not_found("user not found"));
     };
-    Ok(Json(user_response(user)))
+    Ok(Json(user_response_for_state(&state, user).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -682,7 +696,7 @@ struct UpdateUserRequest {
     display_name: Option<String>,
     role: Option<String>,
     is_disabled: Option<bool>,
-    reauth_password: String,
+    storage_quota_bytes: Option<Option<u64>>,
 }
 
 async fn update_user(
@@ -694,20 +708,38 @@ async fn update_user(
 ) -> Result<Json<UserResponse>, ApiError> {
     let auth = require_admin(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
-    require_reauth(&auth.user, &request.reauth_password)?;
 
     let Some(existing) = state.repositories.users.get(&id).await? else {
         return Err(ApiError::not_found("user not found"));
     };
+    let settings = state.repositories.settings.get().await?;
+    let actor_is_owner = settings.owner_user_id.as_deref() == Some(auth.user.id.as_str());
+    enforce_user_update_policy(&auth.user, &existing, &request, &settings, actor_is_owner)?;
+
     let was_disabled = existing.is_disabled;
-    let role = request.role.unwrap_or(existing.role);
+    let role = request
+        .role
+        .clone()
+        .unwrap_or_else(|| existing.role.clone());
     validate_role(&role)?;
     let is_disabled = request.is_disabled.unwrap_or(was_disabled);
+    let storage_quota_bytes = match request.storage_quota_bytes {
+        Some(Some(value)) => Some(
+            i64::try_from(value)
+                .map_err(|_| ApiError::bad_request("storage quota is too large"))?,
+        ),
+        Some(None) => None,
+        None => existing.storage_quota_bytes,
+    };
+    let display_name = request
+        .display_name
+        .as_deref()
+        .or(existing.display_name.as_deref());
 
     state
         .repositories
         .users
-        .update_profile(&id, request.display_name.as_deref(), &role, is_disabled)
+        .update_profile(&id, display_name, &role, is_disabled, storage_quota_bytes)
         .await?;
     if is_disabled && !was_disabled {
         revoke_user_auth(&state.repositories, &id).await?;
@@ -723,13 +755,15 @@ async fn update_user(
     )
     .await?;
 
-    Ok(Json(user_response(
+    Ok(Json(user_response_with_storage_and_owner(
         state
             .repositories
             .users
             .get(&id)
             .await?
             .expect("updated user should exist"),
+        0,
+        settings.owner_user_id.as_deref(),
     )))
 }
 
@@ -743,6 +777,12 @@ async fn disable_user(
     let auth = require_admin(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
     require_reauth(&auth.user, &request.reauth_password)?;
+
+    let Some(existing) = state.repositories.users.get(&id).await? else {
+        return Err(ApiError::not_found("user not found"));
+    };
+    let settings = state.repositories.settings.get().await?;
+    enforce_user_disable_policy(&auth.user, &existing, &settings)?;
 
     state.repositories.users.set_disabled(&id, true).await?;
     revoke_user_auth(&state.repositories, &id).await?;
@@ -790,8 +830,14 @@ async fn reset_password(
     require_csrf_for_cookie(&state, &headers, &auth)?;
     require_reauth(&auth.user, &request.reauth_password)?;
 
-    if state.repositories.users.get(&id).await?.is_none() {
+    let Some(target_user) = state.repositories.users.get(&id).await? else {
         return Err(ApiError::not_found("user not found"));
+    };
+    let settings = state.repositories.settings.get().await?;
+    if is_owner_user(&target_user, &settings) && !is_owner_user(&auth.user, &settings) {
+        return Err(ApiError::forbidden(
+            "owner role required to reset the owner",
+        ));
     }
 
     let raw_token = generate_prefixed_token("clp_rst_");
@@ -950,10 +996,17 @@ pub(crate) async fn require_admin(
     headers: &HeaderMap,
 ) -> Result<AuthenticatedUser, ApiError> {
     let auth = require_auth(state, headers).await?;
-    if auth.user.role != "admin" {
+    if !matches!(auth.user.role.as_str(), "admin" | "owner")
+        && !user_is_owner(state, &auth.user).await?
+    {
         return Err(ApiError::forbidden("admin role required"));
     }
     Ok(auth)
+}
+
+pub(crate) async fn user_is_owner(state: &AppState, user: &User) -> Result<bool, ApiError> {
+    let settings = state.repositories.settings.get().await?;
+    Ok(is_owner_user(user, &settings))
 }
 
 pub(crate) async fn require_auth(
@@ -1023,6 +1076,20 @@ pub(crate) async fn require_auth(
     })
 }
 
+pub(crate) async fn optional_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<AuthenticatedUser>, ApiError> {
+    if bearer_token(headers).is_none() && session_cookie_value(headers).is_none() {
+        return Ok(None);
+    }
+    match require_auth(state, headers).await {
+        Ok(auth) => Ok(Some(auth)),
+        Err(error) if error.status == StatusCode::UNAUTHORIZED => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn require_csrf_for_cookie(
     state: &AppState,
     headers: &HeaderMap,
@@ -1044,7 +1111,7 @@ pub(crate) fn require_csrf_for_cookie(
     Ok(())
 }
 
-fn require_reauth(user: &User, password: &str) -> Result<(), ApiError> {
+pub(crate) fn require_reauth(user: &User, password: &str) -> Result<(), ApiError> {
     if verify_password(password, &user.password_hash)? {
         Ok(())
     } else {
@@ -1104,6 +1171,75 @@ fn origin(url: &url::Url) -> String {
         Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
         None => format!("{}://{}", url.scheme(), host),
     }
+}
+
+fn enforce_user_update_policy(
+    actor: &User,
+    target: &User,
+    request: &UpdateUserRequest,
+    settings: &AppSettings,
+    actor_is_owner: bool,
+) -> Result<(), ApiError> {
+    let target_is_owner = is_owner_user(target, settings);
+    let target_is_admin = matches!(target.role.as_str(), "admin" | "owner");
+    let role_change = request
+        .role
+        .as_deref()
+        .is_some_and(|role| role != target.role);
+
+    if target_is_owner {
+        if !actor_is_owner {
+            return Err(ApiError::forbidden(
+                "owner role required to modify the owner",
+            ));
+        }
+        if request.is_disabled == Some(true) {
+            return Err(ApiError::forbidden("owner account cannot be disabled"));
+        }
+        if role_change {
+            return Err(ApiError::forbidden("owner role cannot be changed"));
+        }
+    }
+
+    if target_is_admin && !actor_is_owner {
+        if request.is_disabled == Some(true) {
+            return Err(ApiError::forbidden("owner role required to disable admins"));
+        }
+        if role_change {
+            return Err(ApiError::forbidden("owner role required to change admins"));
+        }
+    }
+
+    if request.role.as_deref() == Some("admin") && !target_is_admin && !actor_is_owner {
+        return Err(ApiError::forbidden("owner role required to grant admin"));
+    }
+
+    if actor.id == target.id && request.is_disabled == Some(true) {
+        return Err(ApiError::forbidden("users cannot disable themselves"));
+    }
+
+    Ok(())
+}
+
+fn enforce_user_disable_policy(
+    actor: &User,
+    target: &User,
+    settings: &AppSettings,
+) -> Result<(), ApiError> {
+    if actor.id == target.id {
+        return Err(ApiError::forbidden("users cannot disable themselves"));
+    }
+    if is_owner_user(target, settings) {
+        return Err(ApiError::forbidden("owner account cannot be disabled"));
+    }
+    if matches!(target.role.as_str(), "admin" | "owner") && !is_owner_user(actor, settings) {
+        return Err(ApiError::forbidden("owner role required to disable admins"));
+    }
+    Ok(())
+}
+
+fn is_owner_user(user: &User, settings: &AppSettings) -> bool {
+    settings.owner_user_id.as_deref() == Some(user.id.as_str())
 }
 
 fn validate_role(role: &str) -> Result<(), ApiError> {
@@ -1224,18 +1360,36 @@ fn header_to_string(headers: &HeaderMap, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn user_response(value: User) -> UserResponse {
-    user_response_with_storage(value, 0)
+async fn user_response_for_state(state: &AppState, value: User) -> Result<UserResponse, ApiError> {
+    let owner_user_id = state.repositories.settings.get().await?.owner_user_id;
+    Ok(user_response_with_storage_and_owner(
+        value,
+        0,
+        owner_user_id.as_deref(),
+    ))
 }
 
-fn user_response_with_storage(value: User, storage_bytes: u64) -> UserResponse {
+fn user_response_with_storage_and_owner(
+    value: User,
+    storage_bytes: u64,
+    owner_user_id: Option<&str>,
+) -> UserResponse {
+    let storage_quota_bytes = value
+        .storage_quota_bytes
+        .and_then(|quota| u64::try_from(quota).ok());
+    let role = if owner_user_id == Some(value.id.as_str()) {
+        "owner".to_string()
+    } else {
+        value.role
+    };
     UserResponse {
         id: value.id,
         username: value.username,
         display_name: value.display_name,
-        role: value.role,
+        role,
         is_disabled: value.is_disabled,
         storage_bytes,
+        storage_quota_bytes,
         created_at: value.created_at,
         updated_at: value.updated_at,
         last_login_at: value.last_login_at,
@@ -1616,6 +1770,68 @@ mod tests {
             .is_empty());
     }
 
+    #[tokio::test]
+    async fn owner_user_is_returned_with_owner_role() {
+        let app = test_app().await;
+        let owner = insert_user_with_role(&app.state, "owner", "admin").await;
+        app.state
+            .repositories
+            .settings
+            .set_owner_user_id(&owner.id)
+            .await
+            .expect("set owner");
+
+        let response = user_response_for_state(&app.state, owner)
+            .await
+            .expect("user response");
+
+        assert_eq!(response.role, "owner");
+    }
+
+    #[tokio::test]
+    async fn only_owner_can_disable_admin_accounts() {
+        let app = test_app().await;
+        let owner = insert_user_with_role(&app.state, "owner", "admin").await;
+        let admin_actor = insert_user_with_role(&app.state, "admin-actor", "admin").await;
+        let admin_target = insert_user_with_role(&app.state, "admin-target", "admin").await;
+        let settings = app
+            .state
+            .repositories
+            .settings
+            .set_owner_user_id(&owner.id)
+            .await
+            .expect("set owner");
+        let request = UpdateUserRequest {
+            display_name: None,
+            role: None,
+            is_disabled: Some(true),
+            storage_quota_bytes: None,
+        };
+
+        assert_eq!(
+            error_status(enforce_user_update_policy(
+                &admin_actor,
+                &admin_target,
+                &request,
+                &settings,
+                false,
+            )),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            error_status(enforce_user_disable_policy(
+                &admin_actor,
+                &admin_target,
+                &settings,
+            )),
+            StatusCode::FORBIDDEN
+        );
+        enforce_user_update_policy(&owner, &admin_target, &request, &settings, true)
+            .expect("owner can update admin");
+        enforce_user_disable_policy(&owner, &admin_target, &settings)
+            .expect("owner can disable admin");
+    }
+
     async fn test_app() -> TestApp {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let database_url = format!("sqlite://{}", temp_dir.path().join("clipline.db").display());
@@ -1644,13 +1860,17 @@ mod tests {
     }
 
     async fn insert_user(state: &AppState, username: &str) -> User {
+        insert_user_with_role(state, username, "user").await
+    }
+
+    async fn insert_user_with_role(state: &AppState, username: &str, role: &str) -> User {
         state
             .repositories
             .users
             .create(&NewUser::new(
                 format!("{username}-{}", new_ulid()),
                 "argon2id-hash",
-                "user",
+                role,
             ))
             .await
             .expect("user")

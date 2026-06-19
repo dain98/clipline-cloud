@@ -13,6 +13,7 @@ pub struct User {
     pub password_hash: String,
     pub role: String,
     pub is_disabled: bool,
+    pub storage_quota_bytes: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
@@ -26,6 +27,7 @@ pub struct NewUser {
     pub password_hash: String,
     pub role: String,
     pub is_disabled: bool,
+    pub storage_quota_bytes: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
@@ -45,11 +47,23 @@ impl NewUser {
             password_hash: password_hash.into(),
             role: role.into(),
             is_disabled: false,
+            storage_quota_bytes: None,
             created_at: now,
             updated_at: now,
             last_login_at: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct AppSettings {
+    pub id: i64,
+    pub owner_user_id: Option<String>,
+    pub allow_vod_uploads: bool,
+    pub vod_threshold_minutes: i64,
+    pub about_text: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
@@ -147,6 +161,7 @@ pub struct Clip {
     pub owner_user_id: String,
     pub client_clip_id: Option<String>,
     pub title: String,
+    pub description: Option<String>,
     pub game_name: Option<String>,
     pub game_id: Option<String>,
     pub game_executable: Option<String>,
@@ -180,6 +195,7 @@ pub struct NewClip {
     pub owner_user_id: String,
     pub client_clip_id: Option<String>,
     pub title: String,
+    pub description: Option<String>,
     pub game_name: Option<String>,
     pub game_id: Option<String>,
     pub game_executable: Option<String>,
@@ -219,6 +235,7 @@ impl NewClip {
             owner_user_id: owner_user_id.into(),
             client_clip_id: None,
             title: title.into(),
+            description: None,
             game_name: None,
             game_id: None,
             game_executable: None,

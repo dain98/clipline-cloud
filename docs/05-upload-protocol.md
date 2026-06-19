@@ -76,6 +76,7 @@ The client uses the **server-returned** `part_size_bytes`, never its own local d
 {
   "client_clip_id": "6f70710e-54e6-49d1-b7ab-3802edabf3c5",
   "title": "Baron steal",
+  "description": "Last-second steal from a ranked game.",
   "game_name": "League of Legends",
   "game_id": "league-of-legends",
   "source_type": "league_marker",
@@ -87,10 +88,13 @@ The client uses the **server-returned** `part_size_bytes`, never its own local d
   "video_codec": "h264",
   "audio_codec": "aac",
   "width": 1920, "height": 1080, "fps": 60,
-  "visibility": "private",
-  "markers": [{ "kind": "kill", "label": "Kill", "timestamp_ms": 18200 }]
+  "visibility": "private"
 }
 ```
+
+`description` is optional and may be set by clients at upload time. `markers` is deprecated for new
+uploads; the server accepts the field for compatibility but no longer creates marker rows from upload
+requests.
 
 ```json
 {
@@ -257,6 +261,7 @@ replacement if resumability requirements outgrow this first-party flow.
 - [x] Simulated crash between storage-complete and DB-commit → retried `POST /complete` adopts the existing object (no `NoSuchUpload` failure)
 - [x] Re-uploading a part with a different checksum returns `409`; with the same checksum returns 200
 - [x] No non-final S3 part smaller than 5 MiB is accepted
+- [x] Upload create enforces instance VOD policy and per-user storage quota before allocating a new session
 
 ## Progress log
 
@@ -281,3 +286,7 @@ replacement if resumability requirements outgrow this first-party flow.
 - 2026-06-17: Extended the Docker MinIO smoke to enable direct-S3 uploads, force a tiny MP4 through
   the chunked path, request a presigned part URL, PUT the part directly to MinIO, ack the S3 ETag,
   complete the upload, and wait for the clip to validate as ready.
+- 2026-06-19: Added admin-configurable VOD policy at upload create. If full-length VOD uploads are
+  disabled, `duration_ms` is required and uploads at or above the configured threshold minutes are
+  rejected before a new session is allocated. Per-user storage quotas now override the instance
+  default quota when set.

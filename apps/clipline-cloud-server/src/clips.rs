@@ -11,8 +11,8 @@ use clipline_cloud_api_types::{
 };
 use clipline_cloud_db::{BulkVisibilityUpdate, Clip, ClipListParams, ClipMarker, ClipSort};
 use rand::{rngs::OsRng, RngCore};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{json, Value};
 
 use crate::{
     auth::{self, ApiError},
@@ -62,12 +62,28 @@ struct ListClipsQuery {
 #[derive(Debug, Deserialize)]
 struct UpdateClipRequest {
     title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_value")]
+    description: PatchValue,
     game_name: Option<Option<String>>,
     game_id: Option<Option<String>>,
     game_executable: Option<Option<String>>,
     source_type: Option<Option<String>>,
     recorded_at: Option<Option<DateTime<Utc>>>,
     duration_ms: Option<Option<i64>>,
+}
+
+#[derive(Debug, Default)]
+enum PatchValue {
+    #[default]
+    Missing,
+    Present(Value),
+}
+
+fn deserialize_patch_value<'de, D>(deserializer: D) -> Result<PatchValue, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(PatchValue::Present)
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +214,17 @@ async fn update_clip(
         }
         None => existing.title.clone(),
     };
+    let description_updated = matches!(request.description, PatchValue::Present(_));
+    let description = match request.description {
+        PatchValue::Present(Value::Null) => None,
+        PatchValue::Present(Value::String(value)) => normalized_optional(Some(value)),
+        PatchValue::Present(_) => {
+            return Err(ApiError::bad_request(
+                "description must be a string or null",
+            ))
+        }
+        PatchValue::Missing => existing.description.clone(),
+    };
     let game_name = patch_optional_string(request.game_name, existing.game_name);
     let game_id = patch_optional_string(request.game_id, existing.game_id);
     let game_executable = patch_optional_string(request.game_executable, existing.game_executable);
@@ -216,6 +243,7 @@ async fn update_clip(
         .update_metadata(
             &existing.id,
             &title,
+            description.as_deref(),
             game_name.as_deref(),
             game_id.as_deref(),
             game_executable.as_deref(),
@@ -231,7 +259,7 @@ async fn update_clip(
         "clip.updated",
         Some("clip"),
         Some(&existing.id),
-        Some(json!({ "title": title })),
+        Some(json!({ "title": title, "description_updated": description_updated })),
     )
     .await?;
 
@@ -415,6 +443,7 @@ fn clip_summary_response(clip: Clip, state: &AppState) -> ClipSummaryResponse {
     ClipSummaryResponse {
         id: clip.id,
         title: clip.title,
+        description: clip.description,
         game_name: clip.game_name,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
@@ -448,6 +477,7 @@ fn clip_detail_response(
         id: clip.id,
         client_clip_id: clip.client_clip_id,
         title: clip.title,
+        description: clip.description,
         game_name: clip.game_name,
         game_id: clip.game_id,
         game_executable: clip.game_executable,
