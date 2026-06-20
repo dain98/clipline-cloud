@@ -452,33 +452,52 @@ fn insert_static_header(headers: &mut HeaderMap, name: HeaderName, value: &'stat
 }
 
 fn content_security_policy(config: &Config) -> HeaderValue {
-    let Some(media_origin) = presigned_media_origin(config) else {
+    let media_sources = presigned_media_sources(config);
+    if media_sources.is_empty() {
         return HeaderValue::from_static(DEFAULT_CONTENT_SECURITY_POLICY);
-    };
+    }
     let policy = format!(
-        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob: {media_origin}; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob: {}; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+        media_sources.join(" ")
     );
     HeaderValue::from_str(&policy)
         .unwrap_or_else(|_| HeaderValue::from_static(DEFAULT_CONTENT_SECURITY_POLICY))
 }
 
-fn presigned_media_origin(config: &Config) -> Option<String> {
-    storage_presigned_media_origin(&config.storage, config.public_media_mode)
+fn presigned_media_sources(config: &Config) -> Vec<String> {
+    storage_presigned_media_sources(&config.storage, config.public_media_mode)
 }
 
-fn storage_presigned_media_origin(
+fn storage_presigned_media_sources(
     storage: &StorageConfig,
     public_media_mode: PublicMediaMode,
-) -> Option<String> {
+) -> Vec<String> {
     if public_media_mode != PublicMediaMode::Presigned {
-        return None;
+        return Vec::new();
     }
-    let StorageConfig::S3 { endpoint, .. } = storage else {
-        return None;
+    let StorageConfig::S3 {
+        endpoint,
+        force_path_style,
+        ..
+    } = storage
+    else {
+        return Vec::new();
     };
-    let url = url::Url::parse(endpoint).ok()?;
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return Vec::new();
+    };
     let origin = url.origin().ascii_serialization();
-    (origin != "null").then_some(origin)
+    if origin == "null" {
+        return Vec::new();
+    }
+
+    let mut sources = vec![origin];
+    if !force_path_style && url.scheme() == "https" {
+        if let Some(host) = url.host_str() {
+            sources.push(format!("https://*.{host}"));
+        }
+    }
+    sources
 }
 
 fn resolve_client_ip(config: &Config, remote_addr: SocketAddr, headers: &HeaderMap) -> String {
@@ -625,9 +644,9 @@ mod tests {
     }
 
     #[test]
-    fn presigned_media_csp_source_uses_s3_endpoint_origin() {
+    fn presigned_media_csp_sources_include_virtual_host_subdomains() {
         let storage = StorageConfig::S3 {
-            endpoint: "https://bucket.example.storageapi.dev/path".to_string(),
+            endpoint: "https://t3.storageapi.dev/path".to_string(),
             bucket: "clipline".to_string(),
             region: "auto".to_string(),
             access_key_id: "access".to_string(),
@@ -637,12 +656,33 @@ mod tests {
         };
 
         assert_eq!(
-            storage_presigned_media_origin(&storage, PublicMediaMode::Presigned),
-            Some("https://bucket.example.storageapi.dev".to_string())
+            storage_presigned_media_sources(&storage, PublicMediaMode::Presigned),
+            vec![
+                "https://t3.storageapi.dev".to_string(),
+                "https://*.t3.storageapi.dev".to_string()
+            ]
         );
         assert_eq!(
-            storage_presigned_media_origin(&storage, PublicMediaMode::Proxy),
-            None
+            storage_presigned_media_sources(&storage, PublicMediaMode::Proxy),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn presigned_media_csp_sources_omit_wildcard_for_path_style_s3() {
+        let storage = StorageConfig::S3 {
+            endpoint: "https://r2.example.com".to_string(),
+            bucket: "clipline".to_string(),
+            region: "auto".to_string(),
+            access_key_id: "access".to_string(),
+            secret_access_key: "secret".to_string(),
+            force_path_style: true,
+            prefix: None,
+        };
+
+        assert_eq!(
+            storage_presigned_media_sources(&storage, PublicMediaMode::Presigned),
+            vec!["https://r2.example.com".to_string()]
         );
     }
 
