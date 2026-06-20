@@ -26,7 +26,7 @@ should use this Docker image:
 ghcr.io/dain98/clipline-cloud:latest
 ```
 
-Use a pinned release tag instead, such as `ghcr.io/dain98/clipline-cloud:1.2.9`, if you want the
+Use a pinned release tag instead, such as `ghcr.io/dain98/clipline-cloud:1.2.10`, if you want the
 template to deploy a fixed version until the template is updated.
 
 The user-facing required variables should be:
