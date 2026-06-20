@@ -11,7 +11,22 @@ S3-compatible object storage for media.
 - **Current release:** [`v1.2.10`](https://github.com/dain98/clipline-cloud/releases/tag/v1.2.10)
 - **Image:** `ghcr.io/dain98/clipline-cloud:1.2.10`
 
-## Quick start (local Docker Compose)
+## Quick start
+
+The easiest path by far is the hosted Railway template with an S3-compatible object storage bucket:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/clipline-cloud?referralCode=OIcwSe&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
+For storage, Cloudflare R2 is the recommended default for most public clip libraries because it is
+S3-compatible and has no egress bandwidth charges. Backblaze B2 can also work through its
+S3-compatible API, but review its download bandwidth and egress model before using it for public video
+playback.
+
+The template runs Clipline Cloud from the published Docker image and expects you to provide your bucket
+endpoint, bucket name, access key, secret key, and first owner password. See
+[`docs/cloud/railway-r2.md`](docs/cloud/railway-r2.md) for the full setup guide.
+
+### Local Docker Compose
 
 This runs the default SQLite + local-disk profile on `http://localhost:8080`. It is meant for a local or
 LAN test — see the [deployment guide](docs/cloud/deployment-guide.md) before exposing it to users.
