@@ -213,8 +213,10 @@ impl Config {
         )?;
         let public_url = required_url(source, "CLIPLINE_PUBLIC_URL")?;
         let bind_addr = bind_addr_from_source(source)?;
-        let database_url = secret(source, "CLIPLINE_DATABASE_URL")?
-            .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
+        let explicit_database_url = secret(source, "CLIPLINE_DATABASE_URL")?;
+        validate_railway_database_config(source, explicit_database_url.as_deref())?;
+        let database_url =
+            explicit_database_url.unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
         validate_database_url(&database_url)?;
 
         let bootstrap_admin_username = optional(source, "CLIPLINE_BOOTSTRAP_ADMIN_USERNAME");
@@ -521,6 +523,40 @@ fn validate_database_url(database_url: &str) -> Result<(), ConfigError> {
         "CLIPLINE_DATABASE_URL must start with sqlite://, postgres://, or postgresql://"
             .to_string(),
     ))
+}
+
+fn validate_railway_database_config(
+    source: &impl EnvSource,
+    database_url: Option<&str>,
+) -> Result<(), ConfigError> {
+    if !is_railway_environment(source) {
+        return Ok(());
+    }
+    if database_url.is_some_and(is_postgres_url) {
+        return Ok(());
+    }
+
+    Err(ConfigError::Validation(
+        "Railway deployments require CLIPLINE_DATABASE_URL to point to Postgres. Add a Railway Postgres service named Postgres, or set CLIPLINE_DATABASE_URL to an existing postgres:// or postgresql:// database URL. The default SQLite database is not durable on Railway and would lose clip metadata on redeploy.".to_string(),
+    ))
+}
+
+fn is_postgres_url(value: &str) -> bool {
+    value.starts_with("postgres://") || value.starts_with("postgresql://")
+}
+
+fn is_railway_environment(source: &impl EnvSource) -> bool {
+    [
+        "RAILWAY_PROJECT_ID",
+        "RAILWAY_ENVIRONMENT_ID",
+        "RAILWAY_SERVICE_ID",
+        "RAILWAY_PROJECT_NAME",
+        "RAILWAY_ENVIRONMENT_NAME",
+        "RAILWAY_SERVICE_NAME",
+        "RAILWAY_PUBLIC_DOMAIN",
+    ]
+    .into_iter()
+    .any(|name| optional(source, name).is_some())
 }
 
 fn validate_upload_limits(
@@ -847,6 +883,32 @@ mod tests {
         let config = Config::from_source(&env).expect("config");
 
         assert_eq!(config.bind_addr, "127.0.0.1:8088".parse().unwrap());
+    }
+
+    #[test]
+    fn railway_requires_explicit_postgres_database_url() {
+        let mut env = valid_local_env();
+        env.insert("RAILWAY_PROJECT_ID", "project-id".to_string());
+
+        let err = Config::from_source(&env).expect_err("missing Railway database should fail");
+        assert!(
+            matches!(err, ConfigError::Validation(message) if message.contains("Railway deployments require CLIPLINE_DATABASE_URL"))
+        );
+
+        env.insert(
+            "CLIPLINE_DATABASE_URL",
+            "sqlite:///data/clipline.db".to_string(),
+        );
+        let err = Config::from_source(&env).expect_err("Railway sqlite should fail");
+        assert!(
+            matches!(err, ConfigError::Validation(message) if message.contains("default SQLite database is not durable on Railway"))
+        );
+
+        env.insert(
+            "CLIPLINE_DATABASE_URL",
+            "postgres://clipline:secret@postgres.railway.internal:5432/railway".to_string(),
+        );
+        Config::from_source(&env).expect("Railway Postgres config should pass");
     }
 
     #[test]
