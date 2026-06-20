@@ -13,18 +13,53 @@ S3-compatible object storage for media.
 
 ## Quick start
 
-The easiest path by far is the hosted Railway template with an S3-compatible object storage bucket:
+The easiest path by far is the hosted Railway template with Railway Postgres and Railway Object
+Storage:
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/clipline-cloud?referralCode=OIcwSe&utm_medium=integration&utm_source=template&utm_campaign=generic)
 
-For storage, Cloudflare R2 is the recommended default for most public clip libraries because it is
-S3-compatible and has no egress bandwidth charges. Backblaze B2 can also work through its
-S3-compatible API, but review its download bandwidth and egress model before using it for public video
-playback.
+The template runs Clipline Cloud from the published Docker image and provisions the database and bucket
+for you. The only value you should need to provide is the first owner password.
+The template itself must include a Railway Postgres service named `Postgres` and a Railway Object
+Storage service named `Bucket`.
 
-The template runs Clipline Cloud from the published Docker image and expects you to provide your bucket
-endpoint, bucket name, access key, secret key, and first owner password. See
-[`docs/cloud/railway-r2.md`](docs/cloud/railway-r2.md) for the full setup guide.
+Railway Object Storage is the recommended default for the one-click template because it is
+S3-compatible, lives in the same Railway project, and has the same storage price as Cloudflare R2.
+Backblaze B2 can also work through its S3-compatible API, but review its download bandwidth and egress
+model before using it for public video playback.
+
+Expected template wiring:
+
+```env
+CLIPLINE_DATABASE_URL="postgresql://${{Postgres.POSTGRES_USER}}:${{Postgres.POSTGRES_PASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.POSTGRES_DB}}"
+CLIPLINE_STORAGE_BACKEND="s3"
+CLIPLINE_S3_ENDPOINT="${{Bucket.ENDPOINT}}"
+CLIPLINE_S3_BUCKET="${{Bucket.BUCKET}}"
+CLIPLINE_S3_REGION="${{Bucket.REGION}}"
+CLIPLINE_S3_ACCESS_KEY_ID="${{Bucket.ACCESS_KEY_ID}}"
+CLIPLINE_S3_SECRET_ACCESS_KEY="${{Bucket.SECRET_ACCESS_KEY}}"
+CLIPLINE_S3_FORCE_PATH_STYLE="false"
+```
+
+If `CLIPLINE_DATABASE_URL` is empty after deploying the template, the Postgres service reference is not
+resolving. Confirm the template has a `Postgres` service and that it defines `POSTGRES_DB`,
+`POSTGRES_USER`, and `POSTGRES_PASSWORD`. Fix that before uploading clips; the bucket may keep video
+files, but the library needs the Postgres clip records to survive redeploys.
+
+### Railway Cost Estimate
+
+Railway Hobby has a `$5/month` minimum that includes `$5` of monthly usage. Railway Object Storage is
+`$0.015/GB-month`, with free bucket egress and free S3 API operations. The app service and Postgres also
+consume Railway usage, so these are storage-heavy estimates rather than hard monthly caps.
+
+| Stored media | Bucket storage usage | Estimated Hobby bill before app/Postgres compute |
+|--------------|----------------------|---------------------------------------------------|
+| 500 GB | `$7.50/month` | about `$7.50/month` plus app/Postgres usage |
+| 1 TB | `$15.00/month` | about `$15/month` plus app/Postgres usage |
+| 2 TB | `$30.00/month` | about `$30/month` plus app/Postgres usage |
+
+Because Hobby's included `$5` applies to usage, this is not `$5 + storage` once storage usage exceeds
+`$5`.
 
 ### Local Docker Compose
 
@@ -89,7 +124,6 @@ entries) are available in the web UI and API.
 ## Documentation
 
 - [Deployment guide](docs/cloud/deployment-guide.md) — step-by-step setup for each profile.
-- [Railway + Cloudflare R2](docs/cloud/railway-r2.md) — hosted one-click template setup notes.
 - [Deployment operations](docs/cloud/deployment-operations.md) — full backup/restore and failure-mode runbook.
 - [Release process](docs/cloud/release-process.md) — how releases are tagged and validated.
 - [Release notes](https://github.com/dain98/clipline-cloud/releases/tag/v1.2.10) — v1.2.10.

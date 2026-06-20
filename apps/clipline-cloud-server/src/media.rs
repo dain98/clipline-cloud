@@ -727,7 +727,15 @@ async fn serve_clip_image_or_placeholder(
     let metadata = match state.storage.head_object(&key).await {
         Ok(metadata) => metadata,
         Err(StorageError::NotFound(_)) => return Ok(placeholder_response(headers)),
-        Err(error) => return Err(storage_error(error)),
+        Err(error) => {
+            warn!(
+                event = "media.artifact_head_failed",
+                clip_id = %clip.id,
+                key = %key,
+                error = %error
+            );
+            return Ok(placeholder_response(headers));
+        }
     };
     if etag_matches(headers, metadata.etag.as_deref()) {
         return Ok(not_modified_response(&metadata, scope));
@@ -736,7 +744,15 @@ async fn serve_clip_image_or_placeholder(
     match state.storage.get_object(&key, None).await {
         Ok(object) => Ok(media_response(object, scope)),
         Err(StorageError::NotFound(_)) => Ok(placeholder_response(headers)),
-        Err(error) => Err(storage_error(error)),
+        Err(error) => {
+            warn!(
+                event = "media.artifact_get_failed",
+                clip_id = %clip.id,
+                key = %key,
+                error = %error
+            );
+            Ok(placeholder_response(headers))
+        }
     }
 }
 

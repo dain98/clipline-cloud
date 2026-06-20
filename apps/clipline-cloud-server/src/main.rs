@@ -26,13 +26,14 @@ use clipline_cloud_core::jobs::{
 };
 use clipline_cloud_db::{Database, Repositories};
 use clipline_cloud_storage::{LocalStorage, S3Storage, S3StorageConfig, SharedStorageBackend};
-use config::{Config, ProcessRole, StorageConfig};
+use config::{Config, ProcessRole, PublicMediaMode, StorageConfig};
 use tokio::task::JoinHandle;
 use tokio::{net::TcpListener, sync::watch};
 use tower_http::{catch_panic::CatchPanicLayer, services::ServeDir};
 use tracing::{info, warn};
 
 const MIB: u64 = 1024 * 1024;
+const DEFAULT_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'";
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -413,11 +414,12 @@ async fn secure_headers(
 ) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    insert_static_header(
-        headers,
-        HeaderName::from_static("content-security-policy"),
-        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
-    );
+    if !headers.contains_key(HeaderName::from_static("content-security-policy")) {
+        headers.insert(
+            HeaderName::from_static("content-security-policy"),
+            content_security_policy(&config),
+        );
+    }
     insert_static_header(
         headers,
         HeaderName::from_static("x-content-type-options"),
@@ -447,6 +449,36 @@ fn insert_static_header(headers: &mut HeaderMap, name: HeaderName, value: &'stat
     if !headers.contains_key(&name) {
         headers.insert(name, HeaderValue::from_static(value));
     }
+}
+
+fn content_security_policy(config: &Config) -> HeaderValue {
+    let Some(media_origin) = presigned_media_origin(config) else {
+        return HeaderValue::from_static(DEFAULT_CONTENT_SECURITY_POLICY);
+    };
+    let policy = format!(
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob: {media_origin}; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    );
+    HeaderValue::from_str(&policy)
+        .unwrap_or_else(|_| HeaderValue::from_static(DEFAULT_CONTENT_SECURITY_POLICY))
+}
+
+fn presigned_media_origin(config: &Config) -> Option<String> {
+    storage_presigned_media_origin(&config.storage, config.public_media_mode)
+}
+
+fn storage_presigned_media_origin(
+    storage: &StorageConfig,
+    public_media_mode: PublicMediaMode,
+) -> Option<String> {
+    if public_media_mode != PublicMediaMode::Presigned {
+        return None;
+    }
+    let StorageConfig::S3 { endpoint, .. } = storage else {
+        return None;
+    };
+    let url = url::Url::parse(endpoint).ok()?;
+    let origin = url.origin().ascii_serialization();
+    (origin != "null").then_some(origin)
 }
 
 fn resolve_client_ip(config: &Config, remote_addr: SocketAddr, headers: &HeaderMap) -> String {
@@ -590,6 +622,28 @@ mod tests {
     #[test]
     fn upload_request_body_limit_rounds_derived_part_size() {
         assert_eq!(round_up_to_mib_saturating((64 * MIB) + 1), 65 * MIB);
+    }
+
+    #[test]
+    fn presigned_media_csp_source_uses_s3_endpoint_origin() {
+        let storage = StorageConfig::S3 {
+            endpoint: "https://bucket.example.storageapi.dev/path".to_string(),
+            bucket: "clipline".to_string(),
+            region: "auto".to_string(),
+            access_key_id: "access".to_string(),
+            secret_access_key: "secret".to_string(),
+            force_path_style: false,
+            prefix: None,
+        };
+
+        assert_eq!(
+            storage_presigned_media_origin(&storage, PublicMediaMode::Presigned),
+            Some("https://bucket.example.storageapi.dev".to_string())
+        );
+        assert_eq!(
+            storage_presigned_media_origin(&storage, PublicMediaMode::Proxy),
+            None
+        );
     }
 
     #[test]
