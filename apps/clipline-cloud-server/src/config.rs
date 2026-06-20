@@ -212,10 +212,7 @@ impl Config {
                 .unwrap_or_else(|| DEFAULT_PROCESS_ROLE.to_string()),
         )?;
         let public_url = required_url(source, "CLIPLINE_PUBLIC_URL")?;
-        let bind_addr = parse_socket_addr(
-            "CLIPLINE_BIND_ADDR",
-            optional(source, "CLIPLINE_BIND_ADDR").unwrap_or_else(|| DEFAULT_BIND_ADDR.to_string()),
-        )?;
+        let bind_addr = bind_addr_from_source(source)?;
         let database_url = secret(source, "CLIPLINE_DATABASE_URL")?
             .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
         validate_database_url(&database_url)?;
@@ -739,6 +736,18 @@ fn parse_socket_addr(name: &'static str, value: String) -> Result<SocketAddr, Co
     SocketAddr::from_str(&value).map_err(|_| ConfigError::InvalidSocketAddr { name, value })
 }
 
+fn bind_addr_from_source(source: &impl EnvSource) -> Result<SocketAddr, ConfigError> {
+    if let Some(value) = optional(source, "CLIPLINE_BIND_ADDR") {
+        return parse_socket_addr("CLIPLINE_BIND_ADDR", value);
+    }
+
+    if let Some(port) = optional(source, "PORT") {
+        return parse_socket_addr("PORT", format!("0.0.0.0:{port}"));
+    }
+
+    parse_socket_addr("CLIPLINE_BIND_ADDR", DEFAULT_BIND_ADDR.to_string())
+}
+
 fn parse_ip_list(name: &'static str, value: Option<String>) -> Result<Vec<IpAddr>, ConfigError> {
     let Some(value) = value else {
         return Ok(Vec::new());
@@ -817,6 +826,27 @@ mod tests {
                 url: "http://localhost:8080/".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn railway_port_is_used_when_bind_addr_is_unset() {
+        let mut env = valid_local_env();
+        env.insert("PORT", "12345".to_string());
+
+        let config = Config::from_source(&env).expect("config");
+
+        assert_eq!(config.bind_addr, "0.0.0.0:12345".parse().unwrap());
+    }
+
+    #[test]
+    fn explicit_bind_addr_takes_precedence_over_port() {
+        let mut env = valid_local_env();
+        env.insert("PORT", "12345".to_string());
+        env.insert("CLIPLINE_BIND_ADDR", "127.0.0.1:8088".to_string());
+
+        let config = Config::from_source(&env).expect("config");
+
+        assert_eq!(config.bind_addr, "127.0.0.1:8088".parse().unwrap());
     }
 
     #[test]
