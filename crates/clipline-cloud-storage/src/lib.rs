@@ -32,6 +32,10 @@ pub type StorageResult<T> = Result<T, StorageError>;
 pub type SharedStorageBackend = Arc<dyn StorageBackend>;
 pub type BoxedAsyncRead = Pin<Box<dyn AsyncRead + Send + 'static>>;
 
+const S3_SINGLE_COPY_MAX_BYTES: u64 = 5_000_000_000;
+const S3_MULTIPART_COPY_PART_SIZE_BYTES: u64 = 512 * 1024 * 1024;
+const S3_MULTIPART_MAX_PARTS: u64 = 10_000;
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("invalid object key {key:?}: {reason}")]
@@ -896,6 +900,144 @@ impl S3Storage {
             None => Some(physical_key.to_string()),
         }
     }
+
+    fn copy_source(&self, key: &ObjectKey) -> String {
+        format!("{}/{}", self.bucket, self.physical_key(key))
+    }
+
+    async fn copy_object_single(
+        &self,
+        source_key: &ObjectKey,
+        target_key: &ObjectKey,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata> {
+        let mut request = self
+            .client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(self.physical_key(target_key))
+            .copy_source(self.copy_source(source_key))
+            .metadata_directive(MetadataDirective::Replace)
+            .content_type(metadata.content_type.clone());
+        if let Some(checksum) = &metadata.checksum_sha256 {
+            request = request.metadata("clipline-checksum-sha256", checksum);
+        }
+        request.send().await.map_err(s3_error)?;
+        self.head_object(target_key).await
+    }
+
+    async fn copy_object_multipart(
+        &self,
+        source_key: &ObjectKey,
+        target_key: &ObjectKey,
+        source_size_bytes: u64,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata> {
+        let part_count = source_size_bytes.div_ceil(S3_MULTIPART_COPY_PART_SIZE_BYTES);
+        if part_count > S3_MULTIPART_MAX_PARTS {
+            return Err(StorageError::InvalidPart(format!(
+                "S3 multipart copy would require {part_count} parts, maximum is {S3_MULTIPART_MAX_PARTS}"
+            )));
+        }
+
+        let target_physical_key = self.physical_key(target_key);
+        let mut create_request = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(&target_physical_key)
+            .content_type(metadata.content_type.clone());
+        if let Some(checksum) = &metadata.checksum_sha256 {
+            create_request = create_request.metadata("clipline-checksum-sha256", checksum);
+        }
+        let upload_id = create_request
+            .send()
+            .await
+            .map_err(s3_error)?
+            .upload_id()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| StorageError::S3("S3 did not return an upload id".to_string()))?;
+
+        match self
+            .copy_object_multipart_parts(
+                source_key,
+                &target_physical_key,
+                source_size_bytes,
+                &upload_id,
+            )
+            .await
+        {
+            Ok(completed_parts) => {
+                self.client
+                    .complete_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(&target_physical_key)
+                    .upload_id(&upload_id)
+                    .multipart_upload(
+                        CompletedMultipartUpload::builder()
+                            .set_parts(Some(completed_parts))
+                            .build(),
+                    )
+                    .send()
+                    .await
+                    .map_err(s3_error)?;
+                self.head_object(target_key).await
+            }
+            Err(error) => {
+                let _ = self
+                    .client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(&target_physical_key)
+                    .upload_id(&upload_id)
+                    .send()
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn copy_object_multipart_parts(
+        &self,
+        source_key: &ObjectKey,
+        target_physical_key: &str,
+        source_size_bytes: u64,
+        upload_id: &str,
+    ) -> StorageResult<Vec<CompletedPart>> {
+        let source = self.copy_source(source_key);
+        let mut completed_parts = Vec::new();
+        let mut start = 0_u64;
+        let mut part_number = 1_i32;
+        while start < source_size_bytes {
+            let end = (start + S3_MULTIPART_COPY_PART_SIZE_BYTES - 1).min(source_size_bytes - 1);
+            let output = self
+                .client
+                .upload_part_copy()
+                .bucket(&self.bucket)
+                .key(target_physical_key)
+                .copy_source(source.clone())
+                .copy_source_range(format!("bytes={start}-{end}"))
+                .upload_id(upload_id)
+                .part_number(part_number)
+                .send()
+                .await
+                .map_err(s3_error)?;
+            let etag = output
+                .copy_part_result()
+                .and_then(|result| result.e_tag())
+                .map(trim_s3_etag)
+                .ok_or_else(|| StorageError::S3("S3 did not return a part ETag".to_string()))?;
+            completed_parts.push(
+                CompletedPart::builder()
+                    .part_number(part_number)
+                    .e_tag(etag)
+                    .build(),
+            );
+            start = end + 1;
+            part_number += 1;
+        }
+        Ok(completed_parts)
+    }
 }
 
 #[async_trait]
@@ -1022,20 +1164,14 @@ impl StorageBackend for S3Storage {
         target_key: &ObjectKey,
         metadata: PutObjectMetadata,
     ) -> StorageResult<ObjectMetadata> {
-        let source = format!("{}/{}", self.bucket, self.physical_key(source_key));
-        let mut request = self
-            .client
-            .copy_object()
-            .bucket(&self.bucket)
-            .key(self.physical_key(target_key))
-            .copy_source(source)
-            .metadata_directive(MetadataDirective::Replace)
-            .content_type(metadata.content_type.clone());
-        if let Some(checksum) = &metadata.checksum_sha256 {
-            request = request.metadata("clipline-checksum-sha256", checksum);
+        let source_metadata = self.head_object(source_key).await?;
+        if source_metadata.size_bytes <= S3_SINGLE_COPY_MAX_BYTES {
+            self.copy_object_single(source_key, target_key, metadata)
+                .await
+        } else {
+            self.copy_object_multipart(source_key, target_key, source_metadata.size_bytes, metadata)
+                .await
         }
-        request.send().await.map_err(s3_error)?;
-        self.head_object(target_key).await
     }
 
     async fn head_object(&self, key: &ObjectKey) -> StorageResult<ObjectMetadata> {
