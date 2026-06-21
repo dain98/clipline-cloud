@@ -133,7 +133,7 @@ async function route() {
     return;
   }
   if (current.name === "resetPassword") {
-    renderResetPassword(current.token);
+    renderResetPassword(current.token, current.invite);
     return;
   }
 
@@ -206,9 +206,11 @@ function currentRoute() {
     return { name: "login" };
   }
   if (path === "/reset-password") {
+    const params = new URLSearchParams(window.location.search);
     return {
       name: "resetPassword",
-      token: new URLSearchParams(window.location.search).get("token") || "",
+      token: params.get("token") || "",
+      invite: params.get("invite") === "1",
     };
   }
   return { name: "publicLibrary" };
@@ -333,23 +335,43 @@ function renderLogin(error = "") {
   });
 }
 
-function renderResetPassword(token, error = "") {
+function renderResetPassword(token, isInvite = false, error = "") {
+  const title = isInvite ? "Create Account" : "Set Password";
+  const copy = isInvite
+    ? "Choose your Clipline Cloud account details."
+    : "Choose a new password for your Clipline Cloud account.";
   disposeActivePlayer();
   app.innerHTML = `
     <main class="login-shell">
       <section class="login-panel" aria-labelledby="reset-title">
         <div class="brand-mark" aria-hidden="true">CL</div>
-        <h1 id="reset-title">Set Password</h1>
-        <p>Choose a new password for your Clipline Cloud account.</p>
+        <h1 id="reset-title">${escapeHtml(title)}</h1>
+        <p>${escapeHtml(copy)}</p>
         ${error ? `<div class="error-box">${escapeHtml(error)}</div>` : ""}
         ${
           token
             ? `<form id="reset-password-form" class="section" autocomplete="on">
+                ${
+                  isInvite
+                    ? `<label class="field">
+                        <span>Username</span>
+                        <input name="username" autocomplete="username" required>
+                      </label>
+                      <label class="field">
+                        <span>Display name</span>
+                        <input name="display_name" autocomplete="name">
+                      </label>
+                      <label class="field">
+                        <span>Email</span>
+                        <input name="email" type="email" autocomplete="email">
+                      </label>`
+                    : ""
+                }
                 <label class="field">
                   <span>New password</span>
                   <input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
                 </label>
-                <button class="btn-primary" type="submit">${icon("lock")} Set password</button>
+                <button class="btn-primary" type="submit">${icon("lock")} ${escapeHtml(isInvite ? "Create account" : "Set password")}</button>
               </form>`
             : `<div class="error-box">This reset link is missing a token.</div>`
         }
@@ -361,17 +383,23 @@ function renderResetPassword(token, error = "") {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     try {
+      const body = {
+        reset_token: token,
+        new_password: String(form.get("new_password") || ""),
+      };
+      if (isInvite) {
+        body.username = String(form.get("username") || "");
+        body.display_name = nullableString(form.get("display_name"));
+        body.email = nullableString(form.get("email"));
+      }
       await api("/api/v1/auth/reset-password", {
         method: "POST",
-        body: {
-          reset_token: token,
-          new_password: String(form.get("new_password") || ""),
-        },
+        body,
       });
-      flash("Password set. Sign in with your new password.");
+      flash(isInvite ? "Account created. Sign in with your new password." : "Password set. Sign in with your new password.");
       navigate("/login");
     } catch (resetError) {
-      renderResetPassword(token, resetError.message);
+      renderResetPassword(token, isInvite, resetError.message);
     }
   });
 }
@@ -2791,26 +2819,28 @@ function adminUsersView(users, settings) {
     roleOptions.push(["admin", "Admin"]);
   }
   const smtpEnabled = Boolean(settings?.smtp_enabled);
-  const setupOptions = [
-    ["password", "Manual password"],
-    ["link", "Generate invite link"],
-  ];
-  if (smtpEnabled) {
-    setupOptions.push(["email", "Send email invite"]);
-  }
   return `
     <div class="admin-grid">
-      <form id="create-user-form" class="panel section">
-        <h2>Create user</h2>
-        ${field("Username", "username", "text", "", "Required")}
-        ${field("Display name", "display_name", "text", "", "Optional")}
-        ${field("Email", "email", "email", "", smtpEnabled ? "Required for email invite" : "Optional")}
-        ${selectField("Account setup", "account_setup", "password", setupOptions)}
-        ${field("Password", "password", "password", "", "Required for manual setup")}
-        ${selectField("Role", "role", "user", roleOptions)}
-        <p class="muted">${smtpEnabled ? "Invite links can be copied here; email invites are sent through SMTP." : "Invite links work without SMTP. Configure SMTP in Settings to send email invites."}</p>
-        <button class="btn-primary" type="submit">${icon("plus")} Create user</button>
-      </form>
+      <div class="admin-side-stack">
+        <form id="create-user-form" class="panel section">
+          <h2>Create user</h2>
+          ${field("Username", "username", "text", "", "Required")}
+          ${field("Display name", "display_name", "text", "", "Optional")}
+          ${field("Email", "email", "email", "", "Optional")}
+          ${field("Password", "password", "password", "", "Required")}
+          ${selectField("Role", "role", "user", roleOptions)}
+          <button class="btn-primary" type="submit">${icon("plus")} Create user</button>
+        </form>
+        <form id="invite-link-form" class="panel section">
+          <h2>Invite link</h2>
+          ${selectField("Role", "role", "user", roleOptions)}
+          ${field("Email", "email", "email", "", smtpEnabled ? "Optional" : "SMTP disabled", !smtpEnabled)}
+          <div class="actions">
+            <button class="btn-secondary" type="submit" name="intent" value="link">${icon("copy")} Generate link</button>
+            ${smtpEnabled ? `<button class="btn-primary" type="submit" name="intent" value="email">${icon("message")} Send email</button>` : ""}
+          </div>
+        </form>
+      </div>
       <div class="panel">
         <div class="section-header">
           <h2>Users</h2>
@@ -3021,31 +3051,44 @@ function bindAdminEvents() {
     createForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
-      const accountSetup = String(form.get("account_setup") || "password");
       try {
-        const data = await api("/api/v1/users", {
+        await api("/api/v1/users", {
           method: "POST",
           body: {
             username: String(form.get("username") || ""),
             display_name: nullableString(form.get("display_name")),
             email: nullableString(form.get("email")),
             password: nullableString(form.get("password")),
-            send_invite: accountSetup === "email",
-            generate_invite_link: accountSetup === "link",
             role: String(form.get("role") || "user"),
           },
         });
-        if (data.invite_link) {
-          state.adminResetLink = {
-            ...data.invite_link,
-            kind: "invite",
-            username: data.username,
-          };
-          flash("Invite link created.");
-        } else {
-          state.adminResetLink = null;
-          flash(accountSetup === "email" ? "User created and invite sent." : "User created.");
-        }
+        state.adminResetLink = null;
+        flash("User created.");
+        navigate("/admin?tab=users");
+      } catch (error) {
+        flash(error.message, "error");
+        renderAdmin("users");
+      }
+    });
+  }
+
+  const inviteForm = document.querySelector("#invite-link-form");
+  if (inviteForm) {
+    inviteForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const intent = event.submitter?.value === "email" ? "email" : "link";
+      try {
+        const data = await api("/api/v1/invites", {
+          method: "POST",
+          body: {
+            role: String(form.get("role") || "user"),
+            email: nullableString(form.get("email")),
+            send_email: intent === "email",
+          },
+        });
+        state.adminResetLink = { ...data, kind: "invite" };
+        flash(intent === "email" ? "Invite sent." : "Invite link created.");
         navigate("/admin?tab=users");
       } catch (error) {
         flash(error.message, "error");

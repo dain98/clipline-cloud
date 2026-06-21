@@ -422,6 +422,7 @@ mod tests {
                 "clip_markers",
                 "clips",
                 "device_tokens",
+                "invitation_tokens",
                 "jobs",
                 "reset_password_tokens",
                 "sessions",
@@ -487,6 +488,7 @@ mod tests {
         let thumbnail_key = format!("objects/media/{test_id}/thumb_320.jpg");
         let public_share_id = format!("c_{test_id}");
         let reset_token_hash = format!("reset-token-hash-{test_id}");
+        let invitation_token_hash = format!("invite-token-hash-{test_id}");
 
         let mut new_user = NewUser::new(&username, "argon2id-hash", "admin");
         new_user.display_name = Some("Dain".to_string());
@@ -771,6 +773,34 @@ mod tests {
             .await
             .expect("get reset token")
             .expect("reset token")
+            .used_at
+            .is_some());
+
+        let mut new_invitation =
+            NewInvitationToken::new(&invitation_token_hash, "user", expires_at);
+        new_invitation.created_by_user_id = Some(user.id.clone());
+        let invitation = repos
+            .invitation_tokens
+            .create(&new_invitation)
+            .await
+            .expect("create invitation token");
+        assert!(repos
+            .invitation_tokens
+            .get_by_token_hash(&invitation_token_hash)
+            .await
+            .expect("get invitation token")
+            .is_some());
+        assert!(repos
+            .invitation_tokens
+            .mark_used_if_valid(&invitation.id, now_utc())
+            .await
+            .expect("mark invitation used"));
+        assert!(repos
+            .invitation_tokens
+            .get(&invitation.id)
+            .await
+            .expect("get invitation")
+            .expect("invitation")
             .used_at
             .is_some());
     }

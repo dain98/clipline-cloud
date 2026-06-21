@@ -51,7 +51,7 @@ visibility; device-token and session management UI.
 - [x] Advanced sort/search and game grouping work and stay performant on a large library
 - [x] Bulk delete and bulk visibility apply atomically and are fully audit-logged
 - [x] Users/admins can review and revoke sessions and device tokens from the UI; revocation is immediate
-- [x] Owner can configure SMTP; admins can create users with copyable invite links or SMTP email invites
+- [x] Owner can configure SMTP; admins can create users manually or generate copyable / SMTP email invite links
 
 ## Progress log
 
@@ -61,8 +61,8 @@ visibility; device-token and session management UI.
   admin Overview panel; upload creation already enforces the configured per-user quota.
 - 2026-06-19: Added instance settings for VOD uploads, VOD threshold minutes, per-user storage
   quota editing, and owner-editable About text.
-- 2026-06-19: Added owner-managed SMTP invite settings, copyable invite-link creation for new users,
-  email invite creation for new users, and copyable reset-password links.
+- 2026-06-19: Added owner-managed SMTP invite settings, copyable invite links, email invite
+  delivery, and copyable reset-password links.
 - 2026-06-17: Added index-backed source, duration, size, created, updated, and file-size query
   support plus expanded library controls and client-side game grouping.
 - 2026-06-17: Added owner-scoped bulk selection UI plus transactional bulk delete / bulk visibility

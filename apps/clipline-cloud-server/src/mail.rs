@@ -10,8 +10,7 @@ use url::Url;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InviteEmail {
     pub(crate) to_email: String,
-    pub(crate) username: String,
-    pub(crate) reset_token: String,
+    pub(crate) invite_url: String,
     pub(crate) expires_at: DateTime<Utc>,
 }
 
@@ -53,24 +52,18 @@ impl SmtpInviteConfig {
     }
 }
 
-pub(crate) async fn send_invite(
-    config: &SmtpInviteConfig,
-    public_url: &Url,
-    invite: InviteEmail,
-) -> Result<()> {
-    let reset_url = reset_url(public_url, &invite.reset_token)?;
+pub(crate) async fn send_invite(config: &SmtpInviteConfig, invite: InviteEmail) -> Result<()> {
     let from: Mailbox = match config.from_name.as_deref() {
         Some(name) => format!("{name} <{}>", config.from_email).parse(),
         None => config.from_email.parse(),
     }
     .context("SMTP from address is invalid")?;
     let to: Mailbox = invite.to_email.parse().context("invite email is invalid")?;
-    let body = invite_body(&invite.username, &reset_url, invite.expires_at);
     let message = Message::builder()
         .from(from)
         .to(to)
         .subject("Your Clipline Cloud invite")
-        .body(body)
+        .body(invite_body(&invite.invite_url, invite.expires_at))
         .context("failed to build invite email")?;
 
     let mut builder = match config.tls_mode.as_str() {
@@ -106,9 +99,15 @@ pub(crate) fn reset_url(public_url: &Url, reset_token: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn invite_body(username: &str, reset_url: &Url, expires_at: DateTime<Utc>) -> String {
+pub(crate) fn invite_url(public_url: &Url, invite_token: &str) -> Result<Url> {
+    let mut url = reset_url(public_url, invite_token)?;
+    url.query_pairs_mut().append_pair("invite", "1");
+    Ok(url)
+}
+
+fn invite_body(invite_url: &str, expires_at: DateTime<Utc>) -> String {
     format!(
-        "You have been invited to Clipline Cloud.\n\nUsername: {username}\nSet your password: {reset_url}\n\nThis invite link expires at {expires_at}.\nIf you did not expect this invite, you can ignore this email.\n"
+        "You have been invited to Clipline Cloud.\n\nSet up your account: {invite_url}\n\nThis invite link expires at {expires_at}.\nIf you did not expect this invite, you can ignore this email.\n"
     )
 }
 
@@ -127,7 +126,6 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-
     #[test]
     fn reset_url_builds_from_public_url() {
         let public_url = Url::parse("https://clips.example.com/base/").expect("url");
@@ -139,12 +137,23 @@ mod tests {
     }
 
     #[test]
-    fn invite_body_contains_setup_context() {
+    fn invite_url_marks_invite_claim() {
+        let public_url = Url::parse("https://clips.example.com/base/").expect("url");
+        let url = invite_url(&public_url, "clp_inv_token").expect("invite URL");
+        assert_eq!(
+            url.as_str(),
+            "https://clips.example.com/base/reset-password?token=clp_inv_token&invite=1"
+        );
+    }
+
+    #[test]
+    fn invite_body_contains_setup_context_without_username() {
         let expires_at = Utc.with_ymd_and_hms(2026, 6, 19, 12, 0, 0).unwrap();
-        let url = Url::parse("https://clips.example.com/reset-password?token=abc").expect("url");
-        let body = invite_body("dain", &url, expires_at);
-        assert!(body.contains("Username: dain"));
-        assert!(body.contains(url.as_str()));
+        let url = "https://clips.example.com/reset-password?token=abc&invite=1";
+        let body = invite_body(url, expires_at);
+        assert!(body.contains(url));
+        assert!(body.contains("Set up your account"));
         assert!(body.contains("expires at"));
+        assert!(!body.contains("Username:"));
     }
 }

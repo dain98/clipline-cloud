@@ -15,12 +15,12 @@
 ## Goal
 
 Direct-to-S3 multipart via presigned part URLs; a dedicated worker container; single-output video
-optimization/compression; a CDN for public clips; invite links; OIDC; federation.
+optimization/compression; a CDN for public clips; OIDC; federation.
 
 ## Design context (§30 Phase 4)
 
 Direct-to-S3 multipart via presigned part URLs; dedicated worker container; video optimization;
-CDN for public clips; invite links; OIDC; federation. **Build only if demand appears.**
+CDN for public clips; OIDC; federation. **Build only if demand appears.**
 
 Notes from earlier design decisions that make these cheaper:
 
@@ -34,7 +34,7 @@ Notes from earlier design decisions that make these cheaper:
   RETURNING` + `locked_by`/`locked_at` + stale-lock requeue, doc 06) was built so the worker split is
   **safe with no schema change.** A second process just becomes another `locked_by` runner.
 - **CDN for public clips**: extends the presigned/proxy public-media path (doc 08).
-- **OIDC / invite links / federation**: all explicitly **out of scope for v1** (§2); revisit here.
+- **OIDC / federation**: both explicitly **out of scope for v1** (§2); revisit here.
 - **Video optimization / compression**: doc 06 commits to *no* server-side transcoding in v1, but the
   browser-serving path benefits from smaller, fast-start MP4s. This is not a multi-quality ladder.
   The first version should produce at most one optimized browser MP4, keep the upload playable if
@@ -88,7 +88,6 @@ already playable MP4s, so optimization must be optional, conservative, and loss-
   - [x] Cleanup deletes candidates and, by default, originals after successful replacement
   - [x] Local and S3 smoke coverage proves optimized media serves correctly and saves bytes on a fixture
 - [ ] CDN in front of public clips (extends doc-08 public-media path)
-- [ ] Invite links (self-service onboarding without full self-registration)
 - [ ] OIDC login (Discord/Google/Steam)
 - [ ] Federation
 

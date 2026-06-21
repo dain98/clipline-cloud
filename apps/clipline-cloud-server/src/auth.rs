@@ -26,8 +26,8 @@ use clipline_cloud_api_types::{
     DiscoveryResponse, MeResponse, SessionResponse, UserResponse,
 };
 use clipline_cloud_db::{
-    now_utc, AppSettings, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewResetPasswordToken,
-    NewSession, NewUser, Repositories, Session, User,
+    now_utc, AppSettings, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewInvitationToken,
+    NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
 };
 use clipline_cloud_storage::{ObjectKey, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
@@ -52,6 +52,7 @@ const LOGIN_LOCKOUT_MAX: Duration = Duration::from_secs(15 * 60);
 const LOGIN_LIMIT_MAX_BUCKETS: usize = 4096;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 1024;
+const MAX_USERNAME_LEN: usize = 120;
 const MAX_DISPLAY_NAME_LEN: usize = 120;
 const MAX_PROFILE_BIO_LEN: usize = 2000;
 const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
@@ -333,6 +334,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/auth/sessions", get(list_sessions))
         .route("/api/v1/auth/sessions/{id}", delete(revoke_session))
         .route("/api/v1/users", get(list_users).post(create_user))
+        .route("/api/v1/invites", post(create_invite_link))
         .route(
             "/api/v1/users/{id}",
             get(get_user).patch(update_user).delete(disable_user),
@@ -674,8 +676,6 @@ struct CreateUserRequest {
     username: String,
     password: Option<String>,
     email: Option<String>,
-    send_invite: Option<bool>,
-    generate_invite_link: Option<bool>,
     display_name: Option<String>,
     role: Option<String>,
 }
@@ -701,43 +701,17 @@ async fn create_user(
     if role == "admin" && !user_is_owner(&state, &auth.user).await? {
         return Err(ApiError::forbidden("owner role required to create admins"));
     }
-    if request.username.trim().is_empty() {
-        return Err(ApiError::bad_request("username is required"));
-    }
+    let username = normalized_required_username(request.username)?;
     let email = normalized_optional_email(request.email)?;
-    let send_invite = request.send_invite.unwrap_or(false);
-    let generate_invite_link = request.generate_invite_link.unwrap_or(false);
-    if send_invite && generate_invite_link {
-        return Err(ApiError::bad_request(
-            "choose either email invite or invite link",
-        ));
-    }
-    if send_invite && email.is_none() {
-        return Err(ApiError::bad_request("email is required to send an invite"));
-    }
-    if send_invite {
-        let settings = state.repositories.settings.get().await?;
-        if mail::SmtpInviteConfig::from_settings(&settings)
-            .map_err(|error| ApiError::bad_request(error.to_string()))?
-            .is_none()
-        {
-            return Err(ApiError::bad_request("SMTP invites are not enabled"));
-        }
-    }
-    let password = if send_invite || generate_invite_link {
-        generate_prefixed_token("clp_tmp_")
-    } else {
-        let Some(password) = request.password.as_deref() else {
-            return Err(ApiError::bad_request("password is required"));
-        };
-        password.to_string()
+    let Some(password) = request.password.as_deref() else {
+        return Err(ApiError::bad_request("password is required"));
     };
     validate_new_password(&password)?;
 
-    let mut new_user = NewUser::new(request.username.trim(), hash_password(&password)?, role);
+    let mut new_user = NewUser::new(username, hash_password(password)?, role);
     new_user.display_name = normalized_display_name(request.display_name)?;
     new_user.email = email;
-    let created = state.repositories.users.create(&new_user).await?;
+    let created = create_user_or_conflict(&state, &new_user).await?;
     audit_with_ip(
         &state.repositories,
         Some(client_ip.as_str()),
@@ -748,34 +722,90 @@ async fn create_user(
         Some(json!({ "username": created.username })),
     )
     .await?;
-    if send_invite {
-        if let Err(error) =
-            send_invite_email_for_user(&state, &auth.user, &created, Some(client_ip.as_str())).await
+    Ok(Json(CreateUserResponse {
+        user: user_response_for_state(&state, created).await?,
+        invite_link: None,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateInviteLinkRequest {
+    role: Option<String>,
+    email: Option<String>,
+    send_email: Option<bool>,
+}
+
+async fn create_invite_link(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Json(request): Json<CreateInviteLinkRequest>,
+) -> Result<Json<PasswordSetupLinkResponse>, ApiError> {
+    let auth = require_admin(&state, &headers).await?;
+    require_csrf_for_cookie(&state, &headers, &auth)?;
+
+    let role = request.role.unwrap_or_else(|| "user".to_string());
+    validate_role(&role)?;
+    if role == "admin" && !user_is_owner(&state, &auth.user).await? {
+        return Err(ApiError::forbidden("owner role required to invite admins"));
+    }
+    let email = normalized_optional_email(request.email)?;
+    let send_email = request.send_email.unwrap_or(false);
+    if send_email && email.is_none() {
+        return Err(ApiError::bad_request("email is required to send an invite"));
+    }
+    let smtp_config = if send_email {
+        let settings = state.repositories.settings.get().await?;
+        let Some(config) = mail::SmtpInviteConfig::from_settings(&settings)
+            .map_err(|error| ApiError::bad_request(error.to_string()))?
+        else {
+            return Err(ApiError::bad_request("SMTP invites are not enabled"));
+        };
+        Some(config)
+    } else {
+        None
+    };
+
+    let link = create_invite_setup_link(&state, &role, &auth.user.id).await?;
+    if let (Some(config), Some(email)) = (smtp_config.as_ref(), email.as_ref()) {
+        if let Err(error) = mail::send_invite(
+            config,
+            mail::InviteEmail {
+                to_email: email.clone(),
+                invite_url: link.response.reset_url.clone(),
+                expires_at: link.response.expires_at,
+            },
+        )
+        .await
         {
-            rollback_new_invited_user(&state, &created.id).await;
-            return Err(error);
+            rollback_invitation_token(&state, &link.token_id).await;
+            warn!(event = "smtp.invite_failed", invite_id = %link.token_id, error = %error);
+            return Err(ApiError::internal("invite email failed"));
         }
     }
-    let invite_link = if generate_invite_link {
-        let link = create_password_setup_link(&state, &created.id).await?;
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "user.invite_link.created",
+        Some("invite"),
+        Some(&link.token_id),
+        Some(json!({ "role": role, "email": email.as_deref(), "sent_email": send_email })),
+    )
+    .await?;
+    if send_email {
         audit_with_ip(
             &state.repositories,
             Some(client_ip.as_str()),
             Some(&auth.user),
-            "user.invite_link.created",
-            Some("user"),
-            Some(&created.id),
-            Some(json!({ "username": created.username })),
+            "user.invite_email.sent",
+            Some("invite"),
+            Some(&link.token_id),
+            Some(json!({ "email": email.as_deref() })),
         )
         .await?;
-        Some(link)
-    } else {
-        None
-    };
-    Ok(Json(CreateUserResponse {
-        user: user_response_for_state(&state, created).await?,
-        invite_link,
-    }))
+    }
+    Ok(Json(link.into_response()))
 }
 
 async fn get_user(
@@ -1044,6 +1074,17 @@ struct PasswordSetupLinkResponse {
 
 type ResetPasswordResponse = PasswordSetupLinkResponse;
 
+struct CreatedSetupLink {
+    token_id: String,
+    response: PasswordSetupLinkResponse,
+}
+
+impl CreatedSetupLink {
+    fn into_response(self) -> PasswordSetupLinkResponse {
+        self.response
+    }
+}
+
 async fn reset_password(
     State(state): State<AppState>,
     Extension(client_ip): Extension<ClientIp>,
@@ -1087,31 +1128,29 @@ async fn reset_password(
     }))
 }
 
-async fn rollback_new_invited_user(state: &AppState, user_id: &str) {
-    if let Err(error) = state
-        .repositories
-        .reset_password_tokens
-        .delete_for_user(user_id)
-        .await
-    {
-        warn!(event = "invite.rollback_reset_tokens_failed", user_id = %user_id, error = %error);
-    }
-    if let Err(error) = state.repositories.users.delete(user_id).await {
-        warn!(event = "invite.rollback_user_failed", user_id = %user_id, error = %error);
-    }
-}
-
-async fn create_password_setup_link(
+async fn create_invite_setup_link(
     state: &AppState,
-    user_id: &str,
-) -> Result<PasswordSetupLinkResponse, ApiError> {
-    let (reset_token, expires_at) = create_reset_token(state, user_id).await?;
-    Ok(PasswordSetupLinkResponse {
-        reset_url: mail::reset_url(&state.config.public_url, &reset_token)
-            .map_err(|_| ApiError::internal("failed to build reset URL"))?
-            .to_string(),
-        reset_token,
-        expires_at,
+    role: &str,
+    created_by_user_id: &str,
+) -> Result<CreatedSetupLink, ApiError> {
+    let raw_token = generate_prefixed_token("clp_inv_");
+    let expires_at = now_utc() + ChronoDuration::hours(RESET_TOKEN_TTL_HOURS);
+    let mut new_invitation = NewInvitationToken::new(hash_token(&raw_token), role, expires_at);
+    new_invitation.created_by_user_id = Some(created_by_user_id.to_string());
+    let invitation = state
+        .repositories
+        .invitation_tokens
+        .create(&new_invitation)
+        .await?;
+    Ok(CreatedSetupLink {
+        token_id: invitation.id,
+        response: PasswordSetupLinkResponse {
+            reset_url: mail::invite_url(&state.config.public_url, &raw_token)
+                .map_err(|_| ApiError::internal("failed to build invite URL"))?
+                .to_string(),
+            reset_token: raw_token,
+            expires_at,
+        },
     })
 }
 
@@ -1133,55 +1172,25 @@ async fn create_reset_token(
     Ok((raw_token, expires_at))
 }
 
-async fn send_invite_email_for_user(
-    state: &AppState,
-    actor: &User,
-    target: &User,
-    client_ip: Option<&str>,
-) -> Result<(), ApiError> {
-    let Some(email) = target
-        .email
-        .as_deref()
-        .map(str::trim)
-        .filter(|email| !email.is_empty())
-    else {
-        return Err(ApiError::bad_request(
-            "user email is required to send an invite",
-        ));
-    };
-    let settings = state.repositories.settings.get().await?;
-    let Some(config) = mail::SmtpInviteConfig::from_settings(&settings)
-        .map_err(|error| ApiError::bad_request(error.to_string()))?
-    else {
-        return Err(ApiError::bad_request("SMTP invites are not enabled"));
-    };
-    let (reset_token, expires_at) = create_reset_token(state, &target.id).await?;
-    mail::send_invite(
-        &config,
-        &state.config.public_url,
-        mail::InviteEmail {
-            to_email: email.to_string(),
-            username: target.username.clone(),
-            reset_token,
-            expires_at,
-        },
-    )
-    .await
-    .map_err(|error| {
-        warn!(event = "smtp.invite_failed", user_id = %target.id, error = %error);
-        ApiError::internal("invite email failed")
-    })?;
-    audit_with_ip(
-        &state.repositories,
-        client_ip,
-        Some(actor),
-        "user.invite_email.sent",
-        Some("user"),
-        Some(&target.id),
-        Some(json!({ "email": email })),
-    )
-    .await?;
-    Ok(())
+async fn rollback_invitation_token(state: &AppState, token_id: &str) {
+    if let Err(error) = state.repositories.invitation_tokens.delete(token_id).await {
+        warn!(event = "invite.rollback_token_failed", invite_id = %token_id, error = %error);
+    }
+}
+
+async fn create_user_or_conflict(state: &AppState, new_user: &NewUser) -> Result<User, ApiError> {
+    state
+        .repositories
+        .users
+        .create(new_user)
+        .await
+        .map_err(|error| {
+            if error.is_unique_violation() {
+                ApiError::conflict("username or email is already in use")
+            } else {
+                error.into()
+            }
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1194,6 +1203,9 @@ struct ChangePasswordRequest {
 struct RedeemResetPasswordRequest {
     reset_token: String,
     new_password: String,
+    username: Option<String>,
+    display_name: Option<String>,
+    email: Option<String>,
 }
 
 async fn redeem_reset_password(
@@ -1203,14 +1215,33 @@ async fn redeem_reset_password(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_new_password(&request.new_password)?;
     let token_hash = hash_token(&request.reset_token);
-    let Some(token) = state
+    if let Some(token) = state
         .repositories
         .reset_password_tokens
         .get_by_token_hash(&token_hash)
         .await?
-    else {
-        return Err(ApiError::unauthorized("reset token is invalid or expired"));
-    };
+    {
+        return redeem_existing_user_reset_token(state, client_ip, request, token).await;
+    }
+
+    if let Some(token) = state
+        .repositories
+        .invitation_tokens
+        .get_by_token_hash(&token_hash)
+        .await?
+    {
+        return redeem_invitation_token(state, client_ip, request, token).await;
+    }
+
+    Err(ApiError::unauthorized("reset token is invalid or expired"))
+}
+
+async fn redeem_existing_user_reset_token(
+    state: AppState,
+    client_ip: ClientIp,
+    request: RedeemResetPasswordRequest,
+    token: clipline_cloud_db::ResetPasswordToken,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if token.used_at.is_some() || token.expires_at <= now_utc() {
         return Err(ApiError::unauthorized("reset token is invalid or expired"));
     }
@@ -1249,6 +1280,52 @@ async fn redeem_reset_password(
         Some("user"),
         Some(&user.id),
         None,
+    )
+    .await?;
+
+    Ok(Json(json!({ "status": "ok" })))
+}
+
+async fn redeem_invitation_token(
+    state: AppState,
+    client_ip: ClientIp,
+    request: RedeemResetPasswordRequest,
+    token: clipline_cloud_db::InvitationToken,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if token.used_at.is_some() || token.expires_at <= now_utc() {
+        return Err(ApiError::unauthorized("reset token is invalid or expired"));
+    }
+    let username = normalized_required_username(
+        request
+            .username
+            .ok_or_else(|| ApiError::bad_request("username is required"))?,
+    )?;
+    validate_role(&token.role)?;
+
+    let mut new_user = NewUser::new(username, hash_password(&request.new_password)?, token.role);
+    new_user.display_name = normalized_display_name(request.display_name)?;
+    new_user.email = normalized_optional_email(request.email)?;
+    let created = create_user_or_conflict(&state, &new_user).await?;
+    if !state
+        .repositories
+        .invitation_tokens
+        .mark_used_if_valid(&token.id, now_utc())
+        .await?
+    {
+        if let Err(error) = state.repositories.users.delete(&created.id).await {
+            warn!(event = "invite.claim_rollback_user_failed", user_id = %created.id, error = %error);
+        }
+        return Err(ApiError::unauthorized("reset token is invalid or expired"));
+    }
+
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        None,
+        "user.invite_redeemed",
+        Some("user"),
+        Some(&created.id),
+        Some(json!({ "invite_id": token.id, "username": created.username })),
     )
     .await?;
 
@@ -1461,6 +1538,19 @@ fn normalized_optional_email(email: Option<String>) -> Result<Option<String>, Ap
         return Err(ApiError::bad_request("email must be a valid email address"));
     }
     Ok(Some(email.to_string()))
+}
+
+fn normalized_required_username(username: String) -> Result<String, ApiError> {
+    let username = username.trim();
+    if username.is_empty() {
+        return Err(ApiError::bad_request("username is required"));
+    }
+    if username.len() > MAX_USERNAME_LEN {
+        return Err(ApiError::bad_request(format!(
+            "username must be at most {MAX_USERNAME_LEN} bytes"
+        )));
+    }
+    Ok(username.to_string())
 }
 
 pub(crate) async fn audit_with_ip(
@@ -2390,6 +2480,110 @@ mod tests {
             .expect("user");
         assert_eq!(updated.display_name.as_deref(), Some("Updated"));
         assert_eq!(updated.bio.as_deref(), Some("Keep this bio"));
+    }
+
+    #[tokio::test]
+    async fn invitation_token_creates_user_with_claimed_profile() {
+        let app = test_app().await;
+        let admin = insert_user_with_role(&app.state, "invite-admin", "admin").await;
+        let link = create_invite_setup_link(&app.state, "user", &admin.id)
+            .await
+            .expect("invite link");
+
+        let _ = redeem_reset_password(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            Json(RedeemResetPasswordRequest {
+                reset_token: link.response.reset_token,
+                new_password: "new-password".to_string(),
+                username: Some(" invitee ".to_string()),
+                display_name: Some(" Invitee ".to_string()),
+                email: Some("invitee@example.com".to_string()),
+            }),
+        )
+        .await
+        .expect("redeem invite");
+
+        let created = app
+            .state
+            .repositories
+            .users
+            .get_by_username("invitee")
+            .await
+            .expect("load user")
+            .expect("created user");
+        assert_eq!(created.display_name.as_deref(), Some("Invitee"));
+        assert_eq!(created.email.as_deref(), Some("invitee@example.com"));
+        assert!(verify_password("new-password", &created.password_hash).expect("verify"));
+        assert!(app
+            .state
+            .repositories
+            .invitation_tokens
+            .get(&link.token_id)
+            .await
+            .expect("load invitation")
+            .expect("invitation")
+            .used_at
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn invitation_token_survives_claim_username_collision() {
+        let app = test_app().await;
+        let admin = insert_user_with_role(&app.state, "invite-admin", "admin").await;
+        let taken_username = format!("taken-{}", new_ulid().to_ascii_lowercase());
+        app.state
+            .repositories
+            .users
+            .create(&NewUser::new(&taken_username, "argon2id-hash", "user"))
+            .await
+            .expect("seed taken username");
+        let link = create_invite_setup_link(&app.state, "user", &admin.id)
+            .await
+            .expect("invite link");
+        let reset_token = link.response.reset_token.clone();
+
+        assert_eq!(
+            error_status(
+                redeem_reset_password(
+                    State(app.state.clone()),
+                    Extension(ClientIp("203.0.113.10".to_string())),
+                    Json(RedeemResetPasswordRequest {
+                        reset_token: reset_token.clone(),
+                        new_password: "new-password".to_string(),
+                        username: Some(taken_username),
+                        display_name: None,
+                        email: None,
+                    }),
+                )
+                .await
+            ),
+            StatusCode::CONFLICT
+        );
+        assert!(app
+            .state
+            .repositories
+            .invitation_tokens
+            .get(&link.token_id)
+            .await
+            .expect("load invitation")
+            .expect("invitation")
+            .used_at
+            .is_none());
+
+        let _ = redeem_reset_password(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            Json(RedeemResetPasswordRequest {
+                reset_token,
+                new_password: "new-password".to_string(),
+                username: Some(format!("available-{}", new_ulid().to_ascii_lowercase())),
+                display_name: None,
+                email: None,
+            }),
+        )
+        .await
+        .expect("redeem invite after collision");
     }
 
     async fn test_app() -> TestApp {

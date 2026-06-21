@@ -145,8 +145,9 @@ tokens/reset links.
 
 Owners and admins can use the admin API. Only the owner can create admin accounts, disable admin
 accounts, modify the owner account, edit the public About text, or configure SMTP invite settings.
-User creation can generate a copyable invite link without SMTP, or send an email invite containing a
-one-time password setup link when SMTP is enabled.
+Admins can create users manually, or generate standalone invite links that let invitees choose their
+username, display name, email, and password. Invite links are copyable without SMTP and can be sent
+by email when SMTP is enabled.
 
 ### Security requirements that land here (§21)
 

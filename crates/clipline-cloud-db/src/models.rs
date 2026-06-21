@@ -581,6 +581,46 @@ impl NewResetPasswordToken {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct InvitationToken {
+    pub id: String,
+    pub token_hash: String,
+    pub role: String,
+    pub created_by_user_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewInvitationToken {
+    pub id: String,
+    pub token_hash: String,
+    pub role: String,
+    pub created_by_user_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+}
+
+impl NewInvitationToken {
+    pub fn new(
+        token_hash: impl Into<String>,
+        role: impl Into<String>,
+        expires_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id: new_ulid(),
+            token_hash: token_hash.into(),
+            role: role.into(),
+            created_by_user_id: None,
+            created_at: now_utc(),
+            expires_at,
+            used_at: None,
+        }
+    }
+}
+
 impl NewAuditLogEntry {
     pub fn new(action: impl Into<String>) -> Self {
         Self {

@@ -4,10 +4,10 @@ use sqlx::{types::Json, Postgres, QueryBuilder, Sqlite};
 
 use crate::{
     db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AppSettings,
-    AuditLogEntry, Clip, ClipComment, ClipMarker, Database, DbResult, DeviceToken, Job,
-    NewAuditLogEntry, NewClip, NewClipComment, NewClipMarker, NewDeviceToken, NewJob,
-    NewResetPasswordToken, NewSession, NewUploadPart, NewUploadSession, NewUser,
-    ResetPasswordToken, Session, UploadPart, UploadSession, User,
+    AuditLogEntry, Clip, ClipComment, ClipMarker, Database, DbResult, DeviceToken, InvitationToken,
+    Job, NewAuditLogEntry, NewClip, NewClipComment, NewClipMarker, NewDeviceToken,
+    NewInvitationToken, NewJob, NewResetPasswordToken, NewSession, NewUploadPart, NewUploadSession,
+    NewUser, ResetPasswordToken, Session, UploadPart, UploadSession, User,
 };
 
 pub const DEFAULT_ABOUT_TEXT: &str = "Self-hosted clip sharing for Clipline. Upload clips from the desktop app, manage your own library, and share public links without relying on a hosted service.";
@@ -85,6 +85,7 @@ pub struct Repositories {
     pub jobs: JobRepository,
     pub audit_log: AuditLogRepository,
     pub reset_password_tokens: ResetPasswordTokenRepository,
+    pub invitation_tokens: InvitationTokenRepository,
 }
 
 impl Repositories {
@@ -101,7 +102,8 @@ impl Repositories {
             upload_parts: UploadPartRepository::new(database.clone()),
             jobs: JobRepository::new(database.clone()),
             audit_log: AuditLogRepository::new(database.clone()),
-            reset_password_tokens: ResetPasswordTokenRepository::new(database),
+            reset_password_tokens: ResetPasswordTokenRepository::new(database.clone()),
+            invitation_tokens: InvitationTokenRepository::new(database),
         }
     }
 
@@ -2508,6 +2510,81 @@ impl ResetPasswordTokenRepository {
             &self.database,
             "DELETE FROM reset_password_tokens WHERE user_id = ?",
             [user_id]
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct InvitationTokenRepository {
+    database: Database,
+}
+
+impl InvitationTokenRepository {
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    pub async fn create(&self, new: &NewInvitationToken) -> DbResult<InvitationToken> {
+        db_execute!(
+            &self.database,
+            "INSERT INTO invitation_tokens (id, token_hash, role, created_by_user_id, created_at, expires_at, used_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                &new.id,
+                &new.token_hash,
+                &new.role,
+                new.created_by_user_id.as_deref(),
+                new.created_at,
+                new.expires_at,
+                new.used_at,
+            ]
+        )?;
+
+        Ok(self
+            .get(&new.id)
+            .await?
+            .expect("inserted invitation token should exist"))
+    }
+
+    pub async fn get(&self, id: &str) -> DbResult<Option<InvitationToken>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            InvitationToken,
+            "SELECT id, token_hash, role, created_by_user_id, created_at, expires_at, used_at
+             FROM invitation_tokens WHERE id = ?",
+            [id]
+        )?)
+    }
+
+    pub async fn get_by_token_hash(&self, token_hash: &str) -> DbResult<Option<InvitationToken>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            InvitationToken,
+            "SELECT id, token_hash, role, created_by_user_id, created_at, expires_at, used_at
+             FROM invitation_tokens WHERE token_hash = ?",
+            [token_hash]
+        )?)
+    }
+
+    pub async fn mark_used_if_valid(
+        &self,
+        id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE invitation_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
+            [now, id, now]
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub async fn delete(&self, id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM invitation_tokens WHERE id = ?",
+            [id]
         )?;
         Ok(())
     }
