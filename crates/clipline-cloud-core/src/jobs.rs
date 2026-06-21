@@ -8,7 +8,7 @@ use clipline_cloud_storage::{
 use rand::{rngs::OsRng, Rng};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::{sync::watch, time::sleep};
+use tokio::{io::AsyncReadExt, sync::watch, time::sleep};
 use tracing::{debug, error, info, warn};
 
 use crate::media_processing::{
@@ -451,8 +451,7 @@ impl JobRunner {
 
         if clip.storage_backend == "s3" {
             if let Some(expected_checksum) = clip.checksum_sha256.as_deref() {
-                let object = self.storage.get_object(&key, None).await?;
-                let actual_checksum = sha256_hex(&object.bytes);
+                let actual_checksum = sha256_object_hex(&self.storage, &key).await?;
                 if actual_checksum != expected_checksum {
                     return Err(JobRunnerError::Validation(
                         "object SHA-256 mismatch".to_string(),
@@ -587,15 +586,18 @@ impl JobRunner {
         }
 
         if self.config.video_optimization.keep_original {
-            let original = self.storage.get_object(&source_key, None).await?;
             let mut metadata = PutObjectMetadata::new(source_metadata.content_type.clone());
-            metadata.checksum_sha256 = source_metadata
+            let checksum = match source_metadata
                 .checksum_sha256
                 .clone()
                 .or_else(|| clip.checksum_sha256.clone())
-                .or_else(|| Some(sha256_hex(&original.bytes)));
+            {
+                Some(checksum) => checksum,
+                None => sha256_object_hex(&self.storage, &source_key).await?,
+            };
+            metadata.checksum_sha256 = Some(checksum);
             self.storage
-                .put_object(&original_key, original.bytes, metadata)
+                .copy_object(&source_key, &original_key, metadata)
                 .await?;
         }
 
@@ -657,8 +659,7 @@ impl JobRunner {
         source_key: &ObjectKey,
         source_size_bytes: u64,
     ) -> Result<(), JobRunnerError> {
-        let object = self.storage.get_object(source_key, None).await?;
-        let checksum = sha256_hex(&object.bytes);
+        let checksum = sha256_object_hex(&self.storage, source_key).await?;
         let metadata = self
             .media_processor
             .probe_metadata(&self.storage, source_key)
@@ -1075,8 +1076,30 @@ fn chrono_duration(duration: Duration) -> ChronoDuration {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    hex_bytes(&digest)
+}
+
+async fn sha256_object_hex(
+    storage: &SharedStorageBackend,
+    key: &ObjectKey,
+) -> Result<String, StorageError> {
+    let mut object = storage.get_object_stream(key, None).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = object.reader.as_mut().read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(hex_bytes(&digest))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         use std::fmt::Write as _;
         let _ = write!(out, "{byte:02x}");
     }

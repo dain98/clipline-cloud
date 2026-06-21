@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
     path::{Component, Path, PathBuf},
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -12,7 +13,7 @@ use aws_sdk_s3::{
     config::Region,
     presigning::PresigningConfig,
     primitives::ByteStream,
-    types::{CompletedMultipartUpload, CompletedPart},
+    types::{CompletedMultipartUpload, CompletedPart, MetadataDirective},
     Client,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -23,12 +24,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     fs::{self, File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
+    io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
 };
 use url::Url;
 
 pub type StorageResult<T> = Result<T, StorageError>;
 pub type SharedStorageBackend = Arc<dyn StorageBackend>;
+pub type BoxedAsyncRead = Pin<Box<dyn AsyncRead + Send + 'static>>;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -178,6 +180,13 @@ pub struct StoredObject {
     pub content_range: Option<ContentRange>,
 }
 
+pub struct StoredObjectStream {
+    pub reader: BoxedAsyncRead,
+    pub metadata: ObjectMetadata,
+    pub content_range: Option<ContentRange>,
+    pub content_length: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectSummary {
     pub key: ObjectKey,
@@ -243,6 +252,17 @@ pub trait StorageBackend: Send + Sync {
         key: &ObjectKey,
         range: Option<ByteRange>,
     ) -> StorageResult<StoredObject>;
+    async fn get_object_stream(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+    ) -> StorageResult<StoredObjectStream>;
+    async fn copy_object(
+        &self,
+        source_key: &ObjectKey,
+        target_key: &ObjectKey,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata>;
     async fn head_object(&self, key: &ObjectKey) -> StorageResult<ObjectMetadata>;
     async fn delete_object(&self, key: &ObjectKey) -> StorageResult<()>;
     async fn object_exists(&self, key: &ObjectKey) -> StorageResult<bool>;
@@ -526,6 +546,81 @@ impl StorageBackend for LocalStorage {
             metadata,
             content_range,
         })
+    }
+
+    async fn get_object_stream(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+    ) -> StorageResult<StoredObjectStream> {
+        let metadata = self.head_object(key).await?;
+        let path = self.path_for_key(key);
+        let mut file = File::open(&path)
+            .await
+            .map_err(|error| map_not_found(error, key.to_string()))?;
+
+        let (start, end_inclusive, content_range) = match range {
+            Some(range) => {
+                let end = normalize_range(&range, metadata.size_bytes)?;
+                (
+                    range.start,
+                    end,
+                    Some(ContentRange {
+                        start: range.start,
+                        end_inclusive: end,
+                        total_size: metadata.size_bytes,
+                    }),
+                )
+            }
+            None => (0, metadata.size_bytes.saturating_sub(1), None),
+        };
+
+        let content_length = if metadata.size_bytes == 0 {
+            0
+        } else {
+            end_inclusive - start + 1
+        };
+        file.seek(SeekFrom::Start(start)).await?;
+
+        Ok(StoredObjectStream {
+            reader: Box::pin(file.take(content_length)),
+            metadata,
+            content_range,
+            content_length,
+        })
+    }
+
+    async fn copy_object(
+        &self,
+        source_key: &ObjectKey,
+        target_key: &ObjectKey,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata> {
+        self.probe().await?;
+        let source_path = self.path_for_key(source_key);
+        let final_path = self.path_for_key(target_key);
+        let tmp_path = append_suffix(&final_path, ".tmp");
+
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        fs::copy(&source_path, &tmp_path)
+            .await
+            .map_err(|error| map_not_found(error, source_key.to_string()))?;
+        let file = File::open(&tmp_path).await?;
+        file.sync_all().await?;
+        drop(file);
+
+        fs::rename(&tmp_path, &final_path).await?;
+        sync_parent_dir(&final_path).await;
+
+        self.write_sidecar(
+            target_key,
+            metadata,
+            Some(local_object_etag(&final_path).await?),
+        )
+        .await
     }
 
     async fn head_object(&self, key: &ObjectKey) -> StorageResult<ObjectMetadata> {
@@ -879,6 +974,68 @@ impl StorageBackend for S3Storage {
             metadata,
             content_range,
         })
+    }
+
+    async fn get_object_stream(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+    ) -> StorageResult<StoredObjectStream> {
+        let metadata = self.head_object(key).await?;
+        let content_range = range
+            .as_ref()
+            .map(|range| {
+                normalize_range(range, metadata.size_bytes).map(|end| ContentRange {
+                    start: range.start,
+                    end_inclusive: end,
+                    total_size: metadata.size_bytes,
+                })
+            })
+            .transpose()?;
+        let content_length = content_range
+            .as_ref()
+            .map(|range| range.end_inclusive - range.start + 1)
+            .unwrap_or(metadata.size_bytes);
+
+        let physical_key = self.physical_key(key);
+        let mut request = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(physical_key);
+        if let Some(range) = &range {
+            request = request.range(range.s3_header_value());
+        }
+
+        let output = request.send().await.map_err(s3_error)?;
+        Ok(StoredObjectStream {
+            reader: Box::pin(output.body.into_async_read()),
+            metadata,
+            content_range,
+            content_length,
+        })
+    }
+
+    async fn copy_object(
+        &self,
+        source_key: &ObjectKey,
+        target_key: &ObjectKey,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata> {
+        let source = format!("{}/{}", self.bucket, self.physical_key(source_key));
+        let mut request = self
+            .client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(self.physical_key(target_key))
+            .copy_source(source)
+            .metadata_directive(MetadataDirective::Replace)
+            .content_type(metadata.content_type.clone());
+        if let Some(checksum) = &metadata.checksum_sha256 {
+            request = request.metadata("clipline-checksum-sha256", checksum);
+        }
+        request.send().await.map_err(s3_error)?;
+        self.head_object(target_key).await
     }
 
     async fn head_object(&self, key: &ObjectKey) -> StorageResult<ObjectMetadata> {
@@ -1511,7 +1668,9 @@ mod tests {
     async fn local_put_head_get_range_delete_round_trip() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let storage = LocalStorage::new(temp_dir.path());
-        let key = MediaObjectKeys::generate().expect("keys").source;
+        let keys = MediaObjectKeys::generate().expect("keys");
+        let key = keys.source;
+        let copy_key = keys.poster;
         let mut put_metadata = PutObjectMetadata::new("video/mp4");
         put_metadata.checksum_sha256 = Some("checksum".to_string());
 
@@ -1545,6 +1704,38 @@ mod tests {
             })
         );
 
+        let mut streamed = storage
+            .get_object_stream(&key, Some(ByteRange::new(6, None)))
+            .await
+            .expect("stream range");
+        let mut streamed_bytes = Vec::new();
+        streamed
+            .reader
+            .as_mut()
+            .read_to_end(&mut streamed_bytes)
+            .await
+            .expect("read stream");
+        assert_eq!(streamed.content_length, 4);
+        assert_eq!(streamed_bytes, b"6789");
+        assert_eq!(
+            streamed.content_range,
+            Some(ContentRange {
+                start: 6,
+                end_inclusive: 9,
+                total_size: 10
+            })
+        );
+
+        let mut copy_metadata = PutObjectMetadata::new("image/jpeg");
+        copy_metadata.checksum_sha256 = Some("copy-checksum".to_string());
+        let copied = storage
+            .copy_object(&key, &copy_key, copy_metadata)
+            .await
+            .expect("copy");
+        assert_eq!(copied.size_bytes, 10);
+        assert_eq!(copied.content_type, "image/jpeg");
+        assert_eq!(copied.checksum_sha256, Some("copy-checksum".to_string()));
+
         assert!(storage
             .create_read_url(&key, Duration::from_secs(60))
             .await
@@ -1552,6 +1743,7 @@ mod tests {
             .is_none());
 
         storage.delete_object(&key).await.expect("delete");
+        storage.delete_object(&copy_key).await.expect("delete copy");
         assert!(!storage.object_exists(&key).await.expect("not exists"));
     }
 

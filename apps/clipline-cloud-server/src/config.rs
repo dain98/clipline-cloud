@@ -113,6 +113,7 @@ impl ProcessRole {
         matches!(self, Self::All | Self::Web)
     }
 
+    #[allow(dead_code)]
     pub fn runs_jobs(self) -> bool {
         matches!(self, Self::All | Self::Worker)
     }
@@ -212,6 +213,11 @@ impl Config {
                 .unwrap_or_else(|| DEFAULT_PROCESS_ROLE.to_string()),
         )?;
         let public_url = required_url(source, "CLIPLINE_PUBLIC_URL")?;
+        let allow_insecure_public_url = parse_bool(
+            "CLIPLINE_ALLOW_INSECURE_PUBLIC_URL",
+            optional(source, "CLIPLINE_ALLOW_INSECURE_PUBLIC_URL"),
+            false,
+        )?;
         let bind_addr = bind_addr_from_source(source)?;
         let explicit_database_url = secret(source, "CLIPLINE_DATABASE_URL")?;
         validate_railway_database_config(source, explicit_database_url.as_deref())?;
@@ -351,6 +357,7 @@ impl Config {
         let static_dir = default_static_dir();
         let mut startup_warnings = Vec::new();
 
+        validate_public_url_security(&public_url, allow_insecure_public_url)?;
         if public_url.scheme() != "https" {
             startup_warnings.push(StartupWarning::NonHttpsPublicUrl {
                 url: public_url.as_str().to_string(),
@@ -436,6 +443,34 @@ fn required(source: &impl EnvSource, name: &'static str) -> Result<String, Confi
 fn required_url(source: &impl EnvSource, name: &'static str) -> Result<Url, ConfigError> {
     let value = required(source, name)?;
     Url::parse(&value).map_err(|_| ConfigError::InvalidUrl { name, value })
+}
+
+fn validate_public_url_security(
+    public_url: &Url,
+    allow_insecure_public_url: bool,
+) -> Result<(), ConfigError> {
+    match public_url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_public_url(public_url) => Ok(()),
+        "http" if allow_insecure_public_url => Ok(()),
+        "http" => Err(ConfigError::Validation(
+            "CLIPLINE_PUBLIC_URL must use https for non-local hosts; set CLIPLINE_ALLOW_INSECURE_PUBLIC_URL=true only for intentional insecure development or trusted LAN deployments".to_string(),
+        )),
+        _ => Err(ConfigError::Validation(
+            "CLIPLINE_PUBLIC_URL must use https, or http only for localhost/development"
+                .to_string(),
+        )),
+    }
+}
+
+fn is_loopback_public_url(public_url: &Url) -> bool {
+    let Some(host) = public_url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    IpAddr::from_str(host).is_ok_and(|ip| ip.is_loopback())
 }
 
 fn secret(source: &impl EnvSource, name: &'static str) -> Result<Option<String>, ConfigError> {
@@ -862,6 +897,32 @@ mod tests {
                 url: "http://localhost:8080/".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn non_local_http_public_url_requires_explicit_opt_in() {
+        let mut env = valid_local_env();
+        env.insert(
+            "CLIPLINE_PUBLIC_URL",
+            "http://clips.example.com".to_string(),
+        );
+
+        let error = Config::from_source(&env).expect_err("public http should fail");
+        assert!(error.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn non_local_http_public_url_can_be_explicitly_allowed() {
+        let mut env = valid_local_env();
+        env.insert(
+            "CLIPLINE_PUBLIC_URL",
+            "http://192.168.1.10:8080".to_string(),
+        );
+        env.insert("CLIPLINE_ALLOW_INSECURE_PUBLIC_URL", "true".to_string());
+
+        let config = Config::from_source(&env).expect("config");
+        assert_eq!(config.public_url.as_str(), "http://192.168.1.10:8080/");
+        assert_eq!(config.startup_warnings().len(), 1);
     }
 
     #[test]

@@ -226,8 +226,10 @@ real client IP instead of the proxy IP.
 
 For production, pin `CLIPLINE_IMAGE` to a released version tag instead of relying on `:latest`.
 See [`release-process.md`](release-process.md) for the tag workflow and post-release smoke checks.
-Profiles that default to `http://localhost:8080` are local/LAN defaults; set `CLIPLINE_PUBLIC_URL` to
-an HTTPS URL behind Caddy before exposing S3 or MinIO-backed deployments to users.
+Profiles that default to `http://localhost:8080` are local defaults; set `CLIPLINE_PUBLIC_URL` to
+an HTTPS URL behind Caddy before exposing S3 or MinIO-backed deployments to users. Non-local
+`http://` public URLs require `CLIPLINE_ALLOW_INSECURE_PUBLIC_URL=true` and should be reserved for
+intentional insecure development or trusted-LAN testing.
 
 ## Operator Limits
 

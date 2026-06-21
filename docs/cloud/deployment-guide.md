@@ -23,7 +23,13 @@ Do not run `latest` in production.
 - **A storage choice:** local disk (default) or an S3-compatible bucket.
 - **A database choice:** SQLite (default) or Postgres.
 - **A public URL.** Set `CLIPLINE_PUBLIC_URL` to the `https://` address users and the desktop app will use.
-  It defaults to `http://localhost:8080`, which is fine only for local/LAN testing.
+  It defaults to `http://localhost:8080`, which is fine only for local testing. Non-local `http://`
+  URLs fail startup unless `CLIPLINE_ALLOW_INSECURE_PUBLIC_URL=true` is set intentionally for an
+  insecure development or trusted-LAN deployment.
+- **A stable session secret.** The Compose profiles mount `CLIPLINE_SESSION_SECRET_FILE`. For bare,
+  split-web, or HA deployments, set `CLIPLINE_SESSION_SECRET` or `CLIPLINE_SESSION_SECRET_FILE` to
+  the same high-entropy value on every web replica so browser CSRF tokens survive restarts and route
+  correctly across replicas.
 
 The app listens on port `8080` inside the container.
 

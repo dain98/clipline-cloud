@@ -68,16 +68,17 @@ services:
       CLIPLINE_BOOTSTRAP_ADMIN_USERNAME: "admin"
       # No password set -> a one-time admin password is generated and printed to
       # the logs on first start (doc 04). Read it with:  docker compose logs clipline-cloud
-      # Set CLIPLINE_SESSION_SECRET or CLIPLINE_SESSION_SECRET_FILE for stable sessions.
+      # Set CLIPLINE_SESSION_SECRET or CLIPLINE_SESSION_SECRET_FILE for stable
+      # CSRF tokens across restarts and every web replica in HA deployments.
     volumes:
       - /mnt/media/clipline-cloud:/data
 ```
 
 The public URL points at `localhost` because the minimal example has no reverse proxy or TLS. The
-non-HTTPS public URL trips the §21 startup warning (expected for a local test); the production Caddy
-profile uses the real domain over HTTPS. The shipped default Compose profile generates a persisted
-local session secret in a named volume so browser sessions and CSRF tokens survive container
-restarts.
+non-HTTPS public URL trips the §21 startup warning (expected for a local test); non-local `http://`
+public URLs require `CLIPLINE_ALLOW_INSECURE_PUBLIC_URL=true`. The production Caddy profile uses the
+real domain over HTTPS. The shipped default Compose profile generates a persisted local session
+secret in a named volume so browser sessions and CSRF tokens survive container restarts.
 
 **Fixed admin password via Docker secrets (note the `secrets:` block):**
 

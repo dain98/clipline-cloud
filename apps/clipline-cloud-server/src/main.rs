@@ -31,6 +31,7 @@ use tokio::task::JoinHandle;
 use tokio::{net::TcpListener, sync::watch};
 use tower_http::{catch_panic::CatchPanicLayer, services::ServeDir};
 use tracing::{info, warn};
+use url::Url;
 
 const MIB: u64 = 1024 * 1024;
 const DEFAULT_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'";
@@ -205,7 +206,7 @@ fn log_config_summary(config: &Config) {
         event = "config.loaded",
         process_role = config.process_role.as_str(),
         public_url = %config.public_url,
-        database_url = %config.database_url,
+        database_url = %redact_url_credentials(&config.database_url),
         storage_backend = config.storage_backend_name(),
         bootstrap_admin_username_configured = config.bootstrap_admin_username.is_some(),
         bootstrap_admin_password_configured = config.bootstrap_admin_password.is_some(),
@@ -258,6 +259,19 @@ fn log_config_summary(config: &Config) {
             );
         }
     }
+}
+
+fn redact_url_credentials(raw_url: &str) -> String {
+    let Ok(mut url) = Url::parse(raw_url) else {
+        return "<redacted>".to_string();
+    };
+    if !url.username().is_empty() {
+        let _ = url.set_username("***");
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some("***"));
+    }
+    url.to_string()
 }
 
 async fn build_storage(config: &Config) -> anyhow::Result<SharedStorageBackend> {

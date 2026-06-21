@@ -28,6 +28,18 @@ ghcr.io/dain98/clipline-cloud:sha-<short-git-sha>
 
 ## Release Validation
 
+Before tagging, run the Rust checks and dependency audit:
+
+```sh
+cargo test --workspace
+cargo tree -i rsa
+cargo audit --ignore RUSTSEC-2023-0071
+```
+
+`RUSTSEC-2023-0071` is ignored only because `rsa` is pulled into `Cargo.lock` through SQLx's optional
+`sqlx-mysql` package metadata, while this workspace enables only SQLite/Postgres. `cargo tree -i rsa`
+must continue to print no active dependency path before keeping that ignore.
+
 After the workflow finishes, smoke-test the published image instead of the local build. This command
 runs the full multi-profile smoke suite (`default minio postgres`):
 
