@@ -56,6 +56,7 @@ const MAX_USERNAME_LEN: usize = 120;
 const MAX_DISPLAY_NAME_LEN: usize = 120;
 const MAX_PROFILE_BIO_LEN: usize = 2000;
 const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$Y2xpcGxpbmVkdW1teXNhbHQ$29NAnsMp/zppbS3YN0zQLv+FC4Kkln7bC58S5joRLPw";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -96,7 +97,7 @@ impl AuthRuntime {
                 OsRng.fill_bytes(&mut bytes);
                 warn!(
                     event = "auth.csrf_secret.generated",
-                    message = "CLIPLINE_SESSION_SECRET is not configured; generated an ephemeral CSRF secret for this process"
+                    message = "CLIPLINE_SESSION_SECRET is not configured; generated an ephemeral CSRF secret for this process. Configure a stable secret for restarts, multiple web replicas, or HA deployments"
                 );
                 bytes
             }
@@ -392,23 +393,18 @@ async fn login(
         ));
     }
 
-    let Some(user) = state
+    let user = state
         .repositories
         .users
         .get_by_username(&request.username)
-        .await?
-    else {
-        state
-            .auth
-            .record_login_failure(&request.username, login_source);
-        return Err(ApiError::unauthorized("invalid username or password"));
-    };
-    if user.is_disabled || !verify_password(&request.password, &user.password_hash)? {
+        .await?;
+    if !verify_login_password(&request.password, user.as_ref())? {
         state
             .auth
             .record_login_failure(&request.username, login_source);
         return Err(ApiError::unauthorized("invalid username or password"));
     }
+    let user = user.expect("verified login user should exist");
 
     state
         .auth
@@ -498,23 +494,18 @@ async fn create_device_token(
         ));
     }
 
-    let Some(user) = state
+    let user = state
         .repositories
         .users
         .get_by_username(&request.username)
-        .await?
-    else {
-        state
-            .auth
-            .record_login_failure(&request.username, login_source);
-        return Err(ApiError::unauthorized("invalid username or password"));
-    };
-    if user.is_disabled || !verify_password(&request.password, &user.password_hash)? {
+        .await?;
+    if !verify_login_password(&request.password, user.as_ref())? {
         state
             .auth
             .record_login_failure(&request.username, login_source);
         return Err(ApiError::unauthorized("invalid username or password"));
     }
+    let user = user.expect("verified login user should exist");
 
     state
         .auth
@@ -1787,6 +1778,14 @@ fn verify_password(password: &str, password_hash: &str) -> Result<bool, ApiError
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok())
+}
+
+fn verify_login_password(password: &str, user: Option<&User>) -> Result<bool, ApiError> {
+    let Some(user) = user.filter(|user| !user.is_disabled) else {
+        let _ = verify_password(password, DUMMY_PASSWORD_HASH)?;
+        return Ok(false);
+    };
+    verify_password(password, &user.password_hash)
 }
 
 fn generate_prefixed_token(prefix: &str) -> String {

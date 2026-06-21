@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsString,
+    ffi::{CString, OsString},
     path::{Path, PathBuf},
     process::{Output, Stdio},
     time::Duration,
@@ -11,7 +11,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
     fs,
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     time,
 };
@@ -123,6 +123,7 @@ impl MediaProcessor {
         let scratch = ScratchDir::create().await?;
         let input_path = scratch.path().join("source.mp4");
         write_source_object(storage, source_key, &input_path).await?;
+        scratch.prepare_for_sandbox(&self.config).await?;
 
         self.probe_file(&input_path).await
     }
@@ -137,6 +138,7 @@ impl MediaProcessor {
         let input_path = scratch.path().join("source.mp4");
         let output_path = scratch.path().join("optimized.mp4");
         write_source_object(storage, source_key, &input_path).await?;
+        scratch.prepare_for_sandbox(&self.config).await?;
 
         let mut args = vec![
             os("-v"),
@@ -232,6 +234,7 @@ impl MediaProcessor {
         let output_path = scratch.path().join(format!("{label}.jpg"));
         let vf = format!("scale={scale}:force_original_aspect_ratio=decrease");
         write_source_object(storage, source_key, &input_path).await?;
+        scratch.prepare_for_sandbox(&self.config).await?;
 
         self.run_media_command(
             &self.config.ffmpeg_bin,
@@ -580,8 +583,10 @@ async fn write_source_object(
     source_key: &ObjectKey,
     input_path: &Path,
 ) -> Result<(), MediaProcessingError> {
-    let object = storage.get_object(source_key, None).await?;
-    fs::write(input_path, object.bytes).await?;
+    let mut object = storage.get_object_stream(source_key, None).await?;
+    let mut file = fs::File::create(input_path).await?;
+    tokio::io::copy(&mut object.reader, &mut file).await?;
+    file.flush().await?;
     Ok(())
 }
 
@@ -602,13 +607,56 @@ impl ScratchDir {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).await?;
+            fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).await?;
         }
         Ok(Self { path })
     }
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[cfg(unix)]
+    async fn prepare_for_sandbox(
+        &self,
+        config: &MediaProcessingConfig,
+    ) -> Result<(), std::io::Error> {
+        use std::{os::unix::ffi::OsStrExt, os::unix::fs::PermissionsExt};
+
+        fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o700)).await?;
+        if unsafe { libc::geteuid() } != 0 {
+            return Ok(());
+        }
+
+        chown_path(&self.path, config.sandbox_uid, config.sandbox_gid)?;
+        let mut entries = fs::read_dir(&self.path).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            chown_path(&entry.path(), config.sandbox_uid, config.sandbox_gid)?;
+        }
+
+        fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<(), std::io::Error> {
+            let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "scratch path contains an interior NUL byte",
+                )
+            })?;
+            if unsafe { libc::chown(c_path.as_ptr(), uid, gid) } == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    async fn prepare_for_sandbox(
+        &self,
+        _config: &MediaProcessingConfig,
+    ) -> Result<(), std::io::Error> {
+        Ok(())
     }
 }
 

@@ -375,7 +375,7 @@ function renderResetPassword(token, isInvite = false, error = "") {
               </form>`
             : `<div class="error-box">This reset link is missing a token.</div>`
         }
-        <a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>
+        ${isInvite ? "" : `<a class="btn-secondary" href="/login" data-route>${icon("lock")} Sign in</a>`}
       </section>
     </main>
   `;

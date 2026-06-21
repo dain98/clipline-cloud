@@ -15,10 +15,12 @@ use clipline_cloud_db::{
     now_utc, Clip, NewClip, NewUploadPart, NewUploadSession, UploadPart, UploadSession,
 };
 use clipline_cloud_storage::{
-    CompletedUploadPart, MediaObjectKeys, ObjectKey, PutObjectMetadata, StorageError,
+    CompletedUploadPart, MediaObjectKeys, ObjectKey, PutObjectMetadata, SharedStorageBackend,
+    StorageError,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
 use tracing::warn;
 
 use crate::{
@@ -495,12 +497,9 @@ async fn complete_upload(
     }
 
     if !is_s3_storage(&state.config) {
-        let stored = state
-            .storage
-            .get_object(&key, None)
+        let checksum = sha256_object_hex(&state.storage, &key)
             .await
             .map_err(storage_error)?;
-        let checksum = sha256_hex(&stored.bytes);
         if Some(checksum.as_str()) != session.checksum_sha256.as_deref() {
             let _ = state.storage.delete_object(&key).await;
             let reason = "completed local object SHA-256 does not match expected upload checksum";
@@ -1246,8 +1245,30 @@ fn validate_checksum(checksum: &str) -> Result<(), ApiError> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    hex_bytes(&digest)
+}
+
+async fn sha256_object_hex(
+    storage: &SharedStorageBackend,
+    key: &ObjectKey,
+) -> Result<String, StorageError> {
+    let mut object = storage.get_object_stream(key, None).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = object.reader.as_mut().read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(hex_bytes(&digest))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         use std::fmt::Write as _;
         let _ = write!(out, "{byte:02x}");
     }

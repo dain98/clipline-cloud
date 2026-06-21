@@ -1,3 +1,9 @@
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
+
 use axum::{
     body::{Body, Bytes},
     extract::{Extension, Path, Query, State},
@@ -9,9 +15,10 @@ use axum::{
 use chrono::{DateTime, Utc};
 use clipline_cloud_db::{Clip, ClipComment, ClipSort, NewClipComment, PublicClipListParams, User};
 use clipline_cloud_storage::{
-    ByteRange, ContentRange, ObjectKey, ObjectMetadata, StorageError, StoredObject,
+    ByteRange, ContentRange, ObjectKey, ObjectMetadata, StorageError, StoredObjectStream,
 };
 use serde::{Deserialize, Serialize};
+use tokio_util::io::ReaderStream;
 use tracing::warn;
 use url::Url;
 
@@ -34,6 +41,11 @@ const RECOMMENDATION_CANDIDATE_LIMIT: i64 = 120;
 const PUBLIC_PROFILE_CLIP_LIMIT: i64 = 60;
 const PUBLIC_COMMENT_LIMIT: i64 = 100;
 const MAX_COMMENT_BODY_LEN: usize = 2000;
+const PUBLIC_VIEW_DEBOUNCE: Duration = Duration::from_secs(30);
+const PUBLIC_VIEW_LIMITER_MAX_ENTRIES: usize = 8192;
+
+static PUBLIC_VIEW_LIMITER: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -387,7 +399,7 @@ async fn get_public_user_avatar(
     }
     let object = state
         .storage
-        .get_object(&key, None)
+        .get_object_stream(&key, None)
         .await
         .map_err(storage_error)?;
     Ok(media_response(object, CacheScope::Public))
@@ -570,15 +582,46 @@ async fn delete_public_comment(
 
 async fn record_public_view(
     State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
     Path(share_id): Path<String>,
 ) -> Result<Json<PublicViewResponse>, ApiError> {
     let clip = load_public_clip(&state, &share_id).await?;
+    if !public_view_allowed(client_ip.as_str(), &clip.id) {
+        return Err(ApiError::too_many_requests_after(
+            "too many view events",
+            PUBLIC_VIEW_DEBOUNCE,
+        ));
+    }
     let view_count = state
         .repositories
         .clips
         .increment_view_count(&clip.id)
         .await?;
     Ok(Json(PublicViewResponse { view_count }))
+}
+
+fn public_view_allowed(client_ip: &str, clip_id: &str) -> bool {
+    let now = Instant::now();
+    let key = format!("{client_ip}:{clip_id}");
+    let mut limiter = PUBLIC_VIEW_LIMITER
+        .lock()
+        .expect("public view limiter lock");
+
+    if limiter.len() >= PUBLIC_VIEW_LIMITER_MAX_ENTRIES {
+        limiter.retain(|_, expires_at| *expires_at > now);
+        if limiter.len() >= PUBLIC_VIEW_LIMITER_MAX_ENTRIES && !limiter.contains_key(&key) {
+            return false;
+        }
+    }
+
+    if limiter
+        .get(&key)
+        .is_some_and(|expires_at| *expires_at > now)
+    {
+        return false;
+    }
+    limiter.insert(key, now + PUBLIC_VIEW_DEBOUNCE);
+    true
 }
 
 fn public_clip_summary_response(
@@ -697,7 +740,7 @@ async fn serve_clip_media(
         return Ok(not_modified_response(&metadata, scope));
     }
 
-    let object = match state.storage.get_object(&key, range).await {
+    let object = match state.storage.get_object_stream(&key, range).await {
         Ok(object) => object,
         Err(StorageError::InvalidRange { .. }) => {
             return Ok(range_not_satisfiable_response(&metadata, scope));
@@ -741,7 +784,7 @@ async fn serve_clip_image_or_placeholder(
         return Ok(not_modified_response(&metadata, scope));
     }
 
-    match state.storage.get_object(&key, None).await {
+    match state.storage.get_object_stream(&key, None).await {
         Ok(object) => Ok(media_response(object, scope)),
         Err(StorageError::NotFound(_)) => Ok(placeholder_response(headers)),
         Err(error) => {
@@ -766,22 +809,23 @@ fn clip_source_key(clip: &Clip) -> Result<ObjectKey, ApiError> {
     })
 }
 
-fn media_response(object: StoredObject, scope: CacheScope) -> Response {
+fn media_response(object: StoredObjectStream, scope: CacheScope) -> Response {
     let status = if object.content_range.is_some() {
         StatusCode::PARTIAL_CONTENT
     } else {
         StatusCode::OK
     };
-    let body_len = object.bytes.len();
+    let content_length = object.content_length;
+    let body = Body::from_stream(ReaderStream::with_capacity(object.reader, 64 * 1024));
     let mut response = Response::builder()
         .status(status)
-        .body(Body::from(object.bytes))
+        .body(body)
         .expect("media response should be valid");
     insert_media_headers(
         response.headers_mut(),
         &object.metadata,
         object.content_range.as_ref(),
-        Some(body_len),
+        Some(content_length),
         scope,
     );
     response
@@ -827,7 +871,7 @@ fn insert_media_headers(
     headers: &mut HeaderMap,
     metadata: &ObjectMetadata,
     content_range: Option<&ContentRange>,
-    content_length: Option<usize>,
+    content_length: Option<u64>,
     scope: CacheScope,
 ) {
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -887,7 +931,7 @@ fn placeholder_response(headers: &HeaderMap) -> Response {
     insert_placeholder_headers(
         response.headers_mut(),
         &metadata,
-        Some(PLACEHOLDER_SVG.len()),
+        Some(PLACEHOLDER_SVG.len() as u64),
     );
     response
 }
@@ -895,7 +939,7 @@ fn placeholder_response(headers: &HeaderMap) -> Response {
 fn insert_placeholder_headers(
     headers: &mut HeaderMap,
     metadata: &ObjectMetadata,
-    content_length: Option<usize>,
+    content_length: Option<u64>,
 ) {
     insert_header_str(headers, header::CONTENT_TYPE, &metadata.content_type);
     headers.insert(
