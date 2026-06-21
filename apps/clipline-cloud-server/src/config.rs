@@ -21,6 +21,7 @@ const DEFAULT_STORAGE_BACKEND: &str = "local";
 const DEFAULT_PROCESS_ROLE: &str = "all";
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_S3_REGION: &str = "us-east-1";
+pub const DEFAULT_REQUEST_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_UPLOAD_SIZE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const DEFAULT_UPLOAD_PART_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SINGLE_PUT_MAX_BYTES: u64 = 64 * 1024 * 1024;

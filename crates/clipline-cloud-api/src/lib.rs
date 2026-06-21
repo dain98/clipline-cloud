@@ -59,7 +59,8 @@ pub struct ConnectedCloud {
 }
 
 impl CloudClient {
-    pub fn new(base_url: Url) -> Self {
+    pub fn new(mut base_url: Url) -> Self {
+        normalize_base_url_path(&mut base_url);
         Self {
             base_url,
             http: reqwest::Client::new(),
@@ -67,7 +68,8 @@ impl CloudClient {
         }
     }
 
-    pub fn with_device_token(base_url: Url, device_token: impl Into<String>) -> Self {
+    pub fn with_device_token(mut base_url: Url, device_token: impl Into<String>) -> Self {
+        normalize_base_url_path(&mut base_url);
         Self {
             base_url,
             http: reqwest::Client::new(),
@@ -309,9 +311,7 @@ pub async fn connect_with_device_token(
 
 pub fn validate_cloud_host(input: &str, plain_http_confirmed: bool) -> CloudApiResult<Url> {
     let mut url = Url::parse(input)?;
-    if url.path().is_empty() {
-        url.set_path("/");
-    }
+    normalize_base_url_path(&mut url);
 
     match url.scheme() {
         "https" => Ok(url),
@@ -325,6 +325,13 @@ pub fn validate_cloud_host(input: &str, plain_http_confirmed: bool) -> CloudApiR
             Ok(url)
         }
         _ => Err(CloudApiError::UnsupportedScheme),
+    }
+}
+
+fn normalize_base_url_path(url: &mut Url) {
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
     }
 }
 
@@ -424,6 +431,19 @@ mod tests {
     fn transport_guard_accepts_https_without_confirmation() {
         let url = validate_cloud_host("https://clips.example.com", false).expect("url");
         assert_eq!(url.scheme(), "https");
+    }
+
+    #[test]
+    fn base_url_paths_are_normalized_with_trailing_slash() {
+        let url = Url::parse("https://clips.example.com/clipline").expect("url");
+        let client = CloudClient::new(url);
+        assert_eq!(
+            client.base_url().as_str(),
+            "https://clips.example.com/clipline/"
+        );
+
+        let url = validate_cloud_host("https://clips.example.com/clipline", false).expect("url");
+        assert_eq!(url.as_str(), "https://clips.example.com/clipline/");
     }
 
     #[test]

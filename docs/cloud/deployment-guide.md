@@ -155,7 +155,7 @@ CLIPLINE_VIDEO_OPTIMIZATION=off
 For an existing reverse proxy such as Nginx Proxy Manager, keep `CLIPLINE_PUBLIC_URL` set to the public
 `https://` URL and forward the proxy host to `http://<host-ip>:<CLIPLINE_HTTP_PORT>`. If the proxy has
 a stable source IP and you want audit logs and rate limits to use real client IPs, set
-`CLIPLINE_TRUSTED_PROXY_HOPS` to that proxy IP or CIDR.
+`CLIPLINE_TRUSTED_PROXY_HOPS` to that proxy IP address.
 
 Then start the app:
 
@@ -185,7 +185,7 @@ Use the default or Postgres/S3 profile, publish port `8080` on the host, and put
    - Request a certificate for `clips.example.com`.
 
 3. If your proxy sits at a known, trusted IP and you want audit logs to record real client IPs, set
-   `CLIPLINE_TRUSTED_PROXY_HOPS` to the proxy's IP (or container IP). `X-Forwarded-For` is ignored unless
+   `CLIPLINE_TRUSTED_PROXY_HOPS` to the proxy's IP address (or container IP). `X-Forwarded-For` is ignored unless
    the socket peer is a configured trusted proxy.
 
    ```sh

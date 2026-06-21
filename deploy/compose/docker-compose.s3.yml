@@ -8,6 +8,7 @@ services:
       - "${CLIPLINE_HTTP_PORT:-8080}:8080"
     environment:
       CLIPLINE_PUBLIC_URL: ${CLIPLINE_PUBLIC_URL:-http://localhost:8080}
+      CLIPLINE_ALLOW_INSECURE_PUBLIC_URL: ${CLIPLINE_ALLOW_INSECURE_PUBLIC_URL:-false}
       CLIPLINE_PROCESS_ROLE: ${CLIPLINE_WEB_PROCESS_ROLE:-all}
       CLIPLINE_DATABASE_URL: sqlite:///data/clipline.db
       CLIPLINE_STORAGE_BACKEND: s3
@@ -62,6 +63,7 @@ services:
         condition: service_healthy
     environment:
       CLIPLINE_PUBLIC_URL: ${CLIPLINE_PUBLIC_URL:-http://localhost:8080}
+      CLIPLINE_ALLOW_INSECURE_PUBLIC_URL: ${CLIPLINE_ALLOW_INSECURE_PUBLIC_URL:-false}
       CLIPLINE_PROCESS_ROLE: worker
       CLIPLINE_DATABASE_URL: sqlite:///data/clipline.db
       CLIPLINE_STORAGE_BACKEND: s3

@@ -308,7 +308,6 @@ fn router(
     auth: auth::AuthRuntime,
 ) -> Router {
     let static_files = ServeDir::new(&config.static_dir);
-    let max_body_bytes = usize::try_from(config.max_upload_size_bytes).unwrap_or(usize::MAX);
     let max_upload_request_body_bytes = upload_request_body_limit(&config);
 
     Router::new()
@@ -333,7 +332,9 @@ fn router(
         .merge(media::routes())
         .merge(uploads::routes(max_upload_request_body_bytes))
         .fallback_service(static_files)
-        .layer(DefaultBodyLimit::max(max_body_bytes))
+        .layer(DefaultBodyLimit::max(
+            config::DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+        ))
         .layer(middleware::from_fn_with_state(
             config.clone(),
             secure_headers,

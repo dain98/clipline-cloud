@@ -697,7 +697,7 @@ async fn create_user(
     let Some(password) = request.password.as_deref() else {
         return Err(ApiError::bad_request("password is required"));
     };
-    validate_new_password(&password)?;
+    validate_new_password(password)?;
 
     let mut new_user = NewUser::new(username, hash_password(password)?, role);
     new_user.display_name = normalized_display_name(request.display_name)?;
@@ -890,7 +890,7 @@ async fn update_user(
             .users
             .get(&id)
             .await?
-            .expect("updated user should exist"),
+            .ok_or_else(|| ApiError::conflict("user was deleted before the update completed"))?,
         0,
         settings.owner_user_id.as_deref(),
     )))
@@ -942,7 +942,7 @@ async fn update_me_profile(
         .users
         .get(&auth.user.id)
         .await?
-        .expect("updated user should exist");
+        .ok_or_else(|| ApiError::conflict("user was deleted before the update completed"))?;
     Ok(Json(user_response_for_state(&state, updated).await?))
 }
 
@@ -1006,7 +1006,7 @@ async fn update_me_avatar(
         .users
         .get(&auth.user.id)
         .await?
-        .expect("updated user should exist");
+        .ok_or_else(|| ApiError::conflict("user was deleted before the update completed"))?;
     Ok(Json(user_response_for_state(&state, updated).await?))
 }
 
@@ -1328,18 +1328,29 @@ async fn change_password(
     Extension(client_ip): Extension<ClientIp>,
     headers: HeaderMap,
     Json(request): Json<ChangePasswordRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Response, ApiError> {
     let auth = require_auth(&state, &headers).await?;
     require_csrf_for_cookie(&state, &headers, &auth)?;
     if !verify_password(&request.current_password, &auth.user.password_hash)? {
         return Err(ApiError::forbidden("current password is incorrect"));
     }
     validate_new_password(&request.new_password)?;
+    let keep_cookie_session = matches!(auth.kind, AuthKind::Cookie { .. });
 
     state
         .repositories
         .users
         .update_password_hash(&auth.user.id, &hash_password(&request.new_password)?)
+        .await?;
+    state
+        .repositories
+        .sessions
+        .revoke_for_user(&auth.user.id)
+        .await?;
+    state
+        .repositories
+        .device_tokens
+        .revoke_all_for_user(&auth.user.id)
         .await?;
     audit_with_ip(
         &state.repositories,
@@ -1351,7 +1362,36 @@ async fn change_password(
         None,
     )
     .await?;
-    Ok(Json(json!({ "status": "ok" })))
+
+    let mut body = json!({ "status": "ok" });
+    let mut set_cookie = None;
+    if keep_cookie_session {
+        let raw_token = generate_prefixed_token("clp_ses_");
+        let token_hash = hash_token(&raw_token);
+        let mut new_session = NewSession::new(
+            &auth.user.id,
+            &token_hash,
+            now_utc() + ChronoDuration::days(SESSION_TTL_DAYS),
+        );
+        new_session.user_agent = header_to_string(&headers, header::USER_AGENT.as_str());
+        new_session.ip_address = Some(client_ip.0);
+        let session = state.repositories.sessions.create(&new_session).await?;
+        body["csrf_token"] = json!(state.auth.csrf_token(&token_hash));
+        set_cookie = Some(session_cookie(
+            &raw_token,
+            Some(session.expires_at),
+            should_secure_cookie(&state.config),
+        ));
+    }
+
+    let mut response = Json(body).into_response();
+    if let Some(cookie) = set_cookie {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&cookie).expect("valid cookie"),
+        );
+    }
+    Ok(response)
 }
 
 #[derive(Debug, Clone)]
@@ -2092,6 +2132,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use axum::http::{HeaderName, HeaderValue};
     use axum::response::IntoResponse;
     use clipline_cloud_db::{
         new_ulid, Database, DeviceToken, NewDeviceToken, NewSession, NewUser, Repositories, Session,
@@ -2482,6 +2523,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn change_password_revokes_existing_sessions_and_tokens() {
+        let app = test_app().await;
+        let user = insert_user(&app.state, "password").await;
+        app.state
+            .repositories
+            .users
+            .update_password_hash(&user.id, &hash_password("old-password").expect("hash"))
+            .await
+            .expect("set password");
+        let old_session = insert_session(&app.state, &user.id).await;
+        let old_token = insert_device_token(&app.state, &user.id).await;
+        let (headers, current_session) = cookie_auth_headers(&app.state, &user.id).await;
+
+        let response = change_password(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            headers,
+            Json(ChangePasswordRequest {
+                current_password: "old-password".to_string(),
+                new_password: "new-password".to_string(),
+            }),
+        )
+        .await
+        .expect("change password");
+
+        assert!(response.headers().get(header::SET_COOKIE).is_some());
+        assert!(app
+            .state
+            .repositories
+            .sessions
+            .get(&old_session.id)
+            .await
+            .expect("old session")
+            .expect("old session")
+            .revoked_at
+            .is_some());
+        assert!(app
+            .state
+            .repositories
+            .sessions
+            .get(&current_session.id)
+            .await
+            .expect("current session")
+            .expect("current session")
+            .revoked_at
+            .is_some());
+        assert!(app
+            .state
+            .repositories
+            .device_tokens
+            .get(&old_token.id)
+            .await
+            .expect("old token")
+            .expect("old token")
+            .revoked_at
+            .is_some());
+        let updated = app
+            .state
+            .repositories
+            .users
+            .get(&user.id)
+            .await
+            .expect("user")
+            .expect("user");
+        assert!(verify_password("new-password", &updated.password_hash).expect("verify"));
+    }
+
+    #[tokio::test]
     async fn invitation_token_creates_user_with_claimed_profile() {
         let app = test_app().await;
         let admin = insert_user_with_role(&app.state, "invite-admin", "admin").await;
@@ -2645,6 +2754,36 @@ mod tests {
             HeaderValue::from_str(&format!("Bearer {raw_token}")).expect("authorization header"),
         );
         headers
+    }
+
+    async fn cookie_auth_headers(state: &AppState, user_id: &str) -> (HeaderMap, Session) {
+        let raw_token = format!("session-token-{}", new_ulid());
+        let token_hash = hash_token(&raw_token);
+        let session = state
+            .repositories
+            .sessions
+            .create(&NewSession::new(
+                user_id,
+                token_hash.clone(),
+                now_utc() + ChronoDuration::hours(1),
+            ))
+            .await
+            .expect("session");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{SESSION_COOKIE}={raw_token}")).expect("cookie"),
+        );
+        headers.insert(
+            HeaderName::from_static(CSRF_HEADER),
+            HeaderValue::from_str(&state.auth.csrf_token(&token_hash)).expect("csrf"),
+        );
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_str(&origin(&state.config.public_url)).expect("origin"),
+        );
+        (headers, session)
     }
 
     async fn insert_session(state: &AppState, user_id: &str) -> Session {

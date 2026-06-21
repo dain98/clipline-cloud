@@ -1,0 +1,5 @@
+[advisories]
+# `rsa` is retained in Cargo.lock through an inactive sqlx-mysql path, but the
+# workspace enables only sqlx sqlite/postgres features. `cargo tree -i rsa
+# --workspace` prints no reachable dependency path.
+ignore = ["RUSTSEC-2023-0071"]
