@@ -1342,6 +1342,8 @@ async fn change_password(
         .users
         .update_password_hash(&auth.user.id, &hash_password(&request.new_password)?)
         .await?;
+    // Password changes revoke every existing credential. Cookie callers receive
+    // a replacement browser session below; bearer/device-token callers must sign in again.
     state
         .repositories
         .sessions

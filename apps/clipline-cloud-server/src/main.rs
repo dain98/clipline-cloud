@@ -607,6 +607,16 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use clipline_cloud_db::NewUser;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    struct TestRouter {
+        app: Router,
+        repositories: Repositories,
+        _temp_dir: tempfile::TempDir,
+    }
 
     fn headers_with_xff(value: &'static str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -701,6 +711,103 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn global_body_limit_rejects_oversized_login_json() {
+        let test = test_router().await;
+        let request = request_with_connect_info(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"username":"test","password":"{}"}}"#,
+                    "x".repeat(config::DEFAULT_REQUEST_BODY_LIMIT_BYTES)
+                )))
+                .expect("request"),
+        );
+
+        let response = test.app.oneshot(request).await.expect("response");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn avatar_route_allows_body_larger_than_global_limit() {
+        let test = test_router().await;
+        let username = "avatar-limit-user";
+        let password = "correct-password";
+        test.repositories
+            .users
+            .create(&NewUser::new(
+                username,
+                auth::hash_password(password).expect("password hash"),
+                "user",
+            ))
+            .await
+            .expect("user");
+
+        let login_body = serde_json::to_vec(&json!({
+            "username": username,
+            "password": password,
+        }))
+        .expect("login body");
+        let login_request = request_with_connect_info(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(login_body))
+                .expect("login request"),
+        );
+        let login_response = test
+            .app
+            .clone()
+            .oneshot(login_request)
+            .await
+            .expect("login response");
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let cookie = login_response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .expect("session cookie")
+            .to_string();
+        let login_body = to_bytes(
+            login_response.into_body(),
+            config::DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+        )
+        .await
+        .expect("login response body");
+        let login_json: Value = serde_json::from_slice(&login_body).expect("login json");
+        let csrf_token = login_json
+            .get("csrf_token")
+            .and_then(Value::as_str)
+            .expect("csrf token");
+
+        let avatar_request = request_with_connect_info(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/me/avatar")
+                .header(header::CONTENT_TYPE, "image/png")
+                .header(header::COOKIE, cookie)
+                .header(header::ORIGIN, "http://localhost:8080")
+                .header(
+                    HeaderName::from_static("x-csrf-token"),
+                    HeaderValue::from_str(csrf_token).expect("csrf header"),
+                )
+                .body(Body::from(vec![
+                    0;
+                    config::DEFAULT_REQUEST_BODY_LIMIT_BYTES + 1
+                ]))
+                .expect("avatar request"),
+        );
+
+        let response = test.app.oneshot(avatar_request).await.expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[test]
     fn readiness_response_reports_not_ready_when_a_dependency_fails() {
         let (status, Json(body)) = readiness_response("ok", "ok", true);
@@ -720,5 +827,35 @@ mod tests {
         assert_eq!(body.status, "not_ready");
         assert_eq!(body.database, "ok");
         assert_eq!(body.storage, "error");
+    }
+
+    async fn test_router() -> TestRouter {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", temp_dir.path().join("clipline.db").display());
+        let config = Arc::new(Config::for_tests(
+            database_url.clone(),
+            temp_dir.path().join("data"),
+        ));
+        let database = Database::connect_and_migrate(&database_url)
+            .await
+            .expect("database");
+        let repositories = Repositories::new(database.clone());
+        let storage: SharedStorageBackend =
+            Arc::new(LocalStorage::new(temp_dir.path().join("data")));
+        let auth = auth::AuthRuntime::new(config.session_secret.as_deref());
+        let app = router(config, database, repositories.clone(), storage, auth);
+
+        TestRouter {
+            app,
+            repositories,
+            _temp_dir: temp_dir,
+        }
+    }
+
+    fn request_with_connect_info(mut request: Request<Body>) -> Request<Body> {
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080))));
+        request
     }
 }

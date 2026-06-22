@@ -96,7 +96,7 @@ route();
 async function route() {
   const routeRun = ++activeRouteRun;
   const routeKey = currentRouteKey();
-  const routeActive = () => routeRun === activeRouteRun && routeKey === currentRouteKey();
+  const routeActive = () => isCurrentRender(routeRun, routeKey);
   const current = currentRoute();
   syncSidebarForRoute(current.name);
   if (current.name === "public") {

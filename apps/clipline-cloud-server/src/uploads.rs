@@ -721,6 +721,9 @@ async fn enforce_upload_limits_after_create(
     storage_upload_id: Option<&str>,
     key: &ObjectKey,
 ) -> Result<(), ApiError> {
+    // This is a committed-state backstop for concurrent creates, not a
+    // serializable reservation. If the visible state is over limits, undo this
+    // newly-created session and any storage upload side effect.
     let active_uploads = state
         .repositories
         .upload_sessions
