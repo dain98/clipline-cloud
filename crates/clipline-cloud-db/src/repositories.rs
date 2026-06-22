@@ -356,7 +356,7 @@ impl AppSettingsRepository {
              FROM app_settings WHERE id = 1",
             []
         )?
-        .expect("app settings row should exist"))
+        .ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn update(&self, update: &UpdateAppSettings) -> DbResult<AppSettings> {
@@ -478,10 +478,7 @@ impl UserRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted user should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<User>> {
@@ -661,10 +658,7 @@ impl SessionRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted session should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<Session>> {
@@ -776,10 +770,7 @@ impl DeviceTokenRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted device token should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<DeviceToken>> {
@@ -912,10 +903,7 @@ impl ClipRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted clip should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<Clip>> {
@@ -1093,19 +1081,16 @@ impl ClipRepository {
     }
 
     pub async fn increment_view_count(&self, id: &str) -> DbResult<i64> {
-        db_execute!(
-            &self.database,
-            "UPDATE clips SET view_count = view_count + 1 WHERE id = ?",
-            [id]
-        )?;
-        Ok(db_fetch_optional!(
+        let row = db_fetch_optional!(
             &self.database,
             (i64,),
-            "SELECT view_count FROM clips WHERE id = ?",
+            "UPDATE clips
+             SET view_count = view_count + 1
+             WHERE id = ?
+             RETURNING view_count",
             [id]
-        )?
-        .map(|row| row.0)
-        .unwrap_or_default())
+        )?;
+        Ok(row.map(|row| row.0).unwrap_or_default())
     }
 
     pub async fn list_ready_with_storage_key(&self, limit: i64) -> DbResult<Vec<Clip>> {
@@ -1273,7 +1258,7 @@ impl ClipRepository {
             "UPDATE clips
              SET title = ?, description = ?, game_name = ?, game_id = ?, game_executable = ?,
                  source_type = ?, recorded_at = ?, duration_ms = ?, updated_at = ?
-             WHERE id = ?",
+             WHERE id = ? AND deleted_at IS NULL AND status <> 'deleted'",
             [
                 title,
                 description,
@@ -1734,10 +1719,7 @@ impl ClipCommentRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted clip comment should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<ClipComment>> {
@@ -1806,10 +1788,7 @@ impl ClipMarkerRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted clip marker should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<ClipMarker>> {
@@ -1879,10 +1858,7 @@ impl UploadSessionRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted upload session should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<UploadSession>> {
@@ -1952,34 +1928,38 @@ impl UploadSessionRepository {
         Ok(rows.into_iter().map(|row| row.0).collect())
     }
 
-    pub async fn update_received_size(&self, id: &str, received_size_bytes: i64) -> DbResult<()> {
-        db_execute!(
+    pub async fn update_received_size(&self, id: &str, received_size_bytes: i64) -> DbResult<bool> {
+        let rows = db_execute_rows!(
             &self.database,
-            "UPDATE upload_sessions SET received_size_bytes = ?, updated_at = ? WHERE id = ?",
+            "UPDATE upload_sessions
+             SET received_size_bytes = ?, updated_at = ?
+             WHERE id = ? AND status IN ('created','uploading')",
             [received_size_bytes, now_utc(), id]
         )?;
-        Ok(())
+        Ok(rows > 0)
     }
 
-    pub async fn mark_uploading(&self, id: &str, received_size_bytes: i64) -> DbResult<()> {
-        db_execute!(
+    pub async fn mark_uploading(&self, id: &str, received_size_bytes: i64) -> DbResult<bool> {
+        let rows = db_execute_rows!(
             &self.database,
-            "UPDATE upload_sessions SET status = 'uploading', received_size_bytes = ?, updated_at = ? WHERE id = ?",
+            "UPDATE upload_sessions
+             SET status = 'uploading', received_size_bytes = ?, updated_at = ?
+             WHERE id = ? AND status IN ('created','uploading')",
             [received_size_bytes, now_utc(), id]
         )?;
-        Ok(())
+        Ok(rows > 0)
     }
 
-    pub async fn complete(&self, id: &str) -> DbResult<()> {
+    pub async fn complete(&self, id: &str) -> DbResult<bool> {
         let now = now_utc();
-        db_execute!(
+        let rows = db_execute_rows!(
             &self.database,
             "UPDATE upload_sessions
              SET status = 'completed', completed_at = ?, failure_reason = NULL, failed_at = NULL, updated_at = ?
-             WHERE id = ?",
+             WHERE id = ? AND status IN ('created','uploading')",
             [now, now, id]
         )?;
-        Ok(())
+        Ok(rows > 0)
     }
 
     pub async fn abort(&self, id: &str) -> DbResult<()> {
@@ -2040,14 +2020,6 @@ impl UploadSessionRepository {
     pub async fn delete_for_clip(&self, clip_id: &str) -> DbResult<()> {
         db_execute!(
             &self.database,
-            "DELETE FROM upload_parts
-             WHERE upload_session_id IN (
-               SELECT id FROM upload_sessions WHERE clip_id = ?
-             )",
-            [clip_id]
-        )?;
-        db_execute!(
-            &self.database,
             "DELETE FROM upload_sessions WHERE clip_id = ?",
             [clip_id]
         )?;
@@ -2088,7 +2060,7 @@ impl UploadPartRepository {
         Ok(self
             .get(&new.upload_session_id, new.part_number)
             .await?
-            .expect("upserted upload part should exist"))
+            .ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(
@@ -2180,7 +2152,7 @@ impl JobRepository {
             ]
         )?;
 
-        Ok(self.get(&new.id).await?.expect("inserted job should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<Job>> {
@@ -2292,6 +2264,17 @@ impl JobRepository {
         Ok(())
     }
 
+    pub async fn mark_succeeded_if_locked(&self, id: &str, runner_id: &str) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE jobs
+             SET status = 'succeeded', locked_by = NULL, locked_at = NULL, last_error = NULL, updated_at = ?
+             WHERE id = ? AND status = 'running' AND locked_by = ?",
+            [now_utc(), id, runner_id]
+        )?;
+        Ok(rows > 0)
+    }
+
     pub async fn mark_retry(
         &self,
         id: &str,
@@ -2310,6 +2293,25 @@ impl JobRepository {
         Ok(())
     }
 
+    pub async fn mark_retry_if_locked(
+        &self,
+        id: &str,
+        runner_id: &str,
+        attempts: i64,
+        next_run_at: chrono::DateTime<chrono::Utc>,
+        last_error: &str,
+    ) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE jobs
+             SET status = 'pending', attempts = ?, next_run_at = ?, locked_by = NULL, locked_at = NULL,
+                 last_error = ?, updated_at = ?
+             WHERE id = ? AND status = 'running' AND locked_by = ?",
+            [attempts, next_run_at, last_error, now_utc(), id, runner_id]
+        )?;
+        Ok(rows > 0)
+    }
+
     pub async fn mark_dead(&self, id: &str, attempts: i64, last_error: &str) -> DbResult<()> {
         db_execute!(
             &self.database,
@@ -2320,6 +2322,36 @@ impl JobRepository {
             [attempts, last_error, now_utc(), id]
         )?;
         Ok(())
+    }
+
+    pub async fn mark_dead_if_locked(
+        &self,
+        id: &str,
+        runner_id: &str,
+        attempts: i64,
+        last_error: &str,
+    ) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE jobs
+             SET status = 'dead', attempts = ?, locked_by = NULL, locked_at = NULL,
+                 last_error = ?, updated_at = ?
+             WHERE id = ? AND status = 'running' AND locked_by = ?",
+            [attempts, last_error, now_utc(), id, runner_id]
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub async fn touch_lock(&self, id: &str, runner_id: &str) -> DbResult<bool> {
+        let now = now_utc();
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE jobs
+             SET locked_at = ?, updated_at = ?
+             WHERE id = ? AND status = 'running' AND locked_by = ?",
+            [now, now, id, runner_id]
+        )?;
+        Ok(rows > 0)
     }
 
     pub async fn list_dead(&self, limit: i64) -> DbResult<Vec<Job>> {
@@ -2402,10 +2434,7 @@ impl AuditLogRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted audit log entry should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<AuditLogEntry>> {
@@ -2454,10 +2483,7 @@ impl ResetPasswordTokenRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted reset password token should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<ResetPasswordToken>> {
@@ -2541,10 +2567,7 @@ impl InvitationTokenRepository {
             ]
         )?;
 
-        Ok(self
-            .get(&new.id)
-            .await?
-            .expect("inserted invitation token should exist"))
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<InvitationToken>> {

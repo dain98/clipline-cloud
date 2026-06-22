@@ -15,6 +15,7 @@ const app = document.querySelector("#app");
 const sidebarStorageKey = "clipline.sidebarCollapsed";
 const playerVolumeStorageKey = "clipline.playerVolume";
 let activePlayerCleanup = null;
+let activeRouteRun = 0;
 
 const state = {
   user: null,
@@ -93,11 +94,15 @@ document.addEventListener("click", onDocumentClick);
 route();
 
 async function route() {
+  const routeRun = ++activeRouteRun;
+  const routeKey = currentRouteKey();
+  const routeActive = () => isCurrentRender(routeRun, routeKey);
   const current = currentRoute();
   syncSidebarForRoute(current.name);
   if (current.name === "public") {
     if (!state.user) {
       await refreshSession();
+      if (!routeActive()) return;
     }
     await renderPublicShare(current.shareId);
     return;
@@ -105,6 +110,7 @@ async function route() {
   if (current.name === "publicLibrary" || current.name === "publicGame") {
     if (!state.user) {
       await refreshSession();
+      if (!routeActive()) return;
     }
     await renderPublicLibrary(current);
     return;
@@ -112,6 +118,7 @@ async function route() {
   if (current.name === "about") {
     if (!state.user) {
       await refreshSession();
+      if (!routeActive()) return;
     }
     await renderAbout();
     return;
@@ -119,6 +126,7 @@ async function route() {
   if (current.name === "publicUser") {
     if (!state.user) {
       await refreshSession();
+      if (!routeActive()) return;
     }
     await renderPublicUser(current.username);
     return;
@@ -139,6 +147,7 @@ async function route() {
 
   if (!state.user) {
     const authenticated = await refreshSession();
+    if (!routeActive()) return;
     if (!authenticated) {
       navigate("/login");
       return;
@@ -166,7 +175,7 @@ async function route() {
 function currentRoute() {
   const path = window.location.pathname;
   if (path.startsWith("/c/")) {
-    return { name: "public", shareId: decodeURIComponent(path.slice(3)) };
+    return { name: "public", shareId: safeDecodeURIComponent(path.slice(3)) };
   }
   if (path === "/" || path === "/public" || path === "/search") {
     return { name: "publicLibrary", query: publicRouteQuery() };
@@ -174,7 +183,7 @@ function currentRoute() {
   if (path.startsWith("/game/")) {
     return {
       name: "publicGame",
-      game: decodeURIComponent(path.slice(6)),
+      game: safeDecodeURIComponent(path.slice(6)),
       query: publicRouteQuery(),
     };
   }
@@ -182,13 +191,13 @@ function currentRoute() {
     return { name: "about" };
   }
   if (path.startsWith("/u/")) {
-    return { name: "publicUser", username: decodeURIComponent(path.slice(3)) };
+    return { name: "publicUser", username: safeDecodeURIComponent(path.slice(3)) };
   }
   if (path === "/library") {
     return { name: "library" };
   }
   if (path.startsWith("/clip/")) {
-    return { name: "clip", clipId: decodeURIComponent(path.slice(6)) };
+    return { name: "clip", clipId: safeDecodeURIComponent(path.slice(6)) };
   }
   if (path === "/admin") {
     return {
@@ -216,9 +225,45 @@ function currentRoute() {
   return { name: "publicLibrary" };
 }
 
+function currentRouteKey() {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+function isCurrentRender(routeRun, routeKey) {
+  return routeRun === activeRouteRun && routeKey === currentRouteKey();
+}
+
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (_) {
+    return value;
+  }
+}
+
 function navigate(path) {
   window.history.pushState({}, "", path);
   route();
+}
+
+async function withSubmitLock(event, handler) {
+  event.preventDefault();
+  const submitter = event.submitter;
+  if (submitter?.dataset.submitting === "true") {
+    return;
+  }
+  if (submitter) {
+    submitter.dataset.submitting = "true";
+    submitter.disabled = true;
+  }
+  try {
+    await handler();
+  } finally {
+    if (submitter?.isConnected) {
+      submitter.disabled = false;
+      delete submitter.dataset.submitting;
+    }
+  }
 }
 
 function publicRouteQuery() {
@@ -315,8 +360,7 @@ function renderLogin(error = "") {
       </section>
     </main>
   `;
-  document.querySelector("#login-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#login-form").addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const form = new FormData(event.currentTarget);
     try {
       const data = await api("/api/v1/auth/login", {
@@ -332,7 +376,7 @@ function renderLogin(error = "") {
     } catch (loginError) {
       renderLogin(loginError.message);
     }
-  });
+  }));
 }
 
 function renderResetPassword(token, isInvite = false, error = "") {
@@ -379,8 +423,7 @@ function renderResetPassword(token, isInvite = false, error = "") {
       </section>
     </main>
   `;
-  document.querySelector("#reset-password-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#reset-password-form")?.addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const form = new FormData(event.currentTarget);
     try {
       const body = {
@@ -401,7 +444,7 @@ function renderResetPassword(token, isInvite = false, error = "") {
     } catch (resetError) {
       renderResetPassword(token, isInvite, resetError.message);
     }
-  });
+  }));
 }
 
 function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
@@ -631,6 +674,8 @@ async function logout() {
 }
 
 async function renderLibrary() {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "library",
     title: "Library",
@@ -640,6 +685,7 @@ async function renderLibrary() {
 
   try {
     const data = await api(`/api/v1/clips?${libraryParams().toString()}`);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     syncSelectedClips(data.clips);
     renderShell({
       active: "library",
@@ -649,6 +695,7 @@ async function renderLibrary() {
     });
     bindLibraryEvents();
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "library",
       title: "Library",
@@ -714,7 +761,7 @@ function libraryView(clips) {
           ["unlisted", "Unlisted"],
         ])}
         ${selectField("Status", "status", state.libraryQuery.status, [
-          ["", "Ready"],
+          ["", "Any"],
           ["created", "Created"],
           ["uploading", "Uploading"],
           ["processing", "Processing"],
@@ -876,6 +923,8 @@ function bindLibraryEvents() {
 }
 
 async function renderPublicLibrary(routeState = currentRoute()) {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   syncPublicQueryFromRoute(routeState);
   renderPublicLibraryPage({
     title: publicLibraryTitle(),
@@ -889,6 +938,7 @@ async function renderPublicLibrary(routeState = currentRoute()) {
       api(`/api/v1/public/clips?${publicLibraryParams().toString()}`),
       api("/api/v1/public/games").catch(() => ({ games: [] })),
     ]);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     state.publicGames = Array.isArray(gamesData.games) ? gamesData.games : [];
     state.publicQuery.page = Number(data.page || state.publicQuery.page || 1);
     renderPublicLibraryPage({
@@ -901,6 +951,7 @@ async function renderPublicLibrary(routeState = currentRoute()) {
     });
     bindPublicLibraryEvents();
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderPublicLibraryPage({
       title: publicLibraryTitle(),
       body: publicLibraryView([], {
@@ -1214,6 +1265,8 @@ function authorAvatarLink(clip, authorName) {
 }
 
 async function renderPublicUser(username) {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "public",
     title: "Profile",
@@ -1223,6 +1276,7 @@ async function renderPublicUser(username) {
 
   try {
     const profile = await api(`/api/v1/public/users/${encodeURIComponent(username)}`);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "public",
       title: displayUserName(profile),
@@ -1230,6 +1284,7 @@ async function renderPublicUser(username) {
       hideTopbar: true,
     });
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "public",
       title: "Profile unavailable",
@@ -1270,6 +1325,8 @@ function publicUserView(profile) {
 }
 
 async function renderAbout() {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "about",
     title: "About",
@@ -1284,6 +1341,7 @@ async function renderAbout() {
   } catch (error) {
     flash(error.message, "error");
   }
+  if (!isCurrentRender(routeRun, routeKey)) return;
 
   renderShell({
     active: "about",
@@ -1421,6 +1479,8 @@ function updateBulkControls() {
 }
 
 async function renderClipDetail(id) {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "library",
     title: "Clip detail",
@@ -1431,6 +1491,7 @@ async function renderClipDetail(id) {
 
   try {
     const clip = await api(`/api/v1/clips/${encodeURIComponent(id)}`);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "library",
       title: "Clip detail",
@@ -1440,6 +1501,7 @@ async function renderClipDetail(id) {
     });
     bindClipDetailEvents(clip);
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "library",
       title: "Clip detail",
@@ -1661,7 +1723,6 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       pendingSeek = null;
       video.currentTime = target;
     }
-    updateProgress(target);
   }
 
   function seekBy(seconds) {
@@ -2054,8 +2115,7 @@ function bindClipDetailEvents(clip) {
       titleInput.value = clip.title;
     }
   });
-  titleForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  titleForm?.addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const form = new FormData(event.currentTarget);
     try {
       await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, {
@@ -2070,10 +2130,9 @@ function bindClipDetailEvents(clip) {
       flash(error.message, "error");
       renderClipDetail(clip.id);
     }
-  });
+  }));
 
-  document.querySelector("#clip-description-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#clip-description-form")?.addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const form = new FormData(event.currentTarget);
     try {
       await api(`/api/v1/clips/${encodeURIComponent(clip.id)}`, {
@@ -2088,7 +2147,7 @@ function bindClipDetailEvents(clip) {
       flash(error.message, "error");
       renderClipDetail(clip.id);
     }
-  });
+  }));
 
   document.querySelector("#clip-visibility-button").addEventListener("click", async () => {
     const visibility = document.querySelector("[name='detail_visibility']").value;
@@ -2136,6 +2195,8 @@ function markerItem(marker) {
 }
 
 async function renderPublicShare(shareId) {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderPublicSharePage({
     title: "Loading clip",
     body: `
@@ -2146,6 +2207,7 @@ async function renderPublicShare(shareId) {
   });
   try {
     const clip = await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}`);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     const mediaUrl = safeMediaUrl(clip.media_url);
     const thumbnailUrl = safeMediaUrl(clip.thumbnail_url);
     const authorName = publicAuthorName(clip);
@@ -2162,6 +2224,7 @@ async function renderPublicShare(shareId) {
     recordPublicView(clip.share_id);
     hydratePublicShareSideData(clip);
   } catch (_) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderPublicSharePage({
       title: "Clip unavailable",
       body: `
@@ -2321,8 +2384,7 @@ function publicCommentItem(comment, shareId) {
 }
 
 function bindPublicShareEvents(shareId) {
-  document.querySelector("#public-comment-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#public-comment-form")?.addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const form = new FormData(event.currentTarget);
     try {
       await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`, {
@@ -2337,7 +2399,7 @@ function bindPublicShareEvents(shareId) {
       flash(error.message, "error");
       renderPublicShare(shareId);
     }
-  });
+  }));
 
   document.querySelectorAll("[data-delete-comment]").forEach((button) => {
     button.addEventListener("click", async (event) => {
@@ -2377,6 +2439,9 @@ async function recordPublicView(shareId) {
       method: "POST",
       body: {},
     });
+    if (currentRoute().name !== "public" || currentRoute().shareId !== shareId) {
+      return;
+    }
     document.querySelector("[data-public-view-count]")?.replaceChildren(document.createTextNode(formatViews(result.view_count)));
   } catch (_) {
     // View count is non-critical.
@@ -2436,6 +2501,8 @@ function renderPublicSharePage({ title, subtitle, body }) {
 }
 
 async function renderProfile() {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "profile",
     title: "Profile",
@@ -2445,6 +2512,7 @@ async function renderProfile() {
 
   try {
     await refreshSession();
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "profile",
       title: "Profile",
@@ -2453,6 +2521,7 @@ async function renderProfile() {
     });
     bindProfileEvents();
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "profile",
       title: "Profile",
@@ -2503,8 +2572,7 @@ function profileView(user) {
 }
 
 function bindProfileEvents() {
-  document.querySelector("#profile-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#profile-form")?.addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const form = new FormData(event.currentTarget);
     try {
       const user = await api("/api/v1/me/profile", {
@@ -2521,10 +2589,9 @@ function bindProfileEvents() {
       flash(error.message, "error");
       renderProfile();
     }
-  });
+  }));
 
-  document.querySelector("#avatar-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  document.querySelector("#avatar-form")?.addEventListener("submit", (event) => withSubmitLock(event, async () => {
     const file = event.currentTarget.elements.avatar?.files?.[0];
     if (!file) {
       flash("Choose an avatar image first.", "error");
@@ -2540,7 +2607,7 @@ function bindProfileEvents() {
       flash(error.message, "error");
       renderProfile();
     }
-  });
+  }));
 }
 
 async function uploadAvatar(file) {
@@ -2564,6 +2631,8 @@ async function uploadAvatar(file) {
 }
 
 async function renderAccount() {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "account",
     title: "Account",
@@ -2576,6 +2645,7 @@ async function renderAccount() {
       api("/api/v1/auth/sessions"),
       api("/api/v1/auth/device-tokens"),
     ]);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "account",
       title: "Account",
@@ -2584,6 +2654,7 @@ async function renderAccount() {
     });
     bindAccountEvents();
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "account",
       title: "Account",
@@ -2724,6 +2795,8 @@ function bindAccountEvents() {
 }
 
 async function renderAdmin(tab) {
+  const routeRun = activeRouteRun;
+  const routeKey = currentRouteKey();
   renderShell({
     active: "admin",
     title: "Admin",
@@ -2740,6 +2813,7 @@ async function renderAdmin(tab) {
       api("/api/v1/admin/jobs/dead?limit=50"),
       api("/api/v1/admin/jobs/recent-errors?limit=50"),
     ]);
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "admin",
       title: "Admin",
@@ -2748,6 +2822,7 @@ async function renderAdmin(tab) {
     });
     bindAdminEvents();
   } catch (error) {
+    if (!isCurrentRender(routeRun, routeKey)) return;
     renderShell({
       active: "admin",
       title: "Admin",
@@ -3048,8 +3123,7 @@ function jobItem(job) {
 function bindAdminEvents() {
   const createForm = document.querySelector("#create-user-form");
   if (createForm) {
-    createForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
+    createForm.addEventListener("submit", (event) => withSubmitLock(event, async () => {
       const form = new FormData(event.currentTarget);
       try {
         await api("/api/v1/users", {
@@ -3069,13 +3143,12 @@ function bindAdminEvents() {
         flash(error.message, "error");
         renderAdmin("users");
       }
-    });
+    }));
   }
 
   const inviteForm = document.querySelector("#invite-link-form");
   if (inviteForm) {
-    inviteForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
+    inviteForm.addEventListener("submit", (event) => withSubmitLock(event, async () => {
       const form = new FormData(event.currentTarget);
       const intent = event.submitter?.value === "email" ? "email" : "link";
       try {
@@ -3094,13 +3167,12 @@ function bindAdminEvents() {
         flash(error.message, "error");
         renderAdmin("users");
       }
-    });
+    }));
   }
 
   const settingsForm = document.querySelector("#admin-settings-form");
   if (settingsForm) {
-    settingsForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
+    settingsForm.addEventListener("submit", (event) => withSubmitLock(event, async () => {
       const form = new FormData(event.currentTarget);
       const body = {
         allow_vod_uploads: form.get("allow_vod_uploads") === "on",
@@ -3134,7 +3206,7 @@ function bindAdminEvents() {
         flash(error.message, "error");
         renderAdmin("settings");
       }
-    });
+    }));
   }
 
   document.querySelectorAll("[data-user-action]").forEach((button) => {
@@ -3416,7 +3488,7 @@ function formatRelativeTime(value) {
   if (Number.isNaN(date.getTime())) {
     return "Unknown";
   }
-  const diffMs = date.getTime() - Date.now();
+  const diffMs = Math.min(0, date.getTime() - Date.now());
   const units = [
     ["year", 365 * 24 * 60 * 60 * 1000],
     ["month", 30 * 24 * 60 * 60 * 1000],

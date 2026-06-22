@@ -21,6 +21,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     fs::{self, File, OpenOptions},
@@ -352,7 +353,7 @@ impl LocalStorage {
         self.probe().await?;
         let sorted_parts = validate_completed_parts(parts)?;
         let final_path = self.path_for_key(key);
-        let tmp_path = append_suffix(&final_path, ".tmp");
+        let tmp_path = unique_tmp_path(&final_path);
 
         if let Some(parent) = final_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -379,7 +380,7 @@ impl LocalStorage {
                 )));
             }
 
-            let expected_etag = local_part_etag(part.part_number, part.size_bytes);
+            let expected_etag = local_part_etag_for_path(part.part_number, &part_path).await?;
             if part.etag != expected_etag {
                 return Err(StorageError::InvalidPart(format!(
                     "part {} etag mismatch",
@@ -483,7 +484,7 @@ impl StorageBackend for LocalStorage {
     ) -> StorageResult<ObjectMetadata> {
         self.probe().await?;
         let final_path = self.path_for_key(key);
-        let tmp_path = append_suffix(&final_path, ".tmp");
+        let tmp_path = unique_tmp_path(&final_path);
 
         if let Some(parent) = final_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -603,7 +604,7 @@ impl StorageBackend for LocalStorage {
         self.probe().await?;
         let source_path = self.path_for_key(source_key);
         let final_path = self.path_for_key(target_key);
-        let tmp_path = append_suffix(&final_path, ".tmp");
+        let tmp_path = unique_tmp_path(&final_path);
 
         if let Some(parent) = final_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -629,9 +630,7 @@ impl StorageBackend for LocalStorage {
 
     async fn head_object(&self, key: &ObjectKey) -> StorageResult<ObjectMetadata> {
         let path = self.path_for_key(key);
-        let file_metadata = fs::metadata(&path)
-            .await
-            .map_err(|error| map_not_found(error, key.to_string()))?;
+        let file_metadata = local_regular_file_metadata(&path, key).await?;
 
         let sidecar = read_local_sidecar(&path).await?;
         Ok(ObjectMetadata {
@@ -772,7 +771,7 @@ impl StorageBackend for LocalStorage {
     ) -> StorageResult<PartResult> {
         validate_part_number(part_number)?;
         let part_path = self.part_path(upload_id, part_number)?;
-        let tmp_path = append_suffix(&part_path, ".tmp");
+        let tmp_path = unique_tmp_path(&part_path);
         if let Some(parent) = part_path.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -791,7 +790,7 @@ impl StorageBackend for LocalStorage {
 
         Ok(PartResult {
             part_number,
-            etag: local_part_etag(part_number, bytes.len() as u64),
+            etag: local_part_etag(part_number, &bytes),
             size_bytes: bytes.len() as u64,
         })
     }
@@ -1081,14 +1080,26 @@ impl StorageBackend for S3Storage {
         key: &ObjectKey,
         range: Option<ByteRange>,
     ) -> StorageResult<StoredObject> {
+        let metadata = self.head_object(key).await?;
+        let content_range = range
+            .as_ref()
+            .map(|range| {
+                normalize_range(range, metadata.size_bytes).map(|end| ContentRange {
+                    start: range.start,
+                    end_inclusive: end,
+                    total_size: metadata.size_bytes,
+                })
+            })
+            .transpose()?;
         let physical_key = self.physical_key(key);
         let mut request = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(physical_key);
-        if let Some(range) = &range {
-            request = request.range(range.s3_header_value());
+        if let Some(range) = &content_range {
+            request = request
+                .range(ByteRange::new(range.start, Some(range.end_inclusive)).s3_header_value());
         }
 
         let output = request.send().await.map_err(s3_error)?;
@@ -1097,19 +1108,6 @@ impl StorageBackend for S3Storage {
             .collect()
             .await
             .map_err(|error| StorageError::S3(error.to_string()))?;
-        let metadata = self.head_object(key).await?;
-        let content_range = range
-            .as_ref()
-            .and_then(|range| {
-                normalize_range(range, metadata.size_bytes)
-                    .ok()
-                    .map(|end| (range, end))
-            })
-            .map(|(range, end)| ContentRange {
-                start: range.start,
-                end_inclusive: end,
-                total_size: metadata.size_bytes,
-            });
 
         Ok(StoredObject {
             bytes: body.into_bytes(),
@@ -1145,13 +1143,14 @@ impl StorageBackend for S3Storage {
             .get_object()
             .bucket(&self.bucket)
             .key(physical_key);
-        if let Some(range) = &range {
-            request = request.range(range.s3_header_value());
+        if let Some(range) = &content_range {
+            request = request
+                .range(ByteRange::new(range.start, Some(range.end_inclusive)).s3_header_value());
         }
 
         let output = request.send().await.map_err(s3_error)?;
         Ok(StoredObjectStream {
-            reader: Box::pin(output.body.into_async_read()),
+            reader: Box::pin(output.body.into_async_read().take(content_length)),
             metadata,
             content_range,
             content_length,
@@ -1394,7 +1393,7 @@ impl StorageBackend for S3Storage {
             .collect();
 
         Ok(Some(PresignedUploadPartUrl {
-            url: Url::parse(&presigned.uri().to_string())?,
+            url: Url::parse(presigned.uri())?,
             expires_at,
             headers,
         }))
@@ -1467,7 +1466,7 @@ impl StorageBackend for S3Storage {
             .await
             .map_err(s3_error)?;
 
-        Ok(Some(Url::parse(&presigned.uri().to_string())?))
+        Ok(Some(Url::parse(presigned.uri())?))
     }
 }
 
@@ -1630,11 +1629,20 @@ fn validate_completed_parts(
     let mut sorted = parts.to_vec();
     sorted.sort_by_key(|part| part.part_number);
     let mut previous = None;
-    for part in &sorted {
+    for (index, part) in sorted.iter().enumerate() {
         validate_part_number(part.part_number)?;
         if Some(part.part_number) == previous {
             return Err(StorageError::InvalidPart(format!(
                 "duplicate part {}",
+                part.part_number
+            )));
+        }
+        let expected_part_number = u16::try_from(index + 1).map_err(|_| {
+            StorageError::InvalidPart("multipart completion has too many parts".to_string())
+        })?;
+        if part.part_number != expected_part_number {
+            return Err(StorageError::InvalidPart(format!(
+                "multipart completion parts must be contiguous from 1; expected part {expected_part_number}, got {}",
                 part.part_number
             )));
         }
@@ -1697,6 +1705,23 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    append_suffix(path, &format!(".{}.tmp", generate_upload_id()))
+}
+
+async fn local_regular_file_metadata(
+    path: &Path,
+    key: &ObjectKey,
+) -> StorageResult<std::fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)
+        .await
+        .map_err(|error| map_not_found(error, key.to_string()))?;
+    if !metadata.file_type().is_file() {
+        return Err(StorageError::NotFound(key.to_string()));
+    }
+    Ok(metadata)
+}
+
 async fn local_object_etag(path: &Path) -> StorageResult<String> {
     let metadata = fs::metadata(path).await?;
     Ok(fallback_local_etag(&metadata))
@@ -1712,8 +1737,23 @@ fn fallback_local_etag(metadata: &std::fs::Metadata) -> String {
     format!("local-{}-{modified_nanos}", metadata.len())
 }
 
-fn local_part_etag(part_number: u16, size_bytes: u64) -> String {
-    format!("local-part-{part_number}-{size_bytes}")
+fn local_part_etag(part_number: u16, bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("local-part-{part_number}-{}", hex_bytes(&digest))
+}
+
+async fn local_part_etag_for_path(part_number: u16, path: &Path) -> StorageResult<String> {
+    let bytes = fs::read(path).await?;
+    Ok(local_part_etag(part_number, &bytes))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn map_not_found(error: std::io::Error, key: String) -> StorageError {
@@ -1964,6 +2004,43 @@ mod tests {
             .expect("complete");
         let object = storage.get_object(&key, None).await.expect("object");
         assert_eq!(object.bytes, Bytes::from_static(b"hello world"));
+    }
+
+    #[tokio::test]
+    async fn local_multipart_completion_rejects_gapped_or_wrong_etag_parts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let storage = LocalStorage::new(temp_dir.path());
+        let key = MediaObjectKeys::generate().expect("keys").source;
+        let upload_id = storage
+            .create_multipart_upload(&key)
+            .await
+            .expect("upload id");
+        let part1 = storage
+            .upload_part(&upload_id, &key, 1, Bytes::from_static(b"hello "))
+            .await
+            .expect("part 1");
+        let part3 = storage
+            .upload_part(&upload_id, &key, 3, Bytes::from_static(b"world"))
+            .await
+            .expect("part 3");
+
+        assert!(matches!(
+            storage
+                .complete_multipart_upload(&upload_id, &key, &[part1.clone().into(), part3.into()])
+                .await
+                .expect_err("gapped parts"),
+            StorageError::InvalidPart(_)
+        ));
+
+        let mut wrong_etag: CompletedUploadPart = part1.into();
+        wrong_etag.etag = "local-part-1-wrong".to_string();
+        assert!(matches!(
+            storage
+                .complete_multipart_upload(&upload_id, &key, &[wrong_etag])
+                .await
+                .expect_err("wrong etag"),
+            StorageError::InvalidPart(_)
+        ));
     }
 
     #[tokio::test]

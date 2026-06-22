@@ -17,7 +17,7 @@ use ulid::Ulid;
 
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
 static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("./migrations/postgres");
-const POSTGRES_MIGRATION_ADVISORY_LOCK_ID: i64 = 0x434c_504c_494e_45;
+const POSTGRES_MIGRATION_ADVISORY_LOCK_ID: i64 = 0x0043_4c50_4c49_4e45;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
@@ -687,11 +687,11 @@ mod tests {
             ))
             .await
             .expect("create upload session");
-        repos
+        assert!(repos
             .upload_sessions
             .update_received_size(&upload_session.id, 512)
             .await
-            .expect("update received");
+            .expect("update received"));
         repos
             .upload_parts
             .upsert(&NewUploadPart::new(&upload_session.id, 1, 512))
@@ -706,11 +706,11 @@ mod tests {
                 .len(),
             1
         );
-        repos
+        assert!(repos
             .upload_sessions
             .complete(&upload_session.id)
             .await
-            .expect("complete upload");
+            .expect("complete upload"));
 
         let job = repos
             .jobs
@@ -1101,20 +1101,23 @@ mod tests {
             Some("storage temporarily unavailable")
         );
         assert!(failed.failed_at.is_some());
-        repos
+        assert!(!repos
             .upload_sessions
             .complete(&active.id)
             .await
-            .expect("complete after failure");
-        let completed = repos
+            .expect("complete after failure"));
+        let failed = repos
             .upload_sessions
             .get(&active.id)
             .await
-            .expect("get completed")
-            .expect("completed");
-        assert_eq!(completed.status, "completed");
-        assert_eq!(completed.failure_reason, None);
-        assert_eq!(completed.failed_at, None);
+            .expect("get failed")
+            .expect("failed");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(
+            failed.failure_reason.as_deref(),
+            Some("storage temporarily unavailable")
+        );
+        assert!(failed.failed_at.is_some());
 
         let cleanup_kind = format!("cleanup_session_{test_id}");
         let global_job = repos

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, future::Future, time::Duration};
 
 use chrono::Duration as ChronoDuration;
 use clipline_cloud_db::{now_utc, Clip, Job, NewJob, Repositories, UploadSession};
@@ -8,7 +8,11 @@ use clipline_cloud_storage::{
 use rand::{rngs::OsRng, Rng};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::{io::AsyncReadExt, sync::watch, time::sleep};
+use tokio::{
+    io::AsyncReadExt,
+    sync::watch,
+    time::{sleep, MissedTickBehavior},
+};
 use tracing::{debug, error, info, warn};
 
 use crate::media_processing::{
@@ -268,103 +272,161 @@ impl JobRunner {
             max_attempts = job.max_attempts,
         );
         if job.attempts > job.max_attempts {
-            self.repositories
-                .jobs
-                .mark_dead(
-                    &job.id,
-                    job.attempts,
-                    "job lock expired after maximum attempts",
-                )
-                .await?;
-            warn!(
-                event = "jobs.dead",
-                job_id = %job.id,
-                kind = %job.kind,
-                attempts = job.attempts,
-                message = "job lock expired after maximum attempts",
-            );
+            self.handle_dead_job(
+                &job,
+                job.attempts,
+                "job lock expired after maximum attempts",
+            )
+            .await?;
             return Ok(());
         }
 
-        let result = match job.kind.as_str() {
-            VALIDATE_OBJECT_KIND => self.validate_object(&job).await,
-            PROBE_METADATA_KIND => self.probe_metadata(&job).await,
-            OPTIMIZE_VIDEO_KIND => self.optimize_video(&job).await,
-            THUMBNAIL_KIND => self.generate_thumbnail(&job).await,
-            POSTER_KIND => self.generate_poster(&job).await,
-            CLEANUP_SESSION_KIND => self.cleanup_sessions(&job).await,
-            CLEANUP_CLIP_KIND => self.cleanup_clips(&job).await,
-            other => Err(JobRunnerError::InvalidJob(format!(
-                "unknown job kind {other:?}"
-            ))),
-        };
+        let result = run_with_heartbeat(
+            self.repositories.jobs.clone(),
+            job.id.clone(),
+            self.config.runner_id.clone(),
+            self.config.lock_timeout,
+            Box::pin(self.execute_claimed_job(&job)),
+        )
+        .await;
 
         match result {
             Ok(()) => {
-                self.repositories.jobs.mark_succeeded(&job.id).await?;
-                info!(event = "jobs.succeeded", job_id = %job.id, kind = %job.kind);
+                if self
+                    .repositories
+                    .jobs
+                    .mark_succeeded_if_locked(&job.id, &self.config.runner_id)
+                    .await?
+                {
+                    info!(event = "jobs.succeeded", job_id = %job.id, kind = %job.kind);
+                } else {
+                    warn!(
+                        event = "jobs.lock_lost_before_success_mark",
+                        job_id = %job.id,
+                        kind = %job.kind,
+                    );
+                }
             }
             Err(error) => {
                 let error_message = error.to_string();
                 let attempts = job.attempts;
                 if attempts >= job.max_attempts {
-                    self.repositories
-                        .jobs
-                        .mark_dead(&job.id, attempts, &error_message)
-                        .await?;
-                    if job.kind == VALIDATE_OBJECT_KIND {
-                        if let Some(clip_id) = job.target_id.as_deref() {
-                            self.mark_clip_failed_with_upload_reason(
-                                clip_id,
-                                "uploaded object could not be validated after maximum attempts",
-                            )
-                            .await?;
-                        }
-                    }
-                    if job.kind == OPTIMIZE_VIDEO_KIND {
-                        if let Some(clip_id) = job.target_id.as_deref() {
-                            self.enqueue_media_refresh_jobs_best_effort(
-                                clip_id,
-                                "jobs.optimize_video.refresh_enqueue_failed_after_dead",
-                            )
-                            .await;
-                        }
-                    }
-                    if self
-                        .enqueue_next_cleanup_sweep_for_kind(&job.kind, now_utc())
-                        .await?
-                    {
-                        info!(
-                            event = "jobs.cleanup_sweep_rearmed",
-                            job_id = %job.id,
-                            kind = %job.kind,
-                        );
-                    }
-                    warn!(
-                        event = "jobs.dead",
-                        job_id = %job.id,
-                        kind = %job.kind,
-                        attempts,
-                        error = %error_message,
-                    );
+                    self.handle_dead_job(&job, attempts, &error_message).await?;
                 } else {
                     let next_run_at = now_utc() + chrono_duration(self.retry_delay(attempts));
-                    self.repositories
+                    if self
+                        .repositories
                         .jobs
-                        .mark_retry(&job.id, attempts, next_run_at, &error_message)
-                        .await?;
-                    warn!(
-                        event = "jobs.retry_scheduled",
-                        job_id = %job.id,
-                        kind = %job.kind,
-                        attempts,
-                        next_run_at = %next_run_at,
-                        error = %error_message,
-                    );
+                        .mark_retry_if_locked(
+                            &job.id,
+                            &self.config.runner_id,
+                            attempts,
+                            next_run_at,
+                            &error_message,
+                        )
+                        .await?
+                    {
+                        warn!(
+                            event = "jobs.retry_scheduled",
+                            job_id = %job.id,
+                            kind = %job.kind,
+                            attempts,
+                            next_run_at = %next_run_at,
+                            error = %error_message,
+                        );
+                    } else {
+                        warn!(
+                            event = "jobs.lock_lost_before_retry_mark",
+                            job_id = %job.id,
+                            kind = %job.kind,
+                            attempts,
+                            error = %error_message,
+                        );
+                    }
                 }
             }
         }
 
+        Ok(())
+    }
+
+    async fn execute_claimed_job(&self, job: &Job) -> Result<(), JobRunnerError> {
+        match job.kind.as_str() {
+            VALIDATE_OBJECT_KIND => self.validate_object(job).await,
+            PROBE_METADATA_KIND => self.probe_metadata(job).await,
+            OPTIMIZE_VIDEO_KIND => self.optimize_video(job).await,
+            THUMBNAIL_KIND => self.generate_thumbnail(job).await,
+            POSTER_KIND => self.generate_poster(job).await,
+            CLEANUP_SESSION_KIND => self.cleanup_sessions(job).await,
+            CLEANUP_CLIP_KIND => self.cleanup_clips(job).await,
+            other => Err(JobRunnerError::InvalidJob(format!(
+                "unknown job kind {other:?}"
+            ))),
+        }
+    }
+
+    async fn handle_dead_job(
+        &self,
+        job: &Job,
+        attempts: i64,
+        error_message: &str,
+    ) -> Result<(), JobRunnerError> {
+        if !self
+            .repositories
+            .jobs
+            .mark_dead_if_locked(&job.id, &self.config.runner_id, attempts, error_message)
+            .await?
+        {
+            warn!(
+                event = "jobs.lock_lost_before_dead_mark",
+                job_id = %job.id,
+                kind = %job.kind,
+                attempts,
+                error = %error_message,
+            );
+            return Ok(());
+        }
+
+        self.run_dead_job_side_effects(job).await?;
+        warn!(
+            event = "jobs.dead",
+            job_id = %job.id,
+            kind = %job.kind,
+            attempts,
+            error = %error_message,
+        );
+        Ok(())
+    }
+
+    async fn run_dead_job_side_effects(&self, job: &Job) -> Result<(), JobRunnerError> {
+        if job.kind == VALIDATE_OBJECT_KIND {
+            if let Some(clip_id) = job.target_id.as_deref() {
+                self.mark_clip_failed_with_upload_reason(
+                    clip_id,
+                    "uploaded object could not be validated after maximum attempts",
+                )
+                .await?;
+            }
+        }
+        if job.kind == OPTIMIZE_VIDEO_KIND {
+            if let Some(clip_id) = job.target_id.as_deref() {
+                self.enqueue_media_refresh_jobs_best_effort(
+                    clip_id,
+                    "jobs.optimize_video.refresh_enqueue_failed_after_dead",
+                )
+                .await;
+            }
+        }
+        if self
+            .enqueue_next_cleanup_sweep_for_kind(&job.kind, now_utc())
+            .await?
+        {
+            info!(
+                event = "jobs.cleanup_sweep_rearmed",
+                job_id = %job.id,
+                kind = %job.kind,
+            );
+        }
         Ok(())
     }
 
@@ -557,100 +619,116 @@ impl JobRunner {
         self.storage
             .put_object(&candidate_key, candidate.bytes.clone(), candidate_metadata)
             .await?;
-        let stored_candidate = self.storage.head_object(&candidate_key).await?;
-        if stored_candidate.size_bytes != candidate_size {
-            return Err(JobRunnerError::Validation(format!(
-                "optimized candidate size mismatch: expected {}, got {}",
-                candidate_size, stored_candidate.size_bytes
-            )));
-        }
-        self.storage
-            .get_object(&candidate_key, Some(ByteRange::new(0, Some(0))))
-            .await?;
+        let activation_result = async {
+            let stored_candidate = self.storage.head_object(&candidate_key).await?;
+            if stored_candidate.size_bytes != candidate_size {
+                return Err(JobRunnerError::Validation(format!(
+                    "optimized candidate size mismatch: expected {}, got {}",
+                    candidate_size, stored_candidate.size_bytes
+                )));
+            }
+            self.storage
+                .get_object(&candidate_key, Some(ByteRange::new(0, Some(0))))
+                .await?;
 
-        if !is_meaningfully_smaller(
-            candidate_size,
-            source_metadata.size_bytes,
-            self.config.video_optimization.min_savings_percent,
-        ) {
-            delete_if_present(&self.storage, &candidate_key).await?;
+            if !is_meaningfully_smaller(
+                candidate_size,
+                source_metadata.size_bytes,
+                self.config.video_optimization.min_savings_percent,
+            ) {
+                delete_if_present(&self.storage, &candidate_key).await?;
+                info!(
+                    event = "jobs.optimize_video.skipped",
+                    clip_id = %clip.id,
+                    original_size_bytes = source_metadata.size_bytes,
+                    candidate_size_bytes = candidate_size,
+                    min_savings_percent = self.config.video_optimization.min_savings_percent,
+                );
+                self.enqueue_media_refresh_jobs(&clip.id).await?;
+                return Ok(());
+            }
+
+            if self.config.video_optimization.keep_original {
+                let mut metadata = PutObjectMetadata::new(source_metadata.content_type.clone());
+                let checksum = match source_metadata
+                    .checksum_sha256
+                    .clone()
+                    .or_else(|| clip.checksum_sha256.clone())
+                {
+                    Some(checksum) => checksum,
+                    None => sha256_object_hex(&self.storage, &source_key).await?,
+                };
+                metadata.checksum_sha256 = Some(checksum);
+                self.storage
+                    .copy_object(&source_key, &original_key, metadata)
+                    .await?;
+            }
+
+            let mut source_put_metadata = PutObjectMetadata::new("video/mp4");
+            source_put_metadata.checksum_sha256 = Some(candidate_checksum.clone());
+            self.storage
+                .put_object(&source_key, candidate.bytes, source_put_metadata)
+                .await?;
+            let stored_source = self.storage.head_object(&source_key).await?;
+            if stored_source.size_bytes != candidate_size {
+                return Err(JobRunnerError::Validation(format!(
+                    "optimized source size mismatch: expected {}, got {}",
+                    candidate_size, stored_source.size_bytes
+                )));
+            }
+            self.repositories
+                .clips
+                .update_source_metadata(
+                    &clip.id,
+                    i64::try_from(candidate_size).map_err(|_| {
+                        JobRunnerError::Validation("optimized source is too large".to_string())
+                    })?,
+                    &candidate_checksum,
+                    Some("mp4"),
+                    candidate.metadata.duration_ms,
+                    candidate.metadata.width,
+                    candidate.metadata.height,
+                    candidate.metadata.fps,
+                    candidate.metadata.video_codec.as_deref(),
+                    candidate.metadata.audio_codec.as_deref(),
+                )
+                .await?;
+            if let Err(error) = delete_if_present(&self.storage, &candidate_key).await {
+                warn!(
+                    event = "jobs.optimize_video.candidate_cleanup_failed_after_activation",
+                    clip_id = %clip.id,
+                    candidate_key = %candidate_key,
+                    error = %error,
+                );
+            }
+            self.enqueue_media_refresh_jobs_best_effort(
+                &clip.id,
+                "jobs.optimize_video.refresh_enqueue_failed_after_activation",
+            )
+            .await;
             info!(
-                event = "jobs.optimize_video.skipped",
+                event = "jobs.optimize_video.replaced",
                 clip_id = %clip.id,
                 original_size_bytes = source_metadata.size_bytes,
-                candidate_size_bytes = candidate_size,
-                min_savings_percent = self.config.video_optimization.min_savings_percent,
+                optimized_size_bytes = candidate_size,
+                checksum_sha256 = %candidate_checksum,
             );
-            self.enqueue_media_refresh_jobs(&clip.id).await?;
-            return Ok(());
+            Ok(())
         }
-
-        if self.config.video_optimization.keep_original {
-            let mut metadata = PutObjectMetadata::new(source_metadata.content_type.clone());
-            let checksum = match source_metadata
-                .checksum_sha256
-                .clone()
-                .or_else(|| clip.checksum_sha256.clone())
-            {
-                Some(checksum) => checksum,
-                None => sha256_object_hex(&self.storage, &source_key).await?,
-            };
-            metadata.checksum_sha256 = Some(checksum);
-            self.storage
-                .copy_object(&source_key, &original_key, metadata)
-                .await?;
-        }
-
-        let mut source_put_metadata = PutObjectMetadata::new("video/mp4");
-        source_put_metadata.checksum_sha256 = Some(candidate_checksum.clone());
-        self.storage
-            .put_object(&source_key, candidate.bytes, source_put_metadata)
-            .await?;
-        let stored_source = self.storage.head_object(&source_key).await?;
-        if stored_source.size_bytes != candidate_size {
-            return Err(JobRunnerError::Validation(format!(
-                "optimized source size mismatch: expected {}, got {}",
-                candidate_size, stored_source.size_bytes
-            )));
-        }
-        self.repositories
-            .clips
-            .update_source_metadata(
-                &clip.id,
-                i64::try_from(candidate_size).map_err(|_| {
-                    JobRunnerError::Validation("optimized source is too large".to_string())
-                })?,
-                &candidate_checksum,
-                Some("mp4"),
-                candidate.metadata.duration_ms,
-                candidate.metadata.width,
-                candidate.metadata.height,
-                candidate.metadata.fps,
-                candidate.metadata.video_codec.as_deref(),
-                candidate.metadata.audio_codec.as_deref(),
-            )
-            .await?;
-        if let Err(error) = delete_if_present(&self.storage, &candidate_key).await {
-            warn!(
-                event = "jobs.optimize_video.candidate_cleanup_failed_after_activation",
-                clip_id = %clip.id,
-                candidate_key = %candidate_key,
-                error = %error,
-            );
-        }
-        self.enqueue_media_refresh_jobs_best_effort(
-            &clip.id,
-            "jobs.optimize_video.refresh_enqueue_failed_after_activation",
-        )
         .await;
-        info!(
-            event = "jobs.optimize_video.replaced",
-            clip_id = %clip.id,
-            original_size_bytes = source_metadata.size_bytes,
-            optimized_size_bytes = candidate_size,
-            checksum_sha256 = %candidate_checksum,
-        );
-        Ok(())
+
+        if activation_result.is_err() {
+            if let Err(cleanup_error) = delete_if_present(&self.storage, &candidate_key).await {
+                warn!(
+                    event = "jobs.optimize_video.candidate_cleanup_failed_after_error",
+                    clip_id = %clip.id,
+                    candidate_key = %candidate_key,
+                    error = %cleanup_error,
+                );
+            }
+        }
+
+        activation_result
     }
 
     async fn refresh_source_metadata_from_storage(
@@ -1068,6 +1146,39 @@ async fn delete_if_present(
         Ok(()) | Err(StorageError::NotFound(_)) => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+async fn run_with_heartbeat<F, T>(
+    jobs: clipline_cloud_db::JobRepository,
+    job_id: String,
+    runner_id: String,
+    lock_timeout: Duration,
+    future: F,
+) -> Result<T, JobRunnerError>
+where
+    F: Future<Output = Result<T, JobRunnerError>>,
+{
+    let mut interval = tokio::time::interval(job_heartbeat_interval(lock_timeout));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    tokio::pin!(future);
+
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = interval.tick() => {
+                if !jobs.touch_lock(&job_id, &runner_id).await? {
+                    return Err(JobRunnerError::Validation(
+                        "job lock was lost before completion".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn job_heartbeat_interval(lock_timeout: Duration) -> Duration {
+    let seconds = (lock_timeout.as_secs() / 3).clamp(1, 60);
+    Duration::from_secs(seconds)
 }
 
 fn chrono_duration(duration: Duration) -> ChronoDuration {
@@ -1660,6 +1771,12 @@ mod tests {
         assert_dead_cleanup_rearms(CLEANUP_CLIP_KIND, chrono::Duration::minutes(31)).await;
     }
 
+    #[tokio::test]
+    async fn stale_dead_cleanup_sweep_rearms_before_execution() {
+        assert_stale_dead_cleanup_rearms(CLEANUP_SESSION_KIND, chrono::Duration::minutes(16)).await;
+        assert_stale_dead_cleanup_rearms(CLEANUP_CLIP_KIND, chrono::Duration::minutes(31)).await;
+    }
+
     async fn assert_dead_cleanup_rearms(kind: &'static str, due_after: chrono::Duration) {
         let (temp_dir, repositories) = sqlite_repositories().await;
         let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
@@ -1690,6 +1807,50 @@ mod tests {
             .expect("get job")
             .expect("job exists");
         assert_eq!(dead_job.status, "dead");
+        let next_sweep = repositories
+            .jobs
+            .list_due(now_utc() + due_after, 10)
+            .await
+            .expect("due jobs")
+            .into_iter()
+            .find(|job| job.kind == kind)
+            .expect("next cleanup sweep");
+        assert_eq!(next_sweep.status, "pending");
+        assert_eq!(next_sweep.target_type, None);
+        assert_eq!(next_sweep.target_id, None);
+    }
+
+    async fn assert_stale_dead_cleanup_rearms(kind: &'static str, due_after: chrono::Duration) {
+        let (temp_dir, repositories) = sqlite_repositories().await;
+        let storage = Arc::new(LocalStorage::new(temp_dir.path().join("storage")));
+        storage.probe().await.expect("probe");
+        let mut job = NewJob::new(kind, now_utc());
+        job.attempts = 1;
+        job.max_attempts = 1;
+        let job = repositories.jobs.create(&job).await.expect("job");
+        let runner = JobRunner::new(
+            repositories.clone(),
+            storage,
+            JobRunnerConfig {
+                runner_id: "test-runner".to_string(),
+                poll_interval: Duration::from_millis(10),
+                lock_timeout: Duration::from_secs(60),
+                retry_base_delay: Duration::from_millis(1),
+                retry_max_delay: Duration::from_millis(10),
+                video_optimization: VideoOptimizationConfig::default(),
+            },
+        );
+
+        assert!(runner.run_once().await.expect("run once"));
+
+        let dead_job = repositories
+            .jobs
+            .get(&job.id)
+            .await
+            .expect("get job")
+            .expect("job exists");
+        assert_eq!(dead_job.status, "dead");
+        assert_eq!(dead_job.attempts, 2);
         let next_sweep = repositories
             .jobs
             .list_due(now_utc() + due_after, 10)

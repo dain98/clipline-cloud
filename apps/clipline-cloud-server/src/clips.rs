@@ -22,6 +22,7 @@ use crate::{
 const DEFAULT_PAGE: i64 = 1;
 const DEFAULT_PAGE_SIZE: i64 = 50;
 const MAX_PAGE_SIZE: i64 = 100;
+const MAX_PAGE: i64 = 1_000_000;
 const MAX_BULK_CLIPS: usize = 100;
 const PUBLIC_SHARE_ID_LEN: usize = 22;
 const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -109,7 +110,7 @@ async fn list_clips(
     Query(query): Query<ListClipsQuery>,
 ) -> Result<Json<ClipListResponse>, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
-    let page = query.page.unwrap_or(DEFAULT_PAGE).max(1);
+    let page = query.page.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
     let page_size = query
         .page_size
         .unwrap_or(DEFAULT_PAGE_SIZE)
@@ -147,7 +148,7 @@ async fn list_clips(
         query: normalized_optional(query.q),
         sort: parse_sort(query.sort.as_deref())?,
         limit: page_size,
-        offset: (page - 1) * page_size,
+        offset: page.saturating_sub(1).saturating_mul(page_size),
     };
     if matches!((params.from.as_ref(), params.to.as_ref()), (Some(from), Some(to)) if from > to) {
         return Err(ApiError::bad_request("from must be before or equal to to"));
@@ -268,7 +269,7 @@ async fn update_clip(
         .clips
         .get_owned_non_deleted(&auth.user.id, &id)
         .await?
-        .expect("updated clip should exist");
+        .ok_or_else(|| ApiError::conflict("clip was deleted before the update completed"))?;
     Ok(Json(detail_response(&state, clip).await?))
 }
 
@@ -378,7 +379,7 @@ async fn update_visibility(
         .clips
         .get_owned_ready(&auth.user.id, &id)
         .await?
-        .expect("updated clip should exist");
+        .ok_or_else(|| ApiError::conflict("clip was deleted before the update completed"))?;
     Ok(Json(detail_response(&state, clip).await?))
 }
 

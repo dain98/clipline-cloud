@@ -171,11 +171,21 @@ async fn create_upload(
     new_session.part_size_bytes = Some(part_size_bytes as i64);
     new_session.storage_upload_id = storage_upload_id;
     new_session.checksum_sha256 = Some(request.checksum_sha256.to_ascii_lowercase());
+    let storage_upload_id = new_session.storage_upload_id.clone();
     let session = state
         .repositories
         .upload_sessions
         .create(&new_session)
         .await?;
+
+    enforce_upload_limits_after_create(
+        &state,
+        &auth.user,
+        &session,
+        storage_upload_id.as_deref(),
+        &keys.source,
+    )
+    .await?;
 
     Ok(Json(create_response(&state.config, &session)?))
 }
@@ -236,7 +246,7 @@ async fn put_content(
         ));
     }
 
-    finalize_upload_db(&state, &session).await?;
+    let _ = finalize_upload_db(&state, &session).await?;
     Ok(Json(
         progress_response(
             &state,
@@ -245,7 +255,7 @@ async fn put_content(
                 .upload_sessions
                 .get(&session.id)
                 .await?
-                .expect("finalized upload session should exist"),
+                .ok_or_else(|| ApiError::conflict("upload session no longer exists"))?,
         )
         .await?,
     ))
@@ -315,11 +325,14 @@ async fn put_part(
         .upload_parts
         .sum_size_for_session(&session.id)
         .await?;
-    state
+    if !state
         .repositories
         .upload_sessions
         .mark_uploading(&session.id, received_size)
-        .await?;
+        .await?
+    {
+        return Err(upload_session_no_longer_mutable(&state, &session.id).await?);
+    }
 
     Ok(Json(part_response(&session.id, &part, false)))
 }
@@ -431,11 +444,14 @@ async fn ack_direct_part_upload(
         .upload_parts
         .sum_size_for_session(&session.id)
         .await?;
-    state
+    if !state
         .repositories
         .upload_sessions
         .mark_uploading(&session.id, received_size)
-        .await?;
+        .await?
+    {
+        return Err(upload_session_no_longer_mutable(&state, &session.id).await?);
+    }
 
     Ok(Json(part_response(&session.id, &part, false)))
 }
@@ -508,13 +524,13 @@ async fn complete_upload(
         }
     }
 
-    finalize_upload_db(&state, &session).await?;
+    let _ = finalize_upload_db(&state, &session).await?;
     let session = state
         .repositories
         .upload_sessions
         .get(&session.id)
         .await?
-        .expect("finalized upload session should exist");
+        .ok_or_else(|| ApiError::conflict("upload session no longer exists"))?;
     Ok(Json(progress_response(&state, &session).await?))
 }
 
@@ -640,7 +656,7 @@ fn validate_create_request(config: &Config, request: &CreateUploadRequest) -> Re
         return Err(ApiError::bad_request("file exceeds maximum upload size"));
     }
     validate_checksum(&request.checksum_sha256)?;
-    if request.container.trim().to_ascii_lowercase() != "mp4" {
+    if !request.container.trim().eq_ignore_ascii_case("mp4") {
         return Err(ApiError::bad_request("only mp4 uploads are supported"));
     }
     if let Some(visibility) = &request.visibility {
@@ -696,6 +712,60 @@ async fn enforce_user_storage_quota(
     }
 
     Ok(())
+}
+
+async fn enforce_upload_limits_after_create(
+    state: &AppState,
+    user: &clipline_cloud_db::User,
+    session: &UploadSession,
+    storage_upload_id: Option<&str>,
+    key: &ObjectKey,
+) -> Result<(), ApiError> {
+    // This is a committed-state backstop for concurrent creates, not a
+    // serializable reservation. If the visible state is over limits, undo this
+    // newly-created session and any storage upload side effect.
+    let active_uploads = state
+        .repositories
+        .upload_sessions
+        .count_active_for_user(&user.id, now_utc())
+        .await?;
+    let result = if active_uploads > state.config.max_active_upload_sessions_per_user {
+        Err(ApiError::too_many_requests(
+            "too many active upload sessions for this user",
+        ))
+    } else {
+        enforce_user_storage_quota(state, user, 0).await
+    };
+
+    if result.is_err() {
+        rollback_created_upload_session(state, session, storage_upload_id, key).await;
+    }
+
+    result
+}
+
+async fn rollback_created_upload_session(
+    state: &AppState,
+    session: &UploadSession,
+    storage_upload_id: Option<&str>,
+    key: &ObjectKey,
+) {
+    cleanup_created_storage_upload(state, storage_upload_id, key).await;
+    if let Err(error) = state.repositories.upload_sessions.delete(&session.id).await {
+        warn!(
+            event = "api.upload_rejected_session_cleanup_failed",
+            session_id = %session.id,
+            error = %error,
+        );
+        return;
+    }
+    if let Err(error) = state.repositories.clips.delete(&session.clip_id).await {
+        warn!(
+            event = "api.upload_rejected_clip_cleanup_failed",
+            clip_id = %session.clip_id,
+            error = %error,
+        );
+    }
 }
 
 async fn enforce_upload_policy(
@@ -1087,6 +1157,12 @@ enum UploadMode {
     Chunked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalizeUploadResult {
+    Finalized,
+    AlreadyCompleted,
+}
+
 impl UploadMode {
     fn as_str(self) -> &'static str {
         match self {
@@ -1122,17 +1198,26 @@ fn progress_basis_points(status: &str, received_size_bytes: u64, file_size_bytes
     value as u16
 }
 
-async fn finalize_upload_db(state: &AppState, session: &UploadSession) -> Result<(), ApiError> {
-    state
+async fn finalize_upload_db(
+    state: &AppState,
+    session: &UploadSession,
+) -> Result<FinalizeUploadResult, ApiError> {
+    if !state
         .repositories
         .upload_sessions
         .update_received_size(&session.id, session.expected_size_bytes)
-        .await?;
-    state
+        .await?
+    {
+        return completed_or_stale_upload_result(state, &session.id).await;
+    }
+    if !state
         .repositories
         .upload_sessions
         .complete(&session.id)
-        .await?;
+        .await?
+    {
+        return completed_or_stale_upload_result(state, &session.id).await;
+    }
     let transitioned = state
         .repositories
         .clips
@@ -1150,7 +1235,49 @@ async fn finalize_upload_db(state: &AppState, session: &UploadSession) -> Result
             warn!(event = "api.job_enqueue_error", error = %error);
             ApiError::internal("failed to enqueue validation job")
         })?;
-    Ok(())
+    Ok(FinalizeUploadResult::Finalized)
+}
+
+async fn completed_or_stale_upload_result(
+    state: &AppState,
+    session_id: &str,
+) -> Result<FinalizeUploadResult, ApiError> {
+    match state.repositories.upload_sessions.get(session_id).await? {
+        Some(session) if session.status == "completed" => {
+            Ok(FinalizeUploadResult::AlreadyCompleted)
+        }
+        Some(_) => Err(ApiError::conflict("upload session is no longer mutable")),
+        None => Err(ApiError::conflict("upload session no longer exists")),
+    }
+}
+
+async fn upload_session_no_longer_mutable(
+    state: &AppState,
+    session_id: &str,
+) -> Result<ApiError, ApiError> {
+    match state.repositories.upload_sessions.get(session_id).await? {
+        Some(session) if session.status == "completed" => {
+            Ok(ApiError::conflict("upload session is already completed"))
+        }
+        Some(session) if session.status == "aborted" => {
+            Ok(ApiError::conflict("upload session is aborted"))
+        }
+        Some(session) if session.status == "failed" => Ok(ApiError::conflict(
+            session
+                .failure_reason
+                .map(|reason| {
+                    format!(
+                        "upload session is failed: {reason}; delete this upload and retry from a new session"
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "upload session is failed; delete this upload and retry from a new session"
+                        .to_string()
+                }),
+        )),
+        Some(_) => Ok(ApiError::conflict("upload session is no longer mutable")),
+        None => Ok(ApiError::conflict("upload session no longer exists")),
+    }
 }
 
 async fn mark_upload_failed(
