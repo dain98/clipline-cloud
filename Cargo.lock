@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-api"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "bytes",
  "clipline-cloud-api-types",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-api-types"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "chrono",
  "serde",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-core"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "bytes",
  "chrono",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-db"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "chrono",
  "serde",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-server"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "anyhow",
  "argon2",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "clipline-cloud-storage"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2090,9 +2090,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

@@ -12,11 +12,11 @@ use argon2::{
     Argon2,
 };
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Extension, Path, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -29,7 +29,7 @@ use clipline_cloud_db::{
     now_utc, AppSettings, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewInvitationToken,
     NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
 };
-use clipline_cloud_storage::{ObjectKey, PutObjectMetadata, StorageError};
+use clipline_cloud_storage::{ObjectKey, ObjectMetadata, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
@@ -344,7 +344,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/me/profile", patch(update_me_profile))
         .route(
             "/api/v1/me/avatar",
-            put(update_me_avatar).layer(DefaultBodyLimit::max(MAX_AVATAR_BYTES)),
+            get(get_me_avatar)
+                .put(update_me_avatar)
+                .layer(DefaultBodyLimit::max(MAX_AVATAR_BYTES)),
         )
         .route("/api/v1/me/change-password", post(change_password))
 }
@@ -1008,6 +1010,49 @@ async fn update_me_avatar(
         .await?
         .ok_or_else(|| ApiError::conflict("user was deleted before the update completed"))?;
     Ok(Json(user_response_for_state(&state, updated).await?))
+}
+
+async fn get_me_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let auth = require_auth(&state, &headers).await?;
+    serve_user_avatar(&state, &headers, &auth.user).await
+}
+
+async fn serve_user_avatar(
+    state: &AppState,
+    headers: &HeaderMap,
+    user: &User,
+) -> Result<Response, ApiError> {
+    let Some(avatar_key) = user.avatar_key.as_deref() else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+    let key = ObjectKey::parse(avatar_key).map_err(|error| {
+        warn!(event = "api.invalid_avatar_key", user_id = %user.id, error = %error);
+        ApiError::internal("invalid avatar key")
+    })?;
+    let metadata = state
+        .storage
+        .head_object(&key)
+        .await
+        .map_err(avatar_storage_error)?;
+    if avatar_etag_matches(headers, metadata.etag.as_deref()) {
+        return Ok(avatar_not_modified_response(&metadata));
+    }
+    let object = state
+        .storage
+        .get_object(&key, None)
+        .await
+        .map_err(avatar_storage_error)?;
+    let metadata = object.metadata;
+    let bytes = object.bytes;
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::from(bytes))
+        .expect("avatar response should be valid");
+    insert_avatar_headers(response.headers_mut(), &metadata, Some(metadata.size_bytes));
+    Ok(response)
 }
 
 async fn disable_user(
@@ -1791,6 +1836,78 @@ fn avatar_extension(content_type: &str) -> Option<&'static str> {
     }
 }
 
+fn avatar_not_modified_response(metadata: &ObjectMetadata) -> Response {
+    let mut response = StatusCode::NOT_MODIFIED.into_response();
+    insert_avatar_headers(response.headers_mut(), metadata, None);
+    response
+}
+
+fn insert_avatar_headers(
+    headers: &mut HeaderMap,
+    metadata: &ObjectMetadata,
+    content_length: Option<u64>,
+) {
+    insert_header_str(headers, header::CONTENT_TYPE, &metadata.content_type);
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline"),
+    );
+    if let Some(etag) = metadata.etag.as_deref().and_then(quoted_etag) {
+        insert_header_str(headers, header::ETAG, etag);
+    }
+    if let Some(content_length) = content_length {
+        insert_header_str(headers, header::CONTENT_LENGTH, content_length.to_string());
+    }
+}
+
+fn avatar_etag_matches(headers: &HeaderMap, etag: Option<&str>) -> bool {
+    let Some(etag) = etag else {
+        return false;
+    };
+    let Some(value) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+
+    value.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        if candidate == "*" {
+            return true;
+        }
+        let candidate = candidate.strip_prefix("W/").unwrap_or(candidate).trim();
+        candidate.trim_matches('"') == etag
+    })
+}
+
+fn quoted_etag(etag: &str) -> Option<String> {
+    if etag.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return None;
+    }
+    Some(format!("\"{}\"", etag.replace('"', "")))
+}
+
+fn insert_header_str(headers: &mut HeaderMap, name: HeaderName, value: impl AsRef<str>) {
+    if let Ok(value) = HeaderValue::from_str(value.as_ref()) {
+        headers.insert(name, value);
+    }
+}
+
+fn avatar_storage_error(error: StorageError) -> ApiError {
+    match error {
+        StorageError::NotFound(_) => ApiError::not_found("avatar not found"),
+        error => {
+            warn!(event = "api.storage_error", error = %error);
+            ApiError::internal("storage error")
+        }
+    }
+}
+
 fn storage_api_error(error: StorageError) -> ApiError {
     match error {
         StorageError::NotFound(_) => ApiError::not_found("object not found"),
@@ -2522,6 +2639,63 @@ mod tests {
             .expect("user");
         assert_eq!(updated.display_name.as_deref(), Some("Updated"));
         assert_eq!(updated.bio.as_deref(), Some("Keep this bio"));
+    }
+
+    #[tokio::test]
+    async fn get_me_avatar_returns_current_user_avatar() {
+        let app = test_app().await;
+        let user = insert_user(&app.state, "avatar").await;
+        let key = ObjectKey::parse(format!("objects/avatars/{}/avatar.png", user.id))
+            .expect("avatar key");
+        app.state
+            .storage
+            .put_object(
+                &key,
+                Bytes::from_static(b"avatar"),
+                PutObjectMetadata::new("image/png"),
+            )
+            .await
+            .expect("store avatar");
+        app.state
+            .repositories
+            .users
+            .set_avatar_key(&user.id, Some(key.as_str()))
+            .await
+            .expect("set avatar");
+        let headers = auth_headers(&app.state, &user.id).await;
+
+        let response = get_me_avatar(State(app.state.clone()), headers)
+            .await
+            .expect("avatar response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("image/png"))
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-cache"))
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION),
+            Some(&HeaderValue::from_static("inline"))
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(body, Bytes::from_static(b"avatar"));
+    }
+
+    #[tokio::test]
+    async fn get_me_avatar_returns_not_found_without_avatar() {
+        let app = test_app().await;
+        let user = insert_user(&app.state, "no-avatar").await;
+        let headers = auth_headers(&app.state, &user.id).await;
+
+        let status = error_status(get_me_avatar(State(app.state.clone()), headers).await);
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
