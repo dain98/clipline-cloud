@@ -4,8 +4,8 @@ use bytes::Bytes;
 pub use clipline_cloud_api_types::{
     ClipDetailResponse, ClipListResponse, ClipMarkerResponse, ClipSummaryResponse,
     CreateDeviceTokenRequest, CreateDeviceTokenResponse, CreateUploadRequest, CreateUploadResponse,
-    DiscoveryResponse, HealthResponse, MeResponse, PartUploadResponse, ReadinessResponse,
-    UpdateVisibilityRequest, UploadProgressResponse, UserResponse,
+    DiscoveryResponse, HealthResponse, ListClipsRequest, MeResponse, PartUploadResponse,
+    ReadinessResponse, UpdateVisibilityRequest, UploadProgressResponse, UserResponse,
 };
 use reqwest::{header, StatusCode};
 use serde::Deserialize;
@@ -111,6 +111,14 @@ impl CloudClient {
 
     pub async fn get_clip(&self, clip_id: &str) -> CloudApiResult<ClipDetailResponse> {
         self.get(&format!("/api/v1/clips/{clip_id}")).await
+    }
+
+    pub async fn list_clips(&self, request: &ListClipsRequest) -> CloudApiResult<ClipListResponse> {
+        self.send_json(
+            self.request(reqwest::Method::GET, "/api/v1/clips")?
+                .query(request),
+        )
+        .await
     }
 
     pub async fn set_visibility(
@@ -525,5 +533,100 @@ mod tests {
         let mut wrong = request;
         wrong.file_size_bytes += 1;
         assert!(validate_upload_request_matches_bytes(&wrong, bytes).is_err());
+    }
+
+    #[test]
+    fn list_clips_request_serializes_expected_query_string() {
+        let client = CloudClient::new(Url::parse("https://clips.example.com").expect("url"));
+        let request = ListClipsRequest {
+            sort: Some("uploaded_at_desc".to_string()),
+            game: Some("league".to_string()),
+            source_type: Some("replay".to_string()),
+            visibility: Some("private".to_string()),
+            status: Some("ready".to_string()),
+            from: Some("2026-06-25T21:03:44Z".parse().expect("from timestamp")),
+            to: Some("2026-06-25T21:04:44Z".parse().expect("to timestamp")),
+            min_duration_ms: Some(1_000),
+            max_duration_ms: Some(30_000),
+            min_size_bytes: Some(10),
+            max_size_bytes: Some(100),
+            q: Some("Replay 01".to_string()),
+            page: Some(2),
+            page_size: Some(100),
+        };
+
+        let http_request = client
+            .request(reqwest::Method::GET, "/api/v1/clips")
+            .expect("request")
+            .query(&request)
+            .build()
+            .expect("http request");
+        let query_pairs = http_request
+            .url()
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(http_request.url().path(), "/api/v1/clips");
+        assert_eq!(
+            query_pairs,
+            vec![
+                ("sort".to_string(), "uploaded_at_desc".to_string()),
+                ("game".to_string(), "league".to_string()),
+                ("source_type".to_string(), "replay".to_string()),
+                ("visibility".to_string(), "private".to_string()),
+                ("status".to_string(), "ready".to_string()),
+                ("from".to_string(), "2026-06-25T21:03:44Z".to_string()),
+                ("to".to_string(), "2026-06-25T21:04:44Z".to_string()),
+                ("min_duration_ms".to_string(), "1000".to_string()),
+                ("max_duration_ms".to_string(), "30000".to_string()),
+                ("min_size_bytes".to_string(), "10".to_string()),
+                ("max_size_bytes".to_string(), "100".to_string()),
+                ("q".to_string(), "Replay 01".to_string()),
+                ("page".to_string(), "2".to_string()),
+                ("page_size".to_string(), "100".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_clips_response_parses_summary_fields() {
+        let response: ClipListResponse = serde_json::from_value(serde_json::json!({
+            "page": 1,
+            "page_size": 100,
+            "clips": [
+                {
+                    "id": "clip_123",
+                    "client_clip_id": "desktop-local-id",
+                    "title": "Replay 2026-06-25 21-03-44",
+                    "description": null,
+                    "game_name": "League of Legends",
+                    "game_id": "league",
+                    "source_type": "replay",
+                    "recorded_at": "2026-06-25T21:03:44Z",
+                    "uploaded_at": "2026-06-25T21:04:10Z",
+                    "duration_ms": 30000,
+                    "file_size_bytes": 84200000,
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60.0,
+                    "visibility": "private",
+                    "status": "ready",
+                    "public_url": null,
+                    "created_at": "2026-06-25T21:04:10Z",
+                    "updated_at": "2026-06-25T21:04:30Z"
+                }
+            ]
+        }))
+        .expect("clip list response");
+
+        assert_eq!(response.page, 1);
+        assert_eq!(response.page_size, 100);
+        assert_eq!(response.clips[0].id, "clip_123");
+        assert_eq!(
+            response.clips[0].client_clip_id.as_deref(),
+            Some("desktop-local-id")
+        );
+        assert_eq!(response.clips[0].source_type.as_deref(), Some("replay"));
     }
 }

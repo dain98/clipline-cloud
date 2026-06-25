@@ -679,7 +679,7 @@ async function renderLibrary() {
   renderShell({
     active: "library",
     title: "Library",
-    subtitle: "Your ready clips, filters, and sharing controls.",
+    subtitle: "Your cloud clips, filters, and sharing controls.",
     body: `<div class="empty-state">Loading clips...</div>`,
   });
 
@@ -699,7 +699,7 @@ async function renderLibrary() {
     renderShell({
       active: "library",
       title: "Library",
-      subtitle: "Your ready clips, filters, and sharing controls.",
+      subtitle: "Your cloud clips, filters, and sharing controls.",
       body: `<div class="error-box">${escapeHtml(error.message)}</div>`,
     });
   }

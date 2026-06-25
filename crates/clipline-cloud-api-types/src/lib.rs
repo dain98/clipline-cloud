@@ -203,6 +203,38 @@ pub struct DirectPartUploadAckRequest {
     pub etag: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListClipsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_duration_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_size_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipListResponse {
     pub page: i64,
@@ -213,10 +245,14 @@ pub struct ClipListResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipSummaryResponse {
     pub id: String,
+    #[serde(default)]
+    pub client_clip_id: Option<String>,
     pub title: String,
     pub description: Option<String>,
     pub game_name: Option<String>,
     pub game_id: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
     pub recorded_at: Option<chrono::DateTime<chrono::Utc>>,
     pub uploaded_at: Option<chrono::DateTime<chrono::Utc>>,
     pub duration_ms: Option<i64>,

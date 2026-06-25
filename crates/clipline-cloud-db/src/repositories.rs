@@ -1489,16 +1489,24 @@ fn push_bulk_clip_filters_postgres(
 }
 
 fn push_clip_status_filter_sqlite(builder: &mut QueryBuilder<'_, Sqlite>, params: &ClipListParams) {
-    builder.push(" AND status = ");
-    builder.push_bind(params.status.clone().unwrap_or_else(|| "ready".to_string()));
+    if let Some(status) = &params.status {
+        builder.push(" AND status = ");
+        builder.push_bind(status.clone());
+    } else {
+        builder.push(" AND status <> 'deleted'");
+    }
 }
 
 fn push_clip_status_filter_postgres(
     builder: &mut QueryBuilder<'_, Postgres>,
     params: &ClipListParams,
 ) {
-    builder.push(" AND status = ");
-    builder.push_bind(params.status.clone().unwrap_or_else(|| "ready".to_string()));
+    if let Some(status) = &params.status {
+        builder.push(" AND status = ");
+        builder.push_bind(status.clone());
+    } else {
+        builder.push(" AND status <> 'deleted'");
+    }
 }
 
 fn push_clip_optional_filters_sqlite(

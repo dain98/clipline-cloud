@@ -443,10 +443,12 @@ async fn detail_response(state: &AppState, clip: Clip) -> Result<ClipDetailRespo
 fn clip_summary_response(clip: Clip, state: &AppState) -> ClipSummaryResponse {
     ClipSummaryResponse {
         id: clip.id,
+        client_clip_id: clip.client_clip_id,
         title: clip.title,
         description: clip.description,
         game_name: clip.game_name,
         game_id: clip.game_id,
+        source_type: clip.source_type,
         recorded_at: clip.recorded_at,
         uploaded_at: clip.uploaded_at,
         duration_ms: clip.duration_ms,
@@ -661,13 +663,15 @@ mod tests {
     use std::sync::Arc;
 
     use axum::{
-        http::{header, HeaderValue, StatusCode},
+        body::Body,
+        http::{header, HeaderValue, Request, StatusCode},
         response::IntoResponse,
     };
     use clipline_cloud_db::{new_ulid, Database, NewClip, NewDeviceToken, NewUser, Repositories};
     use clipline_cloud_storage::{LocalStorage, SharedStorageBackend};
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+    use tower::ServiceExt;
 
     struct TestApp {
         state: AppState,
@@ -823,6 +827,96 @@ mod tests {
         );
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_clips_returns_client_fields_and_excludes_deleted_for_device_token() {
+        let app = test_app().await;
+        let owner = insert_user(&app.state, "owner").await;
+
+        let mut ready = NewClip::new(&owner.id, "Ready clip", "local");
+        ready.status = "ready".to_string();
+        ready.client_clip_id = Some("local-ready".to_string());
+        ready.source_type = Some("replay".to_string());
+        app.state
+            .repositories
+            .clips
+            .create(&ready)
+            .await
+            .expect("ready clip");
+
+        let mut processing = NewClip::new(&owner.id, "Processing clip", "local");
+        processing.status = "processing".to_string();
+        processing.client_clip_id = Some("local-processing".to_string());
+        processing.source_type = Some("replay".to_string());
+        app.state
+            .repositories
+            .clips
+            .create(&processing)
+            .await
+            .expect("processing clip");
+
+        let mut deleted = NewClip::new(&owner.id, "Deleted clip", "local");
+        deleted.status = "ready".to_string();
+        deleted.client_clip_id = Some("local-deleted".to_string());
+        let deleted = app
+            .state
+            .repositories
+            .clips
+            .create(&deleted)
+            .await
+            .expect("deleted clip");
+        app.state
+            .repositories
+            .clips
+            .soft_delete(&deleted.id)
+            .await
+            .expect("soft delete clip");
+
+        let headers = auth_headers(&app.state, &owner.id).await;
+        let authorization = headers
+            .get(header::AUTHORIZATION)
+            .expect("authorization header")
+            .clone();
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/clips?sort=title_asc&page_size=100")
+            .header(header::AUTHORIZATION, authorization)
+            .body(Body::empty())
+            .expect("request");
+
+        let response = routes()
+            .with_state(app.state.clone())
+            .oneshot(request)
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let response: ClipListResponse = serde_json::from_slice(&body).expect("clip list");
+
+        assert_eq!(response.page, 1);
+        assert_eq!(response.page_size, 100);
+        assert_eq!(
+            response
+                .clips
+                .iter()
+                .map(|clip| (clip.title.as_str(), clip.status.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Processing clip", "processing"), ("Ready clip", "ready")]
+        );
+        assert_eq!(
+            response.clips[0].client_clip_id.as_deref(),
+            Some("local-processing")
+        );
+        assert_eq!(response.clips[0].source_type.as_deref(), Some("replay"));
+        assert_eq!(
+            response.clips[1].client_clip_id.as_deref(),
+            Some("local-ready")
+        );
+        assert_eq!(response.clips[1].source_type.as_deref(), Some("replay"));
     }
 
     async fn test_app() -> TestApp {
