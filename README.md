@@ -8,8 +8,8 @@ infrastructure.
 It ships as a single Docker image and supports SQLite or Postgres for metadata and local disk or
 S3-compatible object storage for media.
 
-- **Current release:** [`v1.2.19`](https://github.com/dain98/clipline-cloud/releases/tag/v1.2.19)
-- **Image:** `ghcr.io/dain98/clipline-cloud:1.2.19`
+- **Current release:** [`v1.2.20`](https://github.com/dain98/clipline-cloud/releases/tag/v1.2.20)
+- **Image:** `ghcr.io/dain98/clipline-cloud:1.2.20`
 
 ## Quick start
 
@@ -69,7 +69,7 @@ LAN test — see the [deployment guide](docs/cloud/deployment-guide.md) before e
 ```sh
 git clone https://github.com/dain98/clipline-cloud.git
 cd clipline-cloud/deploy/compose
-CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.19 docker compose up -d
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.20 docker compose up -d
 ```
 
 On first boot Clipline Cloud creates a bootstrap owner user (`admin` by default). If you did not set a
@@ -110,7 +110,7 @@ as `/opt/cl-cloud`.
 
 This is self-hosted software. For any real use, run it behind HTTPS — either an existing reverse proxy
 (e.g. Nginx Proxy Manager) or the bundled Caddy profile — and set `CLIPLINE_PUBLIC_URL` to your public
-`https://` URL. Pin `CLIPLINE_IMAGE` to a released tag such as `ghcr.io/dain98/clipline-cloud:1.2.19`
+`https://` URL. Pin `CLIPLINE_IMAGE` to a released tag such as `ghcr.io/dain98/clipline-cloud:1.2.20`
 rather than `latest`.
 
 ## Health checks
@@ -126,5 +126,5 @@ entries) are available in the web UI and API.
 - [Deployment guide](docs/cloud/deployment-guide.md) — step-by-step setup for each profile.
 - [Deployment operations](docs/cloud/deployment-operations.md) — full backup/restore and failure-mode runbook.
 - [Release process](docs/cloud/release-process.md) — how releases are tagged and validated.
-- [Release notes](https://github.com/dain98/clipline-cloud/releases/tag/v1.2.19) — v1.2.19.
+- [Release notes](https://github.com/dain98/clipline-cloud/releases/tag/v1.2.20) — v1.2.20.
 - [Clipline desktop app](https://github.com/dain98/clipline) — the Windows client that uploads clips.

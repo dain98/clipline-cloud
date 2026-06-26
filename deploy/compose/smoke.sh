@@ -87,6 +87,11 @@ make_secrets() {
     "CLIPLINE_SMOKE_S3_SECRET_ACCESS_KEY" \
     "CLIPLINE_COMPOSE_S3_SECRET_ACCESS_KEY_FILE" \
     "clipline-smoke-s3-secret-0123456789abcdef"
+
+  # Docker Compose file-backed secrets preserve the source file mode for local
+  # bind mounts. The app container runs as uid 10001, so smoke secrets must be
+  # readable by non-root container users even under a restrictive host umask.
+  chmod 0444 "$SECRET_DIR"/*.txt
 }
 
 write_secret_from_env_or_file() {

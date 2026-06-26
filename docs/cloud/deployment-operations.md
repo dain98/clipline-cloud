@@ -83,6 +83,11 @@ s3_access_key_id.txt
 s3_secret_access_key.txt
 ```
 
+The `clipline-cloud` container runs as UID `10001`. Secret files read by that
+container (`admin_password.txt`, `session_secret.txt`, `database_url.txt`, and the
+S3 credential files) must be readable by UID `10001`, for example with
+`chown 10001:10001 <file>` and `chmod 400 <file>`.
+
 For automated verification, the Compose secret file paths can be overridden without touching the
 ignored `secrets/` directory:
 
@@ -151,7 +156,7 @@ Useful variants:
 
 ```sh
 CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
-BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.19 deploy/compose/smoke.sh
+BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.20 deploy/compose/smoke.sh
 RUN_PROFILES="default minio" deploy/compose/smoke.sh
 RUN_DIRECT_S3=0 RUN_PROFILES=minio deploy/compose/smoke.sh
 RUN_VIDEO_OPTIMIZATION=1 RUN_PROFILES="default minio" deploy/compose/smoke.sh
