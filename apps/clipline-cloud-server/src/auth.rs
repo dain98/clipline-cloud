@@ -336,6 +336,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/auth/sessions/{id}", delete(revoke_session))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route("/api/v1/invites", post(create_invite_link))
+        .route("/api/v1/invites/claim", post(claim_invite_link))
         .route(
             "/api/v1/users/{id}",
             get(get_user).patch(update_user).delete(disable_user),
@@ -728,6 +729,17 @@ struct CreateInviteLinkRequest {
     send_email: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ClaimInviteLinkRequest {
+    invite_token: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ClaimInviteLinkResponse {
+    reset_token: String,
+    expires_at: DateTime<Utc>,
+}
+
 async fn create_invite_link(
     State(state): State<AppState>,
     Extension(client_ip): Extension<ClientIp>,
@@ -799,6 +811,61 @@ async fn create_invite_link(
         .await?;
     }
     Ok(Json(link.into_response()))
+}
+
+async fn claim_invite_link(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    Json(request): Json<ClaimInviteLinkRequest>,
+) -> Result<Json<ClaimInviteLinkResponse>, ApiError> {
+    let token_hash = hash_token(&request.invite_token);
+    let Some(token) = state
+        .repositories
+        .invitation_tokens
+        .get_by_token_hash(&token_hash)
+        .await?
+    else {
+        return Err(ApiError::unauthorized(
+            "invite link is invalid, used, or expired",
+        ));
+    };
+
+    if token.claimed_at.is_some() || token.used_at.is_some() || token.expires_at <= now_utc() {
+        return Err(ApiError::unauthorized(
+            "invite link is invalid, used, or expired",
+        ));
+    }
+    validate_role(&token.role)?;
+
+    let setup_token = generate_prefixed_token("clp_inv_claim_");
+    let setup_token_hash = hash_token(&setup_token);
+    let now = now_utc();
+    if !state
+        .repositories
+        .invitation_tokens
+        .claim_if_valid(&token.id, &setup_token_hash, now)
+        .await?
+    {
+        return Err(ApiError::unauthorized(
+            "invite link is invalid, used, or expired",
+        ));
+    }
+
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        None,
+        "user.invite_link.claimed",
+        Some("invite"),
+        Some(&token.id),
+        Some(json!({ "role": token.role.as_str() })),
+    )
+    .await?;
+
+    Ok(Json(ClaimInviteLinkResponse {
+        reset_token: setup_token,
+        expires_at: token.expires_at,
+    }))
 }
 
 async fn get_user(
@@ -1263,7 +1330,7 @@ async fn redeem_reset_password(
     if let Some(token) = state
         .repositories
         .invitation_tokens
-        .get_by_token_hash(&token_hash)
+        .get_by_claim_token_hash(&token_hash)
         .await?
     {
         return redeem_invitation_token(state, client_ip, request, token).await;
@@ -1328,7 +1395,11 @@ async fn redeem_invitation_token(
     request: RedeemResetPasswordRequest,
     token: clipline_cloud_db::InvitationToken,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if token.used_at.is_some() || token.expires_at <= now_utc() {
+    if token.claimed_at.is_none()
+        || token.claim_token_hash.is_none()
+        || token.used_at.is_some()
+        || token.expires_at <= now_utc()
+    {
         return Err(ApiError::unauthorized("reset token is invalid or expired"));
     }
     let username = normalized_required_username(
@@ -1345,7 +1416,7 @@ async fn redeem_invitation_token(
     if !state
         .repositories
         .invitation_tokens
-        .mark_used_if_valid(&token.id, now_utc())
+        .mark_claim_used_if_valid(&token.id, now_utc())
         .await?
     {
         if let Err(error) = state.repositories.users.delete(&created.id).await {
@@ -2773,12 +2844,41 @@ mod tests {
         let link = create_invite_setup_link(&app.state, "user", &admin.id)
             .await
             .expect("invite link");
+        let invite_token = link.response.reset_token.clone();
+        let claimed = claim_invite_link(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            Json(ClaimInviteLinkRequest {
+                invite_token: invite_token.clone(),
+            }),
+        )
+        .await
+        .expect("claim invite")
+        .0;
+
+        assert_eq!(
+            error_status(
+                redeem_reset_password(
+                    State(app.state.clone()),
+                    Extension(ClientIp("203.0.113.10".to_string())),
+                    Json(RedeemResetPasswordRequest {
+                        reset_token: invite_token,
+                        new_password: "new-password".to_string(),
+                        username: Some("raw-invite-token".to_string()),
+                        display_name: None,
+                        email: None,
+                    }),
+                )
+                .await
+            ),
+            StatusCode::UNAUTHORIZED
+        );
 
         let _ = redeem_reset_password(
             State(app.state.clone()),
             Extension(ClientIp("203.0.113.10".to_string())),
             Json(RedeemResetPasswordRequest {
-                reset_token: link.response.reset_token,
+                reset_token: claimed.reset_token,
                 new_password: "new-password".to_string(),
                 username: Some(" invitee ".to_string()),
                 display_name: Some(" Invitee ".to_string()),
@@ -2807,6 +2907,16 @@ mod tests {
             .await
             .expect("load invitation")
             .expect("invitation")
+            .claimed_at
+            .is_some());
+        assert!(app
+            .state
+            .repositories
+            .invitation_tokens
+            .get(&link.token_id)
+            .await
+            .expect("load invitation")
+            .expect("invitation")
             .used_at
             .is_some());
     }
@@ -2825,7 +2935,30 @@ mod tests {
         let link = create_invite_setup_link(&app.state, "user", &admin.id)
             .await
             .expect("invite link");
-        let reset_token = link.response.reset_token.clone();
+        let invite_token = link.response.reset_token.clone();
+        let reset_token = claim_invite_link(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            Json(ClaimInviteLinkRequest {
+                invite_token: invite_token.clone(),
+            }),
+        )
+        .await
+        .expect("claim invite")
+        .0
+        .reset_token;
+
+        assert_eq!(
+            error_status(
+                claim_invite_link(
+                    State(app.state.clone()),
+                    Extension(ClientIp("203.0.113.10".to_string())),
+                    Json(ClaimInviteLinkRequest { invite_token }),
+                )
+                .await
+            ),
+            StatusCode::UNAUTHORIZED
+        );
 
         assert_eq!(
             error_status(
@@ -2844,6 +2977,16 @@ mod tests {
             ),
             StatusCode::CONFLICT
         );
+        assert!(app
+            .state
+            .repositories
+            .invitation_tokens
+            .get(&link.token_id)
+            .await
+            .expect("load invitation")
+            .expect("invitation")
+            .claimed_at
+            .is_some());
         assert!(app
             .state
             .repositories

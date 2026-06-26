@@ -107,7 +107,7 @@ pub(crate) fn invite_url(public_url: &Url, invite_token: &str) -> Result<Url> {
 
 fn invite_body(invite_url: &str, expires_at: DateTime<Utc>) -> String {
     format!(
-        "You have been invited to Clipline Cloud.\n\nSet up your account: {invite_url}\n\nThis invite link expires at {expires_at}.\nIf you did not expect this invite, you can ignore this email.\n"
+        "You have been invited to Clipline Cloud.\n\nSet up your account: {invite_url}\n\nThis invite link can be opened once and expires at {expires_at}.\nIf you did not expect this invite, you can ignore this email.\n"
     )
 }
 

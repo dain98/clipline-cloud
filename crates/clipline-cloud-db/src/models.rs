@@ -289,6 +289,7 @@ impl NewClip {
 pub struct ClipComment {
     pub id: String,
     pub clip_id: String,
+    pub parent_comment_id: Option<String>,
     pub user_id: String,
     pub body: String,
     pub created_at: DateTime<Utc>,
@@ -300,6 +301,7 @@ pub struct ClipComment {
 pub struct NewClipComment {
     pub id: String,
     pub clip_id: String,
+    pub parent_comment_id: Option<String>,
     pub user_id: String,
     pub body: String,
     pub created_at: DateTime<Utc>,
@@ -317,6 +319,7 @@ impl NewClipComment {
         Self {
             id: new_ulid(),
             clip_id: clip_id.into(),
+            parent_comment_id: None,
             user_id: user_id.into(),
             body: body.into(),
             created_at: now,
@@ -585,10 +588,12 @@ impl NewResetPasswordToken {
 pub struct InvitationToken {
     pub id: String,
     pub token_hash: String,
+    pub claim_token_hash: Option<String>,
     pub role: String,
     pub created_by_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    pub claimed_at: Option<DateTime<Utc>>,
     pub used_at: Option<DateTime<Utc>>,
 }
 
@@ -596,10 +601,12 @@ pub struct InvitationToken {
 pub struct NewInvitationToken {
     pub id: String,
     pub token_hash: String,
+    pub claim_token_hash: Option<String>,
     pub role: String,
     pub created_by_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    pub claimed_at: Option<DateTime<Utc>>,
     pub used_at: Option<DateTime<Utc>>,
 }
 
@@ -612,10 +619,12 @@ impl NewInvitationToken {
         Self {
             id: new_ulid(),
             token_hash: token_hash.into(),
+            claim_token_hash: None,
             role: role.into(),
             created_by_user_id: None,
             created_at: now_utc(),
             expires_at,
+            claimed_at: None,
             used_at: None,
         }
     }

@@ -1714,11 +1714,12 @@ impl ClipCommentRepository {
     pub async fn create(&self, new: &NewClipComment) -> DbResult<ClipComment> {
         db_execute!(
             &self.database,
-            "INSERT INTO clip_comments (id, clip_id, user_id, body, created_at, updated_at, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO clip_comments (id, clip_id, parent_comment_id, user_id, body, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.clip_id,
+                new.parent_comment_id.as_deref(),
                 &new.user_id,
                 &new.body,
                 new.created_at,
@@ -1734,7 +1735,7 @@ impl ClipCommentRepository {
         Ok(db_fetch_optional!(
             &self.database,
             ClipComment,
-            "SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
+            "SELECT id, clip_id, parent_comment_id, user_id, body, created_at, updated_at, deleted_at
              FROM clip_comments WHERE id = ?",
             [id]
         )?)
@@ -1744,16 +1745,24 @@ impl ClipCommentRepository {
         Ok(db_fetch_all!(
             &self.database,
             ClipComment,
-            "SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
+            "SELECT id, clip_id, parent_comment_id, user_id, body, created_at, updated_at, deleted_at
              FROM (
-               SELECT id, clip_id, user_id, body, created_at, updated_at, deleted_at
+               SELECT id, clip_id, parent_comment_id, user_id, body, created_at, updated_at, deleted_at
                FROM clip_comments
-               WHERE clip_id = ? AND deleted_at IS NULL
+               WHERE clip_id = ?
+                 AND deleted_at IS NULL
+                 AND (
+                   parent_comment_id IS NULL
+                   OR parent_comment_id IN (
+                     SELECT id FROM clip_comments
+                     WHERE clip_id = ? AND parent_comment_id IS NULL AND deleted_at IS NULL
+                   )
+                 )
                ORDER BY created_at DESC, id DESC
                LIMIT ?
              ) recent_comments
              ORDER BY created_at ASC, id ASC",
-            [clip_id, limit]
+            [clip_id, clip_id, limit]
         )?)
     }
 
@@ -2562,15 +2571,17 @@ impl InvitationTokenRepository {
     pub async fn create(&self, new: &NewInvitationToken) -> DbResult<InvitationToken> {
         db_execute!(
             &self.database,
-            "INSERT INTO invitation_tokens (id, token_hash, role, created_by_user_id, created_at, expires_at, used_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO invitation_tokens (id, token_hash, claim_token_hash, role, created_by_user_id, created_at, expires_at, claimed_at, used_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 &new.id,
                 &new.token_hash,
+                new.claim_token_hash.as_deref(),
                 &new.role,
                 new.created_by_user_id.as_deref(),
                 new.created_at,
                 new.expires_at,
+                new.claimed_at,
                 new.used_at,
             ]
         )?;
@@ -2582,7 +2593,7 @@ impl InvitationTokenRepository {
         Ok(db_fetch_optional!(
             &self.database,
             InvitationToken,
-            "SELECT id, token_hash, role, created_by_user_id, created_at, expires_at, used_at
+            "SELECT id, token_hash, claim_token_hash, role, created_by_user_id, created_at, expires_at, claimed_at, used_at
              FROM invitation_tokens WHERE id = ?",
             [id]
         )?)
@@ -2592,20 +2603,59 @@ impl InvitationTokenRepository {
         Ok(db_fetch_optional!(
             &self.database,
             InvitationToken,
-            "SELECT id, token_hash, role, created_by_user_id, created_at, expires_at, used_at
+            "SELECT id, token_hash, claim_token_hash, role, created_by_user_id, created_at, expires_at, claimed_at, used_at
              FROM invitation_tokens WHERE token_hash = ?",
             [token_hash]
         )?)
     }
 
-    pub async fn mark_used_if_valid(
+    pub async fn get_by_claim_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> DbResult<Option<InvitationToken>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            InvitationToken,
+            "SELECT id, token_hash, claim_token_hash, role, created_by_user_id, created_at, expires_at, claimed_at, used_at
+             FROM invitation_tokens WHERE claim_token_hash = ?",
+            [token_hash]
+        )?)
+    }
+
+    pub async fn claim_if_valid(
+        &self,
+        id: &str,
+        claim_token_hash: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<bool> {
+        let rows = db_execute_rows!(
+            &self.database,
+            "UPDATE invitation_tokens
+             SET claim_token_hash = ?, claimed_at = ?
+             WHERE id = ?
+               AND claim_token_hash IS NULL
+               AND claimed_at IS NULL
+               AND used_at IS NULL
+               AND expires_at > ?",
+            [claim_token_hash, now, id, now]
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub async fn mark_claim_used_if_valid(
         &self,
         id: &str,
         now: chrono::DateTime<chrono::Utc>,
     ) -> DbResult<bool> {
         let rows = db_execute_rows!(
             &self.database,
-            "UPDATE invitation_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
+            "UPDATE invitation_tokens
+             SET used_at = ?
+             WHERE id = ?
+               AND claim_token_hash IS NOT NULL
+               AND claimed_at IS NOT NULL
+               AND used_at IS NULL
+               AND expires_at > ?",
             [now, id, now]
         )?;
         Ok(rows > 0)

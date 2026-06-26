@@ -792,17 +792,28 @@ mod tests {
             .is_some());
         assert!(repos
             .invitation_tokens
-            .mark_used_if_valid(&invitation.id, now_utc())
+            .claim_if_valid(&invitation.id, "invite-claim-token-hash", now_utc())
+            .await
+            .expect("claim invitation token"));
+        assert!(repos
+            .invitation_tokens
+            .get_by_claim_token_hash("invite-claim-token-hash")
+            .await
+            .expect("get invitation claim token")
+            .is_some());
+        assert!(repos
+            .invitation_tokens
+            .mark_claim_used_if_valid(&invitation.id, now_utc())
             .await
             .expect("mark invitation used"));
-        assert!(repos
+        let invitation = repos
             .invitation_tokens
             .get(&invitation.id)
             .await
             .expect("get invitation")
-            .expect("invitation")
-            .used_at
-            .is_some());
+            .expect("invitation");
+        assert!(invitation.claimed_at.is_some());
+        assert!(invitation.used_at.is_some());
     }
 
     async fn assert_active_storage_bytes_by_owner_filters_inactive_clips(database: Database) {
@@ -1508,6 +1519,18 @@ mod tests {
             .await
             .expect("create comment");
         assert_eq!(comment.body, "looks good");
+        assert!(comment.parent_comment_id.is_none());
+        let mut reply = NewClipComment::new(&public.id, &user.id, "agreed");
+        reply.parent_comment_id = Some(comment.id.clone());
+        let reply = repos
+            .clip_comments
+            .create(&reply)
+            .await
+            .expect("create reply");
+        assert_eq!(
+            reply.parent_comment_id.as_deref(),
+            Some(comment.id.as_str())
+        );
         assert_eq!(
             repos
                 .clip_comments
@@ -1515,7 +1538,7 @@ mod tests {
                 .await
                 .expect("list comments")
                 .len(),
-            1
+            2
         );
         assert!(repos
             .clip_comments
@@ -1527,6 +1550,11 @@ mod tests {
             .soft_delete(&comment.id)
             .await
             .expect("second soft delete is a no-op"));
+        assert!(repos
+            .clip_comments
+            .soft_delete(&reply.id)
+            .await
+            .expect("soft delete reply"));
         assert_eq!(
             repos
                 .clip_comments

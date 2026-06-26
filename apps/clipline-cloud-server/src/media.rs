@@ -184,6 +184,7 @@ struct PublicCommentListResponse {
 #[derive(Debug, Serialize)]
 struct PublicCommentResponse {
     id: String,
+    parent_comment_id: Option<String>,
     body: String,
     author_name: String,
     author_username: Option<String>,
@@ -197,6 +198,7 @@ struct PublicCommentResponse {
 #[derive(Debug, Deserialize)]
 struct CreatePublicCommentRequest {
     body: String,
+    parent_comment_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -523,10 +525,31 @@ async fn create_public_comment(
     auth::require_csrf_for_cookie(&state, &headers, &auth)?;
     let clip = load_public_clip(&state, &share_id).await?;
     let body = normalize_comment_body(request.body)?;
+    let parent_comment_id = normalize_parent_comment_id(request.parent_comment_id);
+    if let Some(parent_comment_id) = parent_comment_id.as_deref() {
+        let Some(parent) = state
+            .repositories
+            .clip_comments
+            .get(parent_comment_id)
+            .await?
+        else {
+            return Err(ApiError::not_found("parent comment not found"));
+        };
+        if parent.deleted_at.is_some() || parent.clip_id != clip.id {
+            return Err(ApiError::not_found("parent comment not found"));
+        }
+        if parent.parent_comment_id.is_some() {
+            return Err(ApiError::bad_request(
+                "replies can only target top-level comments",
+            ));
+        }
+    }
+    let mut new_comment = NewClipComment::new(&clip.id, &auth.user.id, body);
+    new_comment.parent_comment_id = parent_comment_id.clone();
     let comment = state
         .repositories
         .clip_comments
-        .create(&NewClipComment::new(&clip.id, &auth.user.id, body))
+        .create(&new_comment)
         .await?;
     auth::audit_with_ip(
         &state.repositories,
@@ -535,7 +558,7 @@ async fn create_public_comment(
         "clip.comment.created",
         Some("clip"),
         Some(&clip.id),
-        None,
+        Some(serde_json::json!({ "parent_comment_id": parent_comment_id })),
     )
     .await?;
     Ok(Json(
@@ -1197,6 +1220,7 @@ async fn public_comment_response(
     };
     Ok(PublicCommentResponse {
         id: comment.id,
+        parent_comment_id: comment.parent_comment_id,
         body: comment.body,
         author_name: author.name,
         author_username: author.username,
@@ -1275,6 +1299,12 @@ fn normalize_comment_body(body: String) -> Result<String, ApiError> {
         )));
     }
     Ok(body)
+}
+
+fn normalize_parent_comment_id(parent_comment_id: Option<String>) -> Option<String> {
+    parent_comment_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn path_segment(value: &str) -> String {
@@ -1661,6 +1691,16 @@ mod tests {
             &clip,
             false
         ));
+    }
+
+    #[test]
+    fn comment_parent_id_normalization_treats_blank_as_absent() {
+        assert_eq!(
+            normalize_parent_comment_id(Some(" parent ".to_string())),
+            Some("parent".to_string())
+        );
+        assert_eq!(normalize_parent_comment_id(Some("   ".to_string())), None);
+        assert_eq!(normalize_parent_comment_id(None), None);
     }
 
     #[test]

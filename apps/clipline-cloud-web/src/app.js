@@ -141,7 +141,11 @@ async function route() {
     return;
   }
   if (current.name === "resetPassword") {
-    renderResetPassword(current.token, current.invite);
+    if (current.invite) {
+      await renderInviteResetPassword(current.token, routeActive);
+    } else {
+      renderResetPassword(current.token, false);
+    }
     return;
   }
 
@@ -445,6 +449,40 @@ function renderResetPassword(token, isInvite = false, error = "") {
       renderResetPassword(token, isInvite, resetError.message);
     }
   }));
+}
+
+async function renderInviteResetPassword(inviteToken, routeActive) {
+  if (!inviteToken) {
+    renderInviteLinkStatus("This invite link is missing a token.", true);
+    return;
+  }
+
+  renderInviteLinkStatus("Opening invite...");
+  try {
+    const data = await api("/api/v1/invites/claim", {
+      method: "POST",
+      body: { invite_token: inviteToken },
+    });
+    if (!routeActive()) return;
+    renderResetPassword(data.reset_token, true);
+  } catch (error) {
+    if (!routeActive()) return;
+    renderInviteLinkStatus(error.message || "This invite link is invalid, used, or expired.", true);
+  }
+}
+
+function renderInviteLinkStatus(message, isError = false) {
+  disposeActivePlayer();
+  app.innerHTML = `
+    <main class="login-shell">
+      <section class="login-panel" aria-labelledby="invite-title">
+        <div class="brand-mark" aria-hidden="true">CL</div>
+        <h1 id="invite-title">Create Account</h1>
+        <p>${escapeHtml(isError ? "This invite cannot be used." : "Preparing your account setup.")}</p>
+        <div class="${isError ? "error-box" : "empty-state"}">${escapeHtml(message)}</div>
+      </section>
+    </main>
+  `;
 }
 
 function renderShell({ active, title, subtitle, body, hideTopbar = false }) {
@@ -2318,11 +2356,12 @@ function publicShareInfo(clip, authorName) {
 }
 
 function publicCommentsView(clip, comments) {
+  const commentTree = publicCommentTree(comments);
   return `
     <section class="public-comments" aria-labelledby="comments-title">
       <div class="section-header">
         <h2 id="comments-title">Comments</h2>
-        <span class="muted">${comments.length}</span>
+        <span class="muted">${commentTree.count}</span>
       </div>
       ${
         state.user
@@ -2338,19 +2377,49 @@ function publicCommentsView(clip, comments) {
           : `<div class="notice public-comment-signin"><a href="/login" data-route>Sign in</a> to comment.</div>`
       }
       ${
-        comments.length
-          ? `<div class="public-comment-list">${comments.map((comment) => publicCommentItem(comment, clip.share_id)).join("")}</div>`
+        commentTree.count
+          ? `<div class="public-comment-list">${commentTree.roots.map((comment) => publicCommentItem(comment, clip.share_id, commentTree.repliesByParent)).join("")}</div>`
           : `<div class="empty-state">No comments yet.</div>`
       }
     </section>
   `;
 }
 
-function publicCommentItem(comment, shareId) {
+function publicCommentTree(comments) {
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const repliesByParent = new Map();
+  const roots = [];
+  let count = 0;
+  comments.forEach((comment) => {
+    const parentId = comment.parent_comment_id || "";
+    if (parentId && byId.has(parentId)) {
+      if (!repliesByParent.has(parentId)) {
+        repliesByParent.set(parentId, []);
+      }
+      repliesByParent.get(parentId).push(comment);
+      count += 1;
+    } else if (!parentId) {
+      roots.push(comment);
+      count += 1;
+    }
+  });
+  return { roots, repliesByParent, count };
+}
+
+function publicCommentItem(comment, shareId, repliesByParent, depth = 0) {
   const authorName = comment.author_name || "Unknown creator";
   const authorPath = comment.author_username ? `/u/${encodeURIComponent(comment.author_username)}` : "";
+  const replies = repliesByParent.get(comment.id) || [];
+  const actions = [
+    state.user && depth === 0
+      ? `<button class="public-comment-action" type="button" data-reply-comment="${escapeAttr(comment.id)}">${icon("message")} Reply</button>`
+      : "",
+    comment.viewer_can_delete
+      ? `<button class="icon-button public-comment-delete" type="button" data-delete-comment="${escapeAttr(comment.id)}" data-share-id="${escapeAttr(shareId)}" aria-label="Delete comment" title="Delete comment">${icon("trash")}</button>`
+      : "",
+  ].filter(Boolean);
   return `
-    <article class="public-comment ${comment.is_uploader ? "public-comment-uploader" : ""}" data-comment-id="${escapeAttr(comment.id)}">
+    <article class="public-comment ${comment.is_uploader ? "public-comment-uploader" : ""} ${depth > 0 ? "public-comment-reply-item" : ""}" data-comment-id="${escapeAttr(comment.id)}">
       ${userAvatar(
         {
           username: comment.author_username || authorName,
@@ -2371,13 +2440,27 @@ function publicCommentItem(comment, shareId) {
             ${comment.is_uploader ? `<span class="public-comment-badge">Uploader</span>` : ""}
             <span>${escapeHtml(formatRelativeTime(comment.created_at))}</span>
           </div>
-          ${
-            comment.viewer_can_delete
-              ? `<button class="icon-button public-comment-delete" type="button" data-delete-comment="${escapeAttr(comment.id)}" data-share-id="${escapeAttr(shareId)}" aria-label="Delete comment" title="Delete comment">${icon("trash")}</button>`
-              : ""
-          }
+          ${actions.length ? `<div class="public-comment-actions">${actions.join("")}</div>` : ""}
         </div>
         <p>${escapeHtml(comment.body)}</p>
+        ${
+          state.user && depth === 0
+            ? `<form class="public-comment-reply-form" data-reply-form="${escapeAttr(comment.id)}" hidden>
+                <label class="field">
+                  <span>Reply</span>
+                  <textarea name="body" rows="2" maxlength="2000" placeholder="Write a reply"></textarea>
+                </label>
+                <div class="clip-inline-actions">
+                  <button class="btn-secondary" type="submit">${icon("message")} Post reply</button>
+                </div>
+              </form>`
+            : ""
+        }
+        ${
+          replies.length
+            ? `<div class="public-comment-replies">${replies.map((reply) => publicCommentItem(reply, shareId, repliesByParent, depth + 1)).join("")}</div>`
+            : ""
+        }
       </div>
     </article>
   `;
@@ -2400,6 +2483,43 @@ function bindPublicShareEvents(shareId) {
       renderPublicShare(shareId);
     }
   }));
+
+  document.querySelectorAll("[data-reply-comment]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const article = button.closest("[data-comment-id]");
+      const form = article?.querySelector("[data-reply-form]");
+      if (!form) {
+        return;
+      }
+      form.hidden = !form.hidden;
+      if (!form.hidden) {
+        form.querySelector("textarea")?.focus();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-reply-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => withSubmitLock(event, async () => {
+      const replyForm = event.currentTarget;
+      const formData = new FormData(replyForm);
+      const parentCommentId = replyForm.dataset.replyForm;
+      try {
+        await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`, {
+          method: "POST",
+          body: {
+            body: String(formData.get("body") || ""),
+            parent_comment_id: parentCommentId,
+          },
+        });
+        flash("Reply posted.");
+        renderPublicShare(shareId);
+      } catch (error) {
+        flash(error.message, "error");
+        renderPublicShare(shareId);
+      }
+    }));
+  });
 
   document.querySelectorAll("[data-delete-comment]").forEach((button) => {
     button.addEventListener("click", async (event) => {
