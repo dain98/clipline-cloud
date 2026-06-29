@@ -2086,7 +2086,7 @@ function initClipPlayer(root, { durationMs = null, markers = [], onTheaterToggle
 function clipDetailView(clip) {
   const description = clip.description || "";
   return `
-    <section class="detail-layout clip-edit-layout ${state.clipTheaterMode ? "is-theater" : ""}" data-clip-detail-layout>
+    <section class="detail-layout clip-edit-layout ${state.clipTheaterMode ? "is-theater" : ""}" data-clip-detail-layout data-theater-layout>
       <div class="clip-edit-main">
         <div class="clip-title-editor" data-title-editor>
           <div class="clip-title-display" data-title-display>
@@ -2270,9 +2270,10 @@ function toggleClipTheaterMode() {
 function updateClipTheaterMode(enabled) {
   state.clipTheaterMode = Boolean(enabled);
   writeClipTheaterMode(state.clipTheaterMode);
-  const layout = document.querySelector("[data-clip-detail-layout]");
   const theaterButton = document.querySelector("[data-player-theater]");
-  layout?.classList.toggle("is-theater", state.clipTheaterMode);
+  document.querySelectorAll("[data-theater-layout]").forEach((layout) => {
+    layout.classList.toggle("is-theater", state.clipTheaterMode);
+  });
   if (theaterButton) {
     const label = state.clipTheaterMode ? "Exit theater mode" : "Theater mode";
     theaterButton.setAttribute("aria-label", label);
@@ -2315,7 +2316,9 @@ async function renderPublicShare(shareId) {
     initClipPlayer(document.querySelector("[data-clip-player]"), {
       durationMs: clip.duration_ms,
       markers: [],
+      onTheaterToggle: toggleClipTheaterMode,
     });
+    updateClipTheaterMode(state.clipTheaterMode);
     bindPublicShareEvents(clip.share_id);
     recordPublicView(clip.share_id);
     hydratePublicShareSideData(clip);
@@ -2363,13 +2366,14 @@ async function hydratePublicShareSideData(clip) {
 function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations, comments) {
   return `
     <section class="public-watch-page" aria-labelledby="public-title">
-      <div class="public-watch-layout ${recommendations.length ? "has-recommendations" : ""}">
+      <div class="public-watch-layout ${recommendations.length ? "has-recommendations" : ""} ${state.clipTheaterMode ? "is-theater" : ""}" data-theater-layout>
         <div class="public-watch-main">
           ${clipPlayerView({
             playerId: `public-${clip.share_id}`,
             src: mediaUrl,
             poster: thumbnailUrl,
             durationMs: clip.duration_ms,
+            theater: true,
           })}
           ${publicShareInfo(clip, authorName)}
           <div id="public-comments-slot">${publicCommentsView(clip, comments)}</div>

@@ -1563,6 +1563,10 @@ a:hover {
   grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
 }
 
+.public-watch-layout.is-theater {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .public-watch-main {
   display: grid;
   gap: 0.95rem;
