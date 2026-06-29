@@ -165,6 +165,7 @@ a:hover {
 
 .app-shell {
   --topbar-height: 3.65rem;
+  --theater-player-max-width: min(100%, calc((100vh - var(--topbar-height) - 5rem) * 16 / 9), 112rem);
   display: grid;
   grid-template-columns: 15.5rem minmax(0, 1fr);
   grid-template-rows: var(--topbar-height) minmax(0, 1fr);
@@ -845,6 +846,12 @@ a:hover {
 
 .clip-edit-layout.is-theater {
   grid-template-columns: 1fr;
+}
+
+.clip-edit-layout.is-theater .clip-edit-main {
+  justify-self: center;
+  max-width: var(--theater-player-max-width);
+  width: 100%;
 }
 
 .clip-title-editor {
@@ -1570,6 +1577,9 @@ a:hover {
 
 .public-watch-layout.is-theater {
   grid-template-columns: minmax(0, 1fr);
+  justify-self: center;
+  max-width: var(--theater-player-max-width);
+  width: 100%;
 }
 
 .public-watch-main {
