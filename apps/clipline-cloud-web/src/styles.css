@@ -843,6 +843,10 @@ a:hover {
   min-width: 0;
 }
 
+.clip-edit-layout.is-theater {
+  grid-template-columns: 1fr;
+}
+
 .clip-title-editor {
   min-width: 0;
 }
@@ -1207,6 +1211,11 @@ a:hover {
 
 .player-icon:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+.player-icon[aria-pressed="true"] {
+  background: rgba(105, 167, 255, 0.2);
+  color: #d7e8ff;
 }
 
 .player-icon .icon {

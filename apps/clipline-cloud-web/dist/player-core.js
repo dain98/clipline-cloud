@@ -139,6 +139,8 @@ export function playerKeyIntent(code, shiftKey) {
       return { kind: "seek-to-end" };
     case "KeyF":
       return { kind: "fullscreen" };
+    case "KeyT":
+      return { kind: "theater" };
     default:
       return null;
   }

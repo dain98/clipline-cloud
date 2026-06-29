@@ -14,6 +14,7 @@ import {
 const app = document.querySelector("#app");
 const sidebarStorageKey = "clipline.sidebarCollapsed";
 const playerVolumeStorageKey = "clipline.playerVolume";
+const clipTheaterStorageKey = "clipline.clipTheaterMode";
 let activePlayerCleanup = null;
 let activeRouteRun = 0;
 
@@ -22,6 +23,7 @@ const state = {
   csrfToken: null,
   flash: null,
   sidebarCollapsed: readSidebarCollapsed(),
+  clipTheaterMode: readClipTheaterMode(),
   selectedClipIds: new Set(),
   libraryQuery: {
     sort: "uploaded_at_desc",
@@ -79,6 +81,7 @@ const icons = {
   skipForward: '<path d="m5 4 10 8-10 8V4Z"/><path d="M19 5v14"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 8.8a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V5l8-3 8 3v8Z"/>',
   sliders: '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
+  theater: '<rect width="20" height="14" x="2" y="5" rx="2"/><path d="M6 9h12"/><path d="M6 15h12"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
   user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
@@ -643,6 +646,22 @@ function writePlayerVolume(value) {
     window.localStorage.setItem(playerVolumeStorageKey, String(Math.max(0, Math.min(1, value))));
   } catch (_) {
     // Playback still works if storage is unavailable.
+  }
+}
+
+function readClipTheaterMode() {
+  try {
+    return window.localStorage.getItem(clipTheaterStorageKey) === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
+function writeClipTheaterMode(enabled) {
+  try {
+    window.localStorage.setItem(clipTheaterStorageKey, String(enabled));
+  } catch (_) {
+    // The layout still updates if storage is unavailable.
   }
 }
 
@@ -1550,10 +1569,13 @@ async function renderClipDetail(id) {
   }
 }
 
-function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
+function clipPlayerView({ playerId, src, poster = "", durationMs = null, theater = false }) {
   const safeSrc = src ? escapeAttr(src) : "";
   const safePoster = poster ? escapeAttr(poster) : "";
   const durationLabel = durationMs == null ? "Loading media..." : formatDuration(durationMs);
+  const theaterButton = theater
+    ? `<button type="button" class="player-icon" data-player-theater title="Theater mode (T)" aria-label="Theater mode" aria-pressed="false">${icon("theater")}</button>`
+    : "";
   return `
     <div class="clip-player" data-clip-player="${escapeAttr(playerId)}" tabindex="0" aria-label="Video player">
       <div class="clip-player-stage" data-player-stage>
@@ -1598,6 +1620,7 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
                 <span class="player-muted-icon">${icon("volumeX")}</span>
               </button>
               <input class="player-volume" data-player-volume type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+              ${theaterButton}
               <button type="button" class="player-icon" data-player-fullscreen title="Fullscreen (F)" aria-label="Fullscreen">${icon("fullscreen")}</button>
             </div>
           </div>
@@ -1613,7 +1636,7 @@ function clipPlayerView({ playerId, src, poster = "", durationMs = null }) {
   `;
 }
 
-function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
+function initClipPlayer(root, { durationMs = null, markers = [], onTheaterToggle = null } = {}) {
   disposeActivePlayer();
   if (!root) {
     return;
@@ -1633,6 +1656,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   const nextMarkerButton = root.querySelector("[data-player-next-marker]");
   const volume = root.querySelector("[data-player-volume]");
   const muteButton = root.querySelector("[data-player-mute]");
+  const theaterButton = root.querySelector("[data-player-theater]");
   const fullscreenButton = root.querySelector("[data-player-fullscreen]");
   const playbackRate = root.querySelector("[data-player-rate]");
   const playButtons = Array.from(root.querySelectorAll("[data-player-toggle]"));
@@ -1828,6 +1852,12 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     }
   }
 
+  function toggleTheater() {
+    if (typeof onTheaterToggle === "function") {
+      onTheaterToggle();
+    }
+  }
+
   function updateMediaNote() {
     if (video.videoWidth && video.videoHeight) {
       note.textContent = `${video.videoWidth}x${video.videoHeight} - ${duration > 0 ? formatClock(duration) : "ready"}`;
@@ -1923,6 +1953,9 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
     if (!intent) {
       return;
     }
+    if (intent.kind === "theater" && typeof onTheaterToggle !== "function") {
+      return;
+    }
     event.preventDefault();
     switch (intent.kind) {
       case "toggle-play":
@@ -1946,6 +1979,9 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
       case "fullscreen":
         toggleFullscreen().catch(() => {});
         break;
+      case "theater":
+        toggleTheater();
+        break;
     }
   }
 
@@ -1956,6 +1992,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
   prevMarkerButton.addEventListener("click", () => jumpMarker(-1));
   nextMarkerButton.addEventListener("click", () => jumpMarker(1));
   muteButton.addEventListener("click", toggleMute);
+  theaterButton?.addEventListener("click", toggleTheater);
   fullscreenButton.addEventListener("click", () => {
     toggleFullscreen().catch((error) => {
       note.textContent = error?.message || "Fullscreen unavailable";
@@ -2049,7 +2086,7 @@ function initClipPlayer(root, { durationMs = null, markers = [] } = {}) {
 function clipDetailView(clip) {
   const description = clip.description || "";
   return `
-    <section class="detail-layout clip-edit-layout">
+    <section class="detail-layout clip-edit-layout ${state.clipTheaterMode ? "is-theater" : ""}" data-clip-detail-layout>
       <div class="clip-edit-main">
         <div class="clip-title-editor" data-title-editor>
           <div class="clip-title-display" data-title-display>
@@ -2067,6 +2104,7 @@ function clipDetailView(clip) {
           playerId: `clip-${clip.id}`,
           src: `/api/v1/clips/${encodeURIComponent(clip.id)}/media`,
           durationMs: clip.duration_ms,
+          theater: true,
         })}
         <form id="clip-description-form" class="clip-description-form">
           <label class="field">
@@ -2135,7 +2173,9 @@ function bindClipDetailEvents(clip) {
   initClipPlayer(document.querySelector("[data-clip-player]"), {
     durationMs: clip.duration_ms,
     markers: [],
+    onTheaterToggle: toggleClipTheaterMode,
   });
+  updateClipTheaterMode(state.clipTheaterMode);
 
   const titleDisplay = document.querySelector("[data-title-display]");
   const titleForm = document.querySelector("[data-title-form]");
@@ -2221,6 +2261,24 @@ function bindClipDetailEvents(clip) {
       renderClipDetail(clip.id);
     }
   });
+}
+
+function toggleClipTheaterMode() {
+  updateClipTheaterMode(!state.clipTheaterMode);
+}
+
+function updateClipTheaterMode(enabled) {
+  state.clipTheaterMode = Boolean(enabled);
+  writeClipTheaterMode(state.clipTheaterMode);
+  const layout = document.querySelector("[data-clip-detail-layout]");
+  const theaterButton = document.querySelector("[data-player-theater]");
+  layout?.classList.toggle("is-theater", state.clipTheaterMode);
+  if (theaterButton) {
+    const label = state.clipTheaterMode ? "Exit theater mode" : "Theater mode";
+    theaterButton.setAttribute("aria-label", label);
+    theaterButton.setAttribute("aria-pressed", String(state.clipTheaterMode));
+    theaterButton.setAttribute("title", `${label} (T)`);
+  }
 }
 
 function markerItem(marker) {
