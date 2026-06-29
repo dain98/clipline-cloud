@@ -1548,8 +1548,13 @@ a:hover {
   display: grid;
   gap: 0.95rem;
   margin: 0 auto;
-  max-width: 94rem;
-  width: min(100%, 94rem);
+  max-width: 112rem;
+  width: min(100%, 112rem);
+}
+
+.public-watch-page.is-theater {
+  max-width: none;
+  width: 100%;
 }
 
 .public-watch-layout {

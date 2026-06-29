@@ -2365,7 +2365,7 @@ async function hydratePublicShareSideData(clip) {
 
 function publicWatchView(clip, authorName, mediaUrl, thumbnailUrl, recommendations, comments) {
   return `
-    <section class="public-watch-page" aria-labelledby="public-title">
+    <section class="public-watch-page ${state.clipTheaterMode ? "is-theater" : ""}" aria-labelledby="public-title" data-theater-layout>
       <div class="public-watch-layout ${recommendations.length ? "has-recommendations" : ""} ${state.clipTheaterMode ? "is-theater" : ""}" data-theater-layout>
         <div class="public-watch-main">
           ${clipPlayerView({
