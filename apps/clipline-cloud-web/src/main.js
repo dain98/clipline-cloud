@@ -2,7 +2,8 @@ import { render } from "preact";
 import { html } from "./lib/html.js";
 import { api, setCsrfToken } from "./lib/api.js";
 import { session, useStore } from "./lib/store.js";
-import { useRoute, onLinkClick, navigate } from "./lib/router.js";
+import { useRoute, onLinkClick, navigate, readLocation, initialRouteName } from "./lib/router.js";
+import { isPublicRouteName } from "./lib/routes.js";
 import { TopBar } from "./components/TopBar.js";
 import { TabBar } from "./components/TabBar.js";
 import { ToastHost } from "./components/ToastHost.js";
@@ -15,13 +16,10 @@ const PAGES = {
 const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",
   library: "library", clip: "library", admin: "admin", profile: "profile" };
 
-// Public routes that must never be bounced to /login when a request comes
-// back 401 (e.g. an expired session hitting a public API from a public page).
-const PUBLIC_ROUTE_NAMES = [
-  "login", "resetPassword", "public", "publicLibrary", "publicGame", "publicUser", "about", "games",
-];
-
-let currentRouteName = "";
+// Seeded from the *actual* initial location so the unauthorized-listener
+// below knows whether the very first paint is on a public route, before the
+// session-bootstrap fetch below has resolved (and possibly 401'd).
+let currentRouteName = initialRouteName(readLocation());
 
 function LegacyRedirect({ route }) {
   return html`<main class="page"><p class="kicker">Not ported yet</p>
@@ -46,7 +44,7 @@ function App() {
 
 window.addEventListener("clipline:unauthorized", () => {
   session.set({ user: null, csrfToken: null, ready: true });
-  if (!PUBLIC_ROUTE_NAMES.includes(currentRouteName)) navigate("/login");
+  if (!isPublicRouteName(currentRouteName)) navigate("/login");
 });
 
 (async () => {

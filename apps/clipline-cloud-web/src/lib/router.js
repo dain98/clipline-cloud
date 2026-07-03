@@ -12,9 +12,17 @@ export function previewHashToLocation(hash) {
   return { pathname, search: search ? `?${search}` : "" };
 }
 
-function readLocation() {
+export function readLocation() {
   if (isPreview()) return previewHashToLocation(window.location.hash);
   return { pathname: window.location.pathname, search: window.location.search };
+}
+
+// Pure: resolve a { pathname, search } location down to just the route name.
+// Extracted so main.js can seed its module-level currentRouteName from the
+// real initial location (before the session-bootstrap fetch resolves) and so
+// that seeding logic is unit-testable without a DOM/window.
+export function initialRouteName(loc) {
+  return parseRoute(loc.pathname, loc.search).name;
 }
 
 const listeners = new Set();

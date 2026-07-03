@@ -20,6 +20,16 @@ export function publicRouteQuery(params) {
   };
 }
 
+// Public routes that must never be bounced to /login when a request comes
+// back 401 (e.g. an expired session hitting a public API from a public page).
+export const PUBLIC_ROUTE_NAMES = [
+  "login", "resetPassword", "public", "publicLibrary", "publicGame", "publicUser", "about", "games",
+];
+
+export function isPublicRouteName(name) {
+  return PUBLIC_ROUTE_NAMES.includes(name);
+}
+
 export function parseRoute(pathname, search) {
   const params = new URLSearchParams(search || "");
   const path = pathname;

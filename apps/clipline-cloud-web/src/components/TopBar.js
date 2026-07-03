@@ -2,12 +2,29 @@ import { html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
 import { session, useStore } from "../lib/store.js";
 import { navigate } from "../lib/router.js";
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 export function TopBar({ active }) {
   const { user } = useStore(session);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuWrapRef = useRef(null);
   const isAdmin = user?.role === "admin";
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (event) => {
+      if (!menuWrapRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
   const nav = [
     ["feed", "/", "Feed"],
     ["library", "/library", "Library", !!user],
@@ -34,7 +51,7 @@ export function TopBar({ active }) {
       <input class="input" name="q" placeholder="Search clips, games, players…" aria-label="Search" />
     </form>
     ${user
-      ? html`<div class="avatar-wrap">
+      ? html`<div class="avatar-wrap" ref=${menuWrapRef}>
           <button class="avatar-btn" aria-haspopup="menu" aria-expanded=${menuOpen}
             onClick=${() => setMenuOpen(!menuOpen)}>
             <span class="avatar">${(user.display_name || user.username)[0].toUpperCase()}</span>
