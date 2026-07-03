@@ -104,3 +104,53 @@
   .ui .tabbar a.tab-on { color: var(--highlight); }
   .ui .toasts { bottom: 68px; }
 }
+
+/* Clip card grid, hover preview, skeletons, empty state */
+.ui .card-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+@media (max-width: 1100px) {
+  .ui .card-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .ui .card-grid { grid-template-columns: 1fr; }
+}
+
+.ui .clip-card { position: relative; }
+.ui .clip-card .card-title { margin: 8px 0 2px; font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+.ui .clip-card .card-title a { color: var(--ink); text-decoration: none; }
+.ui .clip-card .card-title a:hover { color: var(--highlight); }
+.ui .clip-card .card-meta { margin: 0; font-size: 11.5px; color: var(--muted); }
+.ui .clip-card .card-meta em { color: var(--highlight); font-style: normal; }
+
+.ui .card-vis { position: absolute; left: 8px; top: 8px; }
+
+.ui .card-check { position: absolute; right: 8px; top: 8px; z-index: 2; opacity: 0;
+  transition: opacity .15s; line-height: 0; }
+.ui .clip-card.is-selectable:hover .card-check,
+.ui .clip-card.is-selected .card-check,
+.ui .selecting .card-check { opacity: 1; }
+.ui .card-check input { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
+
+.ui .hover-preview { position: absolute; inset: 0; display: block; }
+.ui .preview-scrub { position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: var(--scrim); }
+.ui .preview-scrub span { display: block; height: 100%; background: var(--highlight); }
+
+.ui .skeleton-thumb { aspect-ratio: 16 / 9; border-radius: 8px;
+  background: linear-gradient(100deg, var(--surface) 30%, var(--surface-raised) 50%, var(--surface) 70%);
+  background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.ui .skeleton-line { height: 10px; margin-top: 10px; border-radius: 4px; background: var(--surface); }
+.ui .skeleton-line.is-short { width: 55%; }
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui .skeleton-thumb { animation: none; background: var(--surface); }
+}
+
+.ui .empty { display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 48px 24px; text-align: center; color: var(--muted); }
+.ui .empty-icon { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px;
+  margin-bottom: 12px; border-radius: 50%; background: var(--surface); color: var(--faint); }
+.ui .empty h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+.ui .empty p { max-width: 320px; margin: 0; font-size: 12.5px; }
