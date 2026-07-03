@@ -26,3 +26,41 @@ test("api parses json, sets CSRF on mutations, maps errors", async () => {
   await assert.rejects(() => api("/x"));
   assert.equal(unauthorized, 1);
 });
+
+test("api falls back to statusText for non-JSON error responses", async () => {
+  globalThis.fetch = async () => new Response("<html>oops</html>", {
+    status: 500,
+    statusText: "Internal Server Error",
+    headers: { "content-type": "text/html" }
+  });
+  await assert.rejects(
+    () => api("/x"),
+    (e) => e instanceof ApiError && e.status === 500 && e.message === "Internal Server Error"
+  );
+});
+
+test("api does not set CSRF token on GET requests", async () => {
+  let captured;
+  globalThis.fetch = async (path, init) => {
+    captured = { path, init };
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  setCsrfToken("tok");
+  await api("/api/v1/auth/me");
+  assert.equal(captured.init.headers.get("X-CSRF-Token"), null);
+
+  // Verify POST does set it
+  captured = null;
+  globalThis.fetch = async (path, init) => {
+    captured = { path, init };
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  await api("/api/v1/auth/me", { method: "POST" });
+  assert.equal(captured.init.headers.get("X-CSRF-Token"), "tok");
+});
