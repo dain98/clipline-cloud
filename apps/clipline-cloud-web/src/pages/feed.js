@@ -3,6 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
 import { formatDuration, formatViews } from "../lib/format.js";
+import { publicThumbPath } from "../lib/media.js";
 import { ClipCard, clipAuthor } from "../components/ClipCard.js";
 import { EmptyState } from "../components/EmptyState.js";
 
@@ -104,7 +105,10 @@ export function FeedPage({ route }) {
         </div>
         <div class="card-grid">
           ${(isDefaultView ? clips.slice(4) : clips).map(
-            (c) => html`<${ClipCard} clip=${c} href=${shareHref(c)} showAuthor />`
+            // Override the API's absolute thumbnail_url with the relative
+            // path so ClipCard's poster survives host-alias CSP (see media.js).
+            (c) => html`<${ClipCard} clip=${{ ...c, thumbnail_url: publicThumbPath(c) }}
+              href=${shareHref(c)} showAuthor />`
           )}
         </div>
         ${pager(data, query, setQ)}
@@ -118,13 +122,13 @@ function renderHero(clips) {
   return html`<p class="kicker">Now playing on this server</p>
     <section class="hero">
       <a class="hero-main" href=${shareHref(hero)}>
-        <img src=${hero.thumbnail_url} alt="" loading="lazy" />
+        <img src=${publicThumbPath(hero)} alt="" loading="lazy" />
         <span class="hero-caption">▶ ${hero.title} — ${hero.game_name} · ${formatDuration(hero.duration_ms)}</span>
       </a>
       <div class="hero-side">
         ${sideRows.map(
           (c) => html`<a class="hero-row" href=${shareHref(c)}>
-            <img src=${c.thumbnail_url} alt="" loading="lazy" />
+            <img src=${publicThumbPath(c)} alt="" loading="lazy" />
             <span><b>${c.title}</b>
               <small>${clipAuthor(c)} · ${c.game_name} · ${formatViews(c.view_count)}</small></span>
           </a>`
