@@ -9,5 +9,6 @@ test("parseRoute maps every route", () => {
   assert.deepEqual(parseRoute("/clip/01ABC", ""), { name: "clip", clipId: "01ABC" });
   assert.equal(parseRoute("/admin", "?tab=users").tab, "users");
   assert.equal(parseRoute("/reset-password", "?token=t&invite=1").invite, true);
+  assert.deepEqual(parseRoute("/games", ""), { name: "games" });
   assert.equal(parseRoute("/nonsense", "").name, "publicLibrary");
 });

@@ -7,10 +7,15 @@ import { isPublicRouteName } from "./lib/routes.js";
 import { TopBar } from "./components/TopBar.js";
 import { TabBar } from "./components/TabBar.js";
 import { ToastHost } from "./components/ToastHost.js";
+import { FeedPage } from "./pages/feed.js";
+import { GamesPage } from "./pages/games.js";
 
 const PAGES = {
+  publicLibrary: FeedPage,
+  publicGame: FeedPage,
+  games: GamesPage,
   // filled in by later tasks:
-  // publicLibrary: FeedPage, publicGame: FeedPage, library: LibraryPage, …
+  // library: LibraryPage, …
 };
 
 const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",

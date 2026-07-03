@@ -50,6 +50,9 @@ export function parseRoute(pathname, search) {
   if (path === "/about") {
     return { name: "about" };
   }
+  if (path === "/games") {
+    return { name: "games" };
+  }
   if (path.startsWith("/u/")) {
     return { name: "publicUser", username: safeDecodeURIComponent(path.slice(3)) };
   }
