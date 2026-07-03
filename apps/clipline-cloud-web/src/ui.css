@@ -127,7 +127,8 @@
   transition: opacity .15s; line-height: 0; }
 .ui .clip-card.is-selectable:hover .card-check,
 .ui .clip-card.is-selected .card-check,
-.ui .selecting .card-check { opacity: 1; }
+.ui .selecting .card-check,
+.ui .clip-card.is-selectable .card-check:focus-within { opacity: 1; }
 .ui .card-check input { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
 
 .ui .hover-preview { position: absolute; inset: 0; display: block; }

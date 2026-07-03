@@ -1,7 +1,7 @@
 import { html } from "../lib/html.js";
-import { useRef, useState } from "preact/hooks";
+import { useRef, useState, useEffect } from "preact/hooks";
+import { claim, release } from "../lib/preview-guard.js";
 
-let activeTeardown = null;
 const canPreview = () =>
   window.matchMedia("(pointer: fine)").matches &&
   !window.matchMedia("(prefers-reduced-motion: reduce)").matches &&
@@ -12,25 +12,39 @@ export function HoverPreview({ src, poster, alt = "" }) {
   const [progress, setProgress] = useState(0);
   const timer = useRef(null);
   const videoRef = useRef(null);
+  const mounted = useRef(true);
+  const stopRef = useRef();
 
   const stop = () => {
+    if (!mounted.current) return;
     clearTimeout(timer.current);
     setPlaying(false);
     setProgress(0);
-    activeTeardown = null;
   };
+
+  stopRef.current = stop;
+
   const onEnter = () => {
     if (!src || !canPreview()) return;
     timer.current = setTimeout(() => {
-      activeTeardown?.();
-      activeTeardown = stop;
+      if (!mounted.current) return;
+      claim(stopRef.current);
       setPlaying(true);
     }, 300);
   };
+
   const onTime = (e) => {
     const v = e.target;
     if (v.duration) setProgress(v.currentTime / v.duration);
   };
+
+  useEffect(() => {
+    return () => {
+      mounted.current = false;
+      clearTimeout(timer.current);
+      release(stopRef.current);
+    };
+  }, []);
 
   return html`<span class="hover-preview" onPointerEnter=${onEnter} onPointerLeave=${stop}>
     ${playing
