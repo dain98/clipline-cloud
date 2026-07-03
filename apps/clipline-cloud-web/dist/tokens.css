@@ -15,6 +15,7 @@
   --accent-soft: rgba(59, 130, 246, 0.12);
   --highlight-soft: rgba(139, 188, 255, 0.14);
   --danger-soft: rgba(255, 107, 122, 0.14);
+  --on-accent: #ffffff;
   --success-soft: rgba(94, 224, 160, 0.14);
   --scrim: rgba(8, 11, 18, 0.82);
   --radius: 10px;
