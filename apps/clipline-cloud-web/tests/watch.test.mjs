@@ -14,6 +14,7 @@ const {
   resolveOwnedClipId,
   deriveShareLink,
   resolutionLabel,
+  recommendationsPath,
   upNextList,
 } = await import("../src/pages/watch.js");
 
@@ -94,6 +95,17 @@ test("resolutionLabel handles a missing height", () => {
 });
 
 // upNextList: first N public clips excluding the one being watched.
+
+test("recommendationsPath requests related clips for the watched share id", () => {
+  assert.equal(
+    recommendationsPath("c_abc", 8),
+    "/api/v1/public/recommendations?share_id=c_abc&limit=8"
+  );
+});
+
+test("recommendationsPath omits share_id when no public share exists yet", () => {
+  assert.equal(recommendationsPath(null, 6), "/api/v1/public/recommendations?limit=6");
+});
 
 test("upNextList excludes the current clip by share_id", () => {
   const clips = [{ share_id: "a" }, { share_id: "b" }, { share_id: "c" }];

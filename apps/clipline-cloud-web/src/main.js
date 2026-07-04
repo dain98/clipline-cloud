@@ -63,6 +63,7 @@ function App() {
 }
 
 window.addEventListener("clipline:unauthorized", () => {
+  setCsrfToken(null);
   session.set({ user: null, csrfToken: null, ready: true });
   if (!isPublicRouteName(currentRouteName)) navigate("/login");
 });
@@ -73,6 +74,7 @@ window.addEventListener("clipline:unauthorized", () => {
     setCsrfToken(me.csrf_token);
     session.set({ user: me.user, csrfToken: me.csrf_token, ready: true });
   } catch {
+    setCsrfToken(null);
     session.set({ user: null, csrfToken: null, ready: true });
   }
   // Preact's render() appends into the container rather than replacing its

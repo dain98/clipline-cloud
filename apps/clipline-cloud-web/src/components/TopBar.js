@@ -98,8 +98,9 @@ export function TopBar({ active, route }) {
 }
 
 async function signOut() {
-  const { api } = await import("../lib/api.js");
+  const { api, setCsrfToken } = await import("../lib/api.js");
   try { await api("/api/v1/auth/logout", { method: "POST" }); } catch {}
+  setCsrfToken(null);
   session.set({ user: null, csrfToken: null, ready: true });
   navigate("/login");
 }

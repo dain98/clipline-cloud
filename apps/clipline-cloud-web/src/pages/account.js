@@ -1,6 +1,6 @@
 import { html } from "../lib/html.js";
 import { useEffect, useState } from "preact/hooks";
-import { api } from "../lib/api.js";
+import { api, setCsrfToken } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
 import { session, toast } from "../lib/store.js";
 import { formatDate } from "../lib/format.js";
@@ -78,6 +78,7 @@ export function AccountPage() {
       if (target.kind === "session") {
         await api(`/api/v1/auth/sessions/${encodeURIComponent(target.item.id)}`, { method: "DELETE", body: {} });
         if (target.item.current) {
+          setCsrfToken(null);
           session.set({ user: null, csrfToken: null, ready: true });
           toast("Current session revoked.");
           navigate("/login");

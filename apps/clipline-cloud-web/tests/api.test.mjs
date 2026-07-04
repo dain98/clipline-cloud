@@ -64,3 +64,18 @@ test("api does not set CSRF token on GET requests", async () => {
   await api("/api/v1/auth/me", { method: "POST" });
   assert.equal(captured.init.headers.get("X-CSRF-Token"), "tok");
 });
+
+test("setCsrfToken clears mutation headers when reset to null", async () => {
+  let captured;
+  globalThis.fetch = async (path, init) => {
+    captured = { path, init };
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  setCsrfToken("tok");
+  setCsrfToken(null);
+  await api("/api/v1/auth/logout", { method: "POST" });
+  assert.equal(captured.init.headers.get("X-CSRF-Token"), null);
+});

@@ -48,7 +48,15 @@ export function resolutionLabel(clip) {
   return `${height}p${fps}`;
 }
 
-// GET /api/v1/public/clips first N excluding the clip currently being watched.
+export function recommendationsPath(shareId, limit = 8) {
+  const params = new URLSearchParams();
+  if (shareId) params.set("share_id", shareId);
+  params.set("limit", String(limit));
+  return `/api/v1/public/recommendations?${params}`;
+}
+
+// GET /api/v1/public/recommendations returns related clips; keep the exclusion
+// as a defensive guard when the source share id is known.
 export function upNextList(clips, currentShareId, limit = 8) {
   return (clips || []).filter((c) => c.share_id !== currentShareId).slice(0, limit);
 }
@@ -67,6 +75,8 @@ export function WatchPage({ route }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const routeKey = route.name === "clip" ? `clip:${route.clipId}` : `public:${route.shareId}`;
+  const currentShareId = resolveShareId(route.name, route, clip);
+  const recommendationsReady = route.name === "public" || Boolean(clip);
 
   useEffect(() => {
     let live = true;
@@ -100,13 +110,20 @@ export function WatchPage({ route }) {
 
   useEffect(() => {
     let live = true;
-    api("/api/v1/public/clips")
+    if (!recommendationsReady) {
+      setUpNext([]);
+      return () => {
+        live = false;
+      };
+    }
+    setUpNext([]);
+    api(recommendationsPath(currentShareId, 8))
       .then((data) => live && setUpNext(data.clips || []))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [routeKey]);
+  }, [routeKey, currentShareId, recommendationsReady]);
 
   if (error) {
     return html`<main class="page"><${EmptyState} name="alert" title="Couldn't load this clip" body=${error.message} /></main>`;
@@ -116,7 +133,7 @@ export function WatchPage({ route }) {
   }
 
   const isOwner = isOwnerForRoute(route.name, clip);
-  const shareId = resolveShareId(route.name, route, clip);
+  const shareId = currentShareId;
   const ownedClipId = resolveOwnedClipId(route.name, route, clip);
   const mediaSrc =
     route.name === "clip" ? ownedMediaPath({ id: clip.id }) : publicMediaPath({ share_id: route.shareId });
