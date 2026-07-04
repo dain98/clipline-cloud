@@ -7,3 +7,15 @@
 export function publicThumbPath(clip) {
   return `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/thumbnail`;
 }
+
+// GET /api/v1/clips returns no thumbnail_url/media_url at all (unlike the
+// public listing), so owned/library views build these relative paths from
+// the clip id — matching the owned media routes registered in
+// apps/clipline-cloud-server/src/media.rs (:53-54).
+export function ownedThumbPath(clip) {
+  return `/api/v1/clips/${encodeURIComponent(clip.id)}/thumbnail`;
+}
+
+export function ownedMediaPath(clip) {
+  return `/api/v1/clips/${encodeURIComponent(clip.id)}/media`;
+}

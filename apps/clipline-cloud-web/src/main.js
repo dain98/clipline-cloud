@@ -9,13 +9,15 @@ import { TabBar } from "./components/TabBar.js";
 import { ToastHost } from "./components/ToastHost.js";
 import { FeedPage } from "./pages/feed.js";
 import { GamesPage } from "./pages/games.js";
+import { LibraryPage } from "./pages/library.js";
 
 const PAGES = {
   publicLibrary: FeedPage,
   publicGame: FeedPage,
   games: GamesPage,
+  library: LibraryPage,
   // filled in by later tasks:
-  // library: LibraryPage, …
+  // clip: ClipPage, …
 };
 
 const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",
