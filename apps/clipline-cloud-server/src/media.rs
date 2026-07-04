@@ -1094,6 +1094,8 @@ fn public_share_page_response(
         image_url: &poster_url,
         image_width,
         image_height,
+        video_width: clip.width.unwrap_or(1280).max(1),
+        video_height: clip.height.unwrap_or(720).max(1),
         status_message: "Loading public clip...",
     });
     html_response(StatusCode::OK, html)
@@ -1111,6 +1113,8 @@ fn public_share_unavailable_response(state: &AppState, share_id: &str) -> Respon
         image_url: "",
         image_width: 1280,
         image_height: 720,
+        video_width: 1280,
+        video_height: 720,
         status_message: "Clip unavailable",
     });
     html_response(StatusCode::NOT_FOUND, html)
@@ -1133,8 +1137,12 @@ struct PublicShareHtml<'a> {
     share_url: &'a str,
     media_url: &'a str,
     image_url: &'a str,
+    // og:image sizing matches the generated poster (capped at 1280px);
+    // og:video keeps the clip's real pixel dimensions.
     image_width: i64,
     image_height: i64,
+    video_width: i64,
+    video_height: i64,
     status_message: &'a str,
 }
 
@@ -1175,8 +1183,8 @@ fn public_share_html(data: PublicShareHtml<'_>) -> String {
     <meta property="og:video:type" content="video/mp4">
     <meta property="og:video:width" content="{width}">
     <meta property="og:video:height" content="{height}">"#,
-            width = data.image_width,
-            height = data.image_height
+            width = data.video_width,
+            height = data.video_height
         )
     };
 
@@ -1655,6 +1663,8 @@ mod tests {
             image_url: "https://clips.example.com/api/v1/public/clips/share/poster",
             image_width: 1280,
             image_height: 720,
+            video_width: 1920,
+            video_height: 1080,
             status_message: "Loading <clip>",
         });
 
@@ -1666,7 +1676,8 @@ mod tests {
         ));
         assert!(html.contains(r#"<meta property="og:image:width" content="1280">"#));
         assert!(html.contains(r#"<meta property="og:image:height" content="720">"#));
-        assert!(html.contains(r#"<meta property="og:video:width" content="1280">"#));
+        assert!(html.contains(r#"<meta property="og:video:width" content="1920">"#));
+        assert!(html.contains(r#"<meta property="og:video:height" content="1080">"#));
         assert!(html.contains(r#"<meta property="og:image:type" content="image/jpeg">"#));
         assert!(!html.contains("Loading <clip>"));
     }
