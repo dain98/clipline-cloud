@@ -162,6 +162,7 @@ export function LibraryPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const bulkBusyRef = useRef(false);
   const searchTimer = useRef(null);
 
   useEffect(() => () => clearTimeout(searchTimer.current), []);
@@ -193,6 +194,11 @@ export function LibraryPage() {
   };
 
   const reload = () => setReloadTick((t) => t + 1);
+
+  const setBulkBusyValue = (value) => {
+    bulkBusyRef.current = value;
+    setBulkBusy(value);
+  };
 
   const onSearchInput = (event) => {
     const value = event.target.value;
@@ -239,12 +245,12 @@ export function LibraryPage() {
   }
 
   async function updateVisibility(newVisibility) {
-    if (bulkBusy) return;
+    if (bulkBusyRef.current) return;
     const ids = Array.from(selected);
     if (!ids.length) return;
     const clips = data?.clips || [];
     const snapshot = new Map(ids.map((id) => [id, clips.find((c) => c.id === id)]));
-    setBulkBusy(true);
+    setBulkBusyValue(true);
     patchClips(ids, { visibility: newVisibility });
 
     const failed = [];
@@ -296,57 +302,66 @@ export function LibraryPage() {
         });
       }
     } finally {
-      setBulkBusy(false);
+      setBulkBusyValue(false);
     }
   }
 
   async function undoVisibility(ids, snapshot, confirmedState) {
-    for (const id of ids) {
-      const original = snapshot.get(id);
-      if (original) patchClip(id, {
-        visibility: original.visibility,
-        public_url: original.public_url,
-        public_share_id: original.public_share_id,
-      });
+    if (bulkBusyRef.current) {
+      toast("Wait for visibility changes to finish.");
+      return;
     }
-
-    const failed = [];
-    await runPool(ids, 4, async (id) => {
-      const original = snapshot.get(id);
-      if (!original) return;
-      try {
-        const updated = await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
-          method: "POST",
-          body: { visibility: original.visibility },
+    setBulkBusyValue(true);
+    try {
+      for (const id of ids) {
+        const original = snapshot.get(id);
+        if (original) patchClip(id, {
+          visibility: original.visibility,
+          public_url: original.public_url,
+          public_share_id: original.public_share_id,
         });
-        patchClip(id, {
-          visibility: updated.visibility,
-          public_url: updated.public_url,
-          public_share_id: updated.public_share_id,
-        });
-      } catch (e) {
-        failed.push({ id, message: e.message });
       }
-    });
 
-    const { message } = summarizeBulkOutcome(ids, failed, {
-      verb: "undo",
-      allFailedMessage: "Couldn't undo visibility change.",
-    });
-    if (message) {
-      // Revert failed — put those clips back to the state they were in right
-      // before this undo ran (the confirmed post-forward-change state), not
-      // the optimistic pre-undo local patch, which may be stale.
-      for (const { id } of failed) {
-        const current = confirmedState.get(id);
-        if (current) patchClip(id, current);
+      const failed = [];
+      await runPool(ids, 4, async (id) => {
+        const original = snapshot.get(id);
+        if (!original) return;
+        try {
+          const updated = await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
+            method: "POST",
+            body: { visibility: original.visibility },
+          });
+          patchClip(id, {
+            visibility: updated.visibility,
+            public_url: updated.public_url,
+            public_share_id: updated.public_share_id,
+          });
+        } catch (e) {
+          failed.push({ id, message: e.message });
+        }
+      });
+
+      const { message } = summarizeBulkOutcome(ids, failed, {
+        verb: "undo",
+        allFailedMessage: "Couldn't undo visibility change.",
+      });
+      if (message) {
+        // Revert failed — put those clips back to the state they were in right
+        // before this undo ran (the confirmed post-forward-change state), not
+        // the optimistic pre-undo local patch, which may be stale.
+        for (const { id } of failed) {
+          const current = confirmedState.get(id);
+          if (current) patchClip(id, current);
+        }
+        toast(message);
       }
-      toast(message);
+    } finally {
+      setBulkBusyValue(false);
     }
   }
 
   async function onCopyLinks() {
-    if (bulkBusy) {
+    if (bulkBusyRef.current) {
       toast("Wait for visibility changes to finish.");
       return;
     }

@@ -27,3 +27,7 @@ test("tabNavKeyForRoute highlights Search for /search while top nav stays on Fee
   assert.equal(tabNavKeyForRoute(route), "search");
   assert.equal(topNavKeyForRoute(route), "feed");
 });
+
+test("tabNavKeyForRoute highlights Games for /games", () => {
+  assert.equal(tabNavKeyForRoute(parseRoute("/games", "")), "games");
+});

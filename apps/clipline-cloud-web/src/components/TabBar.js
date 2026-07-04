@@ -4,9 +4,10 @@ import { session, useStore } from "../lib/store.js";
 
 // Mirrors TopBar's Library gating (nav.filter on `!!user`, TopBar.js:33) —
 // Library and Profile need a signed-in session; anonymous mobile users only
-// get Feed + Search.
+// get the public Feed + Games + Search tabs.
 const ALL_TABS = [
   ["feed", "/", "home", "Feed", true],
+  ["games", "/games", "globe", "Games", true],
   ["library", "/library", "library", "Library", "auth"],
   ["search", "/search", "search", "Search", true],
   ["profile", "/profile", "user", "Profile", "auth"],

@@ -10,7 +10,7 @@ window.history = { pushState() {} };
 window.matchMedia = () => ({ matches: false });
 globalThis.document = { addEventListener() {}, removeEventListener() {} };
 
-const { topBarSearchValue } = await import("../src/components/TopBar.js");
+const { topBarSearchPath, topBarSearchValue } = await import("../src/components/TopBar.js");
 
 // topBarSearchValue mirrors what publicRouteQuery puts on the route for "/"
 // and "/search" (publicLibrary) and "/game/<name>" (publicGame) — every
@@ -32,4 +32,25 @@ test("topBarSearchValue is empty when q is absent", () => {
 test("topBarSearchValue is empty for routes with no query at all", () => {
   assert.equal(topBarSearchValue({ name: "library" }), "");
   assert.equal(topBarSearchValue(undefined), "");
+});
+
+test("topBarSearchPath preserves the active game route while searching", () => {
+  assert.equal(
+    topBarSearchPath({ name: "publicGame", game: "Counter-Strike 2", query: {} }, "ace"),
+    "/search?q=ace&game=Counter-Strike+2"
+  );
+});
+
+test("topBarSearchPath preserves an existing search game filter", () => {
+  assert.equal(
+    topBarSearchPath({ name: "publicLibrary", query: { game: "VALORANT" } }, "clutch"),
+    "/search?q=clutch&game=VALORANT"
+  );
+});
+
+test("topBarSearchPath keeps the game scope even for an empty query", () => {
+  assert.equal(
+    topBarSearchPath({ name: "publicGame", game: "VALORANT", query: {} }, "  "),
+    "/search?game=VALORANT"
+  );
 });

@@ -12,6 +12,16 @@ export function topBarSearchValue(route) {
   return route?.query?.q || "";
 }
 
+export function topBarSearchPath(route, queryText) {
+  const params = new URLSearchParams();
+  const q = String(queryText || "").trim();
+  const game = route?.name === "publicGame" ? route.game : route?.query?.game || "";
+  if (q) params.set("q", q);
+  if (game) params.set("game", game);
+  const query = params.toString();
+  return query ? `/search?${query}` : "/search";
+}
+
 export function TopBar({ active, route }) {
   const { user } = useStore(session);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -53,8 +63,8 @@ export function TopBar({ active, route }) {
 
   const onSearch = (event) => {
     event.preventDefault();
-    const q = new FormData(event.target).get("q")?.toString().trim();
-    navigate(q ? `/search?q=${encodeURIComponent(q)}` : "/search");
+    const q = new FormData(event.target).get("q")?.toString() || "";
+    navigate(topBarSearchPath(route, q));
   };
 
   return html`<header class="topbar">
