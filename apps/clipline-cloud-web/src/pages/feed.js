@@ -3,7 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
 import { formatDuration, formatViews } from "../lib/format.js";
-import { publicMediaPath, publicThumbPath } from "../lib/media.js";
+import { publicMediaPath, publicPosterPath, publicThumbPath } from "../lib/media.js";
 import { ClipCard, clipAuthor } from "../components/ClipCard.js";
 import { EmptyState } from "../components/EmptyState.js";
 
@@ -148,7 +148,7 @@ function renderHero(clips) {
   return html`<p class="kicker">Now playing on this server</p>
     <section class="hero">
       <a class="hero-main" href=${shareHref(hero)}>
-        <img src=${publicThumbPath(hero)} alt="" loading="lazy" />
+        <img src=${publicPosterPath(hero)} alt="" loading="lazy" />
         <span class="hero-caption">▶ ${hero.title} — ${gameLabel(hero)} · ${formatDuration(hero.duration_ms)}</span>
       </a>
       <div class="hero-side">
