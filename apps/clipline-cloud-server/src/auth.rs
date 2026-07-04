@@ -1227,9 +1227,9 @@ async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiErro
         .list_all_for_owner(&user.id)
         .await?;
     for clip in clips {
-        delete_clip_media_best_effort(state, &clip).await;
         state.repositories.jobs.delete_for_clip(&clip.id).await?;
         state.repositories.clips.delete(&clip.id).await?;
+        delete_clip_media_best_effort(state, &clip).await;
     }
     if let Some(avatar_key) = user.avatar_key.as_deref() {
         if let Ok(key) = ObjectKey::parse(avatar_key) {

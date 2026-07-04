@@ -1,5 +1,5 @@
 import { html } from "../../lib/html.js";
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { api } from "../../lib/api.js";
 import { toast } from "../../lib/store.js";
 import { formatBytes, formatDate } from "../../lib/format.js";
@@ -185,6 +185,11 @@ function UserRow({
   const enableDisabled = !canEnableUser(user, currentUser);
   const purgeDisabled = !canPurgeUser(user, currentUser);
   const roleEditable = canChangeRole(user, currentUser);
+  const [roleValue, setRoleValue] = useState(user.role);
+
+  useEffect(() => {
+    setRoleValue(user.role);
+  }, [user.role]);
 
   return html`<tr>
     <td>
@@ -194,12 +199,14 @@ function UserRow({
     </td>
     <td>
       ${roleEditable
-        ? html`<select class="input input-compact" value=${user.role}
+        ? html`<select class="input input-compact" value=${roleValue}
             onChange=${(event) => {
-              if (event.target.value === user.role) return;
-              onRole(user, event.target.value);
+              const nextRole = event.target.value;
+              if (nextRole === user.role) return;
+              setRoleValue(user.role);
+              onRole(user, nextRole);
             }}>
-            ${roleOptions(true).map(([v, l]) => html`<option value=${v} selected=${user.role === v}>${l}</option>`)}
+            ${roleOptions(true).map(([v, l]) => html`<option value=${v} selected=${roleValue === v}>${l}</option>`)}
           </select>`
         : user.role}
     </td>

@@ -528,9 +528,7 @@ pub(crate) fn stored_storage_quota_bytes(stored: Option<i64>) -> Option<u64> {
 }
 
 fn stored_user_storage_quota_bytes(settings: &AppSettings) -> Option<u64> {
-    settings
-        .user_storage_quota_bytes
-        .and_then(|value| u64::try_from(value).ok())
+    stored_storage_quota_bytes(settings.user_storage_quota_bytes)
 }
 
 impl AdminSettingsResponse {
@@ -583,9 +581,7 @@ impl From<AppSettings> for AdminSettingsResponse {
                 .is_some_and(|password| !password.trim().is_empty()),
             smtp_from_email: value.smtp_from_email,
             smtp_from_name: value.smtp_from_name,
-            user_storage_quota_bytes: value
-                .user_storage_quota_bytes
-                .and_then(|quota| u64::try_from(quota).ok()),
+            user_storage_quota_bytes: stored_storage_quota_bytes(value.user_storage_quota_bytes),
             user_storage_quota_env_fallback_bytes: None,
             updated_at: value.updated_at,
         }
@@ -751,5 +747,17 @@ mod tests {
         assert_eq!(stored_storage_quota_bytes(None), None);
         assert_eq!(stored_storage_quota_bytes(Some(0)), None);
         assert_eq!(stored_storage_quota_bytes(Some(4096)), Some(4096));
+    }
+
+    #[test]
+    fn settings_response_hides_zero_stored_quota() {
+        let settings = sample_settings(Some(0));
+        let config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        let response = AdminSettingsResponse::from_settings(settings, &config);
+        assert_eq!(response.user_storage_quota_bytes, None);
+        assert_eq!(response.user_storage_quota_env_fallback_bytes, None);
     }
 }
