@@ -442,6 +442,7 @@ async fn get_owned_thumbnail(
         &headers,
         &clip,
         clip.thumbnail_key.as_deref(),
+        None,
         CacheScope::Owner,
     )
     .await
@@ -454,13 +455,15 @@ async fn get_owned_poster(
 ) -> Result<Response, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
     let clip = ensure_owned_ready_clip(&state, &auth.user.id, &id).await?;
-    // Older clips predate poster generation; fall back to the thumbnail so
-    // consumers can always request /poster without checking availability.
+    // poster_key is assigned at upload creation but the poster object is only
+    // written by a post-ready job, so fall back per object (not per key) to the
+    // thumbnail when the poster is still pending, failed, or predates posters.
     serve_clip_image_or_placeholder(
         &state,
         &headers,
         &clip,
-        clip.poster_key.as_deref().or(clip.thumbnail_key.as_deref()),
+        clip.poster_key.as_deref(),
+        clip.thumbnail_key.as_deref(),
         CacheScope::Owner,
     )
     .await
@@ -717,6 +720,7 @@ async fn get_public_thumbnail(
         &headers,
         &clip,
         clip.thumbnail_key.as_deref(),
+        None,
         CacheScope::Public,
     )
     .await
@@ -728,13 +732,14 @@ async fn get_public_poster(
     Path(share_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let clip = load_public_clip(&state, &share_id).await?;
-    // Same thumbnail fallback as get_owned_poster: og:image and the watch
-    // player point here unconditionally.
+    // Same object-level thumbnail fallback as get_owned_poster: og:image and
+    // the watch player point here unconditionally.
     serve_clip_image_or_placeholder(
         &state,
         &headers,
         &clip,
-        clip.poster_key.as_deref().or(clip.thumbnail_key.as_deref()),
+        clip.poster_key.as_deref(),
+        clip.thumbnail_key.as_deref(),
         CacheScope::Public,
     )
     .await
@@ -803,22 +808,42 @@ async fn serve_clip_image_or_placeholder(
     state: &AppState,
     headers: &HeaderMap,
     clip: &Clip,
-    storage_key: Option<&str>,
+    primary_key: Option<&str>,
+    fallback_key: Option<&str>,
     scope: CacheScope,
 ) -> Result<Response, ApiError> {
-    let Some(storage_key) = storage_key else {
-        return Ok(placeholder_response(headers));
-    };
+    if let Some(storage_key) = primary_key {
+        if let Some(response) = try_serve_clip_image(state, headers, clip, storage_key, scope).await
+        {
+            return Ok(response);
+        }
+    }
+    if let Some(storage_key) = fallback_key {
+        if let Some(response) = try_serve_clip_image(state, headers, clip, storage_key, scope).await
+        {
+            return Ok(response);
+        }
+    }
+    Ok(placeholder_response(headers))
+}
+
+async fn try_serve_clip_image(
+    state: &AppState,
+    headers: &HeaderMap,
+    clip: &Clip,
+    storage_key: &str,
+    scope: CacheScope,
+) -> Option<Response> {
     let key = match ObjectKey::parse(storage_key) {
         Ok(key) => key,
         Err(error) => {
             warn!(event = "media.invalid_artifact_key", clip_id = %clip.id, error = %error);
-            return Ok(placeholder_response(headers));
+            return None;
         }
     };
     let metadata = match state.storage.head_object(&key).await {
         Ok(metadata) => metadata,
-        Err(StorageError::NotFound(_)) => return Ok(placeholder_response(headers)),
+        Err(StorageError::NotFound(_)) => return None,
         Err(error) => {
             warn!(
                 event = "media.artifact_head_failed",
@@ -826,16 +851,16 @@ async fn serve_clip_image_or_placeholder(
                 key = %key,
                 error = %error
             );
-            return Ok(placeholder_response(headers));
+            return None;
         }
     };
     if etag_matches(headers, metadata.etag.as_deref()) {
-        return Ok(not_modified_response(&metadata, scope));
+        return Some(not_modified_response(&metadata, scope));
     }
 
     match state.storage.get_object_stream(&key, None).await {
-        Ok(object) => Ok(media_response(object, scope)),
-        Err(StorageError::NotFound(_)) => Ok(placeholder_response(headers)),
+        Ok(object) => Some(media_response(object, scope)),
+        Err(StorageError::NotFound(_)) => None,
         Err(error) => {
             warn!(
                 event = "media.artifact_get_failed",
@@ -843,7 +868,7 @@ async fn serve_clip_image_or_placeholder(
                 key = %key,
                 error = %error
             );
-            Ok(placeholder_response(headers))
+            None
         }
     }
 }
@@ -1121,14 +1146,19 @@ fn public_share_unavailable_response(state: &AppState, share_id: &str) -> Respon
 }
 
 fn public_embed_image_dimensions(clip: &Clip) -> (i64, i64) {
-    const MAX_POSTER_WIDTH: i64 = 1280;
-    let width = clip.width.unwrap_or(MAX_POSTER_WIDTH).max(1);
-    let height = clip.height.unwrap_or(720).max(1);
-    if width <= MAX_POSTER_WIDTH {
-        return (width, height);
-    }
-    let scaled_height = (height * MAX_POSTER_WIDTH + width / 2) / width;
-    (MAX_POSTER_WIDTH, scaled_height.max(1))
+    // Poster artifacts are always rendered at this width (`scale=1280:-2` in
+    // media_processing::generate_poster), including upscaled small sources,
+    // so advertise that size rather than the source dimensions.
+    const POSTER_WIDTH: i64 = 1280;
+    // Same sane bound the metadata probe enforces; stored dimensions can come
+    // straight from the upload request, so clamp before multiplying.
+    const MAX_DIMENSION: i64 = 16_384;
+    let width = clip.width.unwrap_or(POSTER_WIDTH).clamp(1, MAX_DIMENSION);
+    let height = clip.height.unwrap_or(720).clamp(1, MAX_DIMENSION);
+    let scaled_height = (height * POSTER_WIDTH + width / 2) / width;
+    // `-2` keeps the proportional height even.
+    let even_height = ((scaled_height + 1) / 2) * 2;
+    (POSTER_WIDTH, even_height.max(2))
 }
 
 struct PublicShareHtml<'a> {
@@ -1689,9 +1719,26 @@ mod tests {
         clip.height = Some(1080);
         assert_eq!(public_embed_image_dimensions(&clip), (1280, 720));
 
+        // Small sources are upscaled by the poster job (`scale=1280:-2`), so
+        // the advertised size matches the artifact, not the source.
         clip.width = Some(800);
         clip.height = Some(600);
-        assert_eq!(public_embed_image_dimensions(&clip), (800, 600));
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 960));
+
+        // Vertical video keeps aspect with an even height.
+        clip.width = Some(720);
+        clip.height = Some(1280);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 2276));
+
+        // Client-supplied dimensions outside probe bounds must not overflow;
+        // height clamps to 16_384 before scaling.
+        clip.width = Some(1281);
+        clip.height = Some(i64::MAX);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 16_372));
+
+        clip.width = Some(0);
+        clip.height = Some(-42);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 1280));
     }
 
     #[test]
