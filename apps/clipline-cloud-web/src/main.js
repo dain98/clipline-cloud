@@ -11,6 +11,7 @@ import { FeedPage } from "./pages/feed.js";
 import { GamesPage } from "./pages/games.js";
 import { LibraryPage } from "./pages/library.js";
 import { WatchPage } from "./pages/watch.js";
+import { LoginPage, ResetPasswordPage } from "./pages/login.js";
 
 const PAGES = {
   publicLibrary: FeedPage,
@@ -19,6 +20,8 @@ const PAGES = {
   library: LibraryPage,
   clip: WatchPage,
   public: WatchPage,
+  login: LoginPage,
+  resetPassword: ResetPasswordPage,
   // filled in by later tasks:
 };
 
