@@ -246,13 +246,13 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
     },
   }[dialog?.type];
 
-  return html`<div class="admin-grid">
-    <div class="admin-side-stack">
+  return html`<div class="admin-users-layout">
+    <div class="admin-users-forms">
       <${CreateUserForm} isOwner=${isOwner} onCreated=${() => { setResetLink(null); reload(); }} />
       <${InviteLinkForm} isOwner=${isOwner} smtpEnabled=${smtpEnabled}
         onCreated=${(data) => { setResetLink(data); reload(); }} />
     </div>
-    <div class="panel">
+    <div class="panel admin-users-table">
       <div class="section-header">
         <h2>Users</h2>
         <span class="muted">${users.length} total</span>

@@ -82,7 +82,7 @@ function AuthShell({ titleId, children }) {
     <section class="login-panel" aria-labelledby=${titleId}>
       <div class="login-brand" aria-hidden="true">
         <img src="/clipline-icon.svg" alt="" width="32" height="32" />
-        <span class="login-brand-word">CLIP<b>LINE</b></span>
+        <span class="login-brand-word">CLIP<span class="wordmark-accent">LINE</span></span>
         <span class="login-brand-descriptor">CLOUD</span>
       </div>
       ${children}
