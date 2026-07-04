@@ -526,6 +526,7 @@ mod tests {
                 smtp_password: Some(Some("secret".to_string())),
                 smtp_from_email: Some(Some("clips@example.com".to_string())),
                 smtp_from_name: Some(Some("Clipline".to_string())),
+                ..UpdateAppSettings::default()
             })
             .await
             .expect("update settings");
@@ -543,6 +544,27 @@ mod tests {
             Some("clips@example.com")
         );
         assert_eq!(settings.smtp_from_name.as_deref(), Some("Clipline"));
+        let settings = repos
+            .settings
+            .update(&UpdateAppSettings {
+                user_storage_quota_bytes: Some(Some(5 * 1024 * 1024 * 1024)),
+                ..UpdateAppSettings::default()
+            })
+            .await
+            .expect("set default quota");
+        assert_eq!(
+            settings.user_storage_quota_bytes,
+            Some(5 * 1024 * 1024 * 1024)
+        );
+        let settings = repos
+            .settings
+            .update(&UpdateAppSettings {
+                user_storage_quota_bytes: Some(Some(0)),
+                ..UpdateAppSettings::default()
+            })
+            .await
+            .expect("disable default quota");
+        assert_eq!(settings.user_storage_quota_bytes, Some(0));
         let settings = repos
             .settings
             .update(&UpdateAppSettings {

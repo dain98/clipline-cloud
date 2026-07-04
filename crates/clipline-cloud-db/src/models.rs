@@ -79,6 +79,7 @@ pub struct AppSettings {
     pub smtp_password: Option<String>,
     pub smtp_from_email: Option<String>,
     pub smtp_from_name: Option<String>,
+    pub user_storage_quota_bytes: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

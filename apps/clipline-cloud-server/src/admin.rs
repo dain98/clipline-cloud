@@ -53,6 +53,8 @@ struct AdminSettingsResponse {
     smtp_password_configured: bool,
     smtp_from_email: Option<String>,
     smtp_from_name: Option<String>,
+    user_storage_quota_bytes: Option<u64>,
+    user_storage_quota_env_fallback_bytes: Option<u64>,
     updated_at: DateTime<Utc>,
 }
 
@@ -70,6 +72,7 @@ struct UpdateAdminSettingsRequest {
     smtp_password_clear: Option<bool>,
     smtp_from_email: Option<Option<String>>,
     smtp_from_name: Option<Option<String>>,
+    user_storage_quota_bytes: Option<Option<u64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,8 +166,10 @@ async fn settings(
     headers: HeaderMap,
 ) -> Result<Json<AdminSettingsResponse>, ApiError> {
     let _auth = auth::require_admin(&state, &headers).await?;
-    Ok(Json(AdminSettingsResponse::from(
-        state.repositories.settings.get().await?,
+    let settings = state.repositories.settings.get().await?;
+    Ok(Json(AdminSettingsResponse::from_settings(
+        settings,
+        &state.config,
     )))
 }
 
@@ -192,6 +197,21 @@ async fn update_settings(
             ));
         }
         update.vod_threshold_minutes = Some(threshold);
+    }
+
+    if let Some(quota) = request.user_storage_quota_bytes {
+        let stored = match quota {
+            None => None,
+            Some(bytes) => {
+                let bytes = i64::try_from(bytes)
+                    .map_err(|_| ApiError::bad_request("storage quota is too large"))?;
+                if bytes < 0 {
+                    return Err(ApiError::bad_request("storage quota must be non-negative"));
+                }
+                Some(bytes)
+            }
+        };
+        update.user_storage_quota_bytes = Some(stored);
     }
 
     if let Some(about_text) = request.about_text {
@@ -304,11 +324,15 @@ async fn update_settings(
             "about_text_updated": update.about_text.is_some(),
             "smtp_updated": smtp_updated,
             "smtp_enabled": update.smtp_enabled,
+            "user_storage_quota_bytes": update.user_storage_quota_bytes,
         })),
     )
     .await?;
 
-    Ok(Json(AdminSettingsResponse::from(updated)))
+    Ok(Json(AdminSettingsResponse::from_settings(
+        updated,
+        &state.config,
+    )))
 }
 
 async fn overview(
@@ -321,6 +345,7 @@ async fn overview(
     let total_storage_bytes = state.repositories.clips.total_storage_bytes().await?;
     let total_storage_bytes = u64::try_from(total_storage_bytes)
         .map_err(|_| ApiError::internal("stored total storage usage is negative"))?;
+    let settings = state.repositories.settings.get().await?;
     let global_storage_warning = state
         .config
         .global_storage_warning_threshold_bytes
@@ -339,7 +364,7 @@ async fn overview(
         upload_session_ttl_seconds: state.config.upload_session_ttl.as_secs(),
         direct_s3_uploads: state.config.direct_s3_uploads,
         max_active_upload_sessions_per_user: state.config.max_active_upload_sessions_per_user,
-        user_storage_quota_bytes: state.config.user_storage_quota_bytes,
+        user_storage_quota_bytes: effective_user_storage_quota_bytes(&settings, &state.config),
         global_storage_warning_threshold_bytes: state.config.global_storage_warning_threshold_bytes,
         global_storage_warning,
         public_media_mode: state.config.public_media_mode.as_str(),
@@ -483,12 +508,74 @@ fn validate_emailish(value: &str, label: &str) -> Result<(), ApiError> {
     }
 }
 
-impl From<AppSettings> for AdminSettingsResponse {
-    fn from(value: AppSettings) -> Self {
-        let smtp_password_configured = value
+pub(crate) fn effective_user_storage_quota_bytes(
+    settings: &AppSettings,
+    config: &crate::config::Config,
+) -> Option<u64> {
+    match settings.user_storage_quota_bytes {
+        None => config.user_storage_quota_bytes,
+        Some(0) => None,
+        Some(value) => u64::try_from(value).ok(),
+    }
+}
+
+pub(crate) fn stored_storage_quota_bytes(stored: Option<i64>) -> Option<u64> {
+    match stored {
+        None => None,
+        Some(0) => None,
+        Some(value) => u64::try_from(value).ok(),
+    }
+}
+
+pub(crate) fn effective_per_user_storage_quota_bytes(
+    user: &clipline_cloud_db::User,
+    settings: &AppSettings,
+    config: &crate::config::Config,
+) -> Option<u64> {
+    match user.storage_quota_bytes {
+        None | Some(0) => effective_user_storage_quota_bytes(settings, config),
+        Some(value) => u64::try_from(value).ok().filter(|quota| *quota > 0),
+    }
+}
+
+fn stored_user_storage_quota_bytes(settings: &AppSettings) -> Option<u64> {
+    stored_storage_quota_bytes(settings.user_storage_quota_bytes)
+}
+
+impl AdminSettingsResponse {
+    fn from_settings(settings: AppSettings, config: &crate::config::Config) -> Self {
+        let smtp_password_configured = settings
             .smtp_password
             .as_deref()
             .is_some_and(|password| !password.trim().is_empty());
+        let user_storage_quota_bytes = stored_user_storage_quota_bytes(&settings);
+        let user_storage_quota_env_fallback_bytes = if settings.user_storage_quota_bytes.is_none() {
+            config.user_storage_quota_bytes
+        } else {
+            None
+        };
+        Self {
+            owner_user_id: settings.owner_user_id,
+            allow_vod_uploads: settings.allow_vod_uploads,
+            vod_threshold_minutes: settings.vod_threshold_minutes,
+            about_text: settings.about_text,
+            smtp_enabled: settings.smtp_enabled,
+            smtp_host: settings.smtp_host,
+            smtp_port: settings.smtp_port,
+            smtp_tls_mode: settings.smtp_tls_mode,
+            smtp_username: settings.smtp_username,
+            smtp_password_configured,
+            smtp_from_email: settings.smtp_from_email,
+            smtp_from_name: settings.smtp_from_name,
+            user_storage_quota_bytes,
+            user_storage_quota_env_fallback_bytes,
+            updated_at: settings.updated_at,
+        }
+    }
+}
+
+impl From<AppSettings> for AdminSettingsResponse {
+    fn from(value: AppSettings) -> Self {
         Self {
             owner_user_id: value.owner_user_id,
             allow_vod_uploads: value.allow_vod_uploads,
@@ -499,9 +586,14 @@ impl From<AppSettings> for AdminSettingsResponse {
             smtp_port: value.smtp_port,
             smtp_tls_mode: value.smtp_tls_mode,
             smtp_username: value.smtp_username,
-            smtp_password_configured,
+            smtp_password_configured: value
+                .smtp_password
+                .as_deref()
+                .is_some_and(|password| !password.trim().is_empty()),
             smtp_from_email: value.smtp_from_email,
             smtp_from_name: value.smtp_from_name,
+            user_storage_quota_bytes: stored_storage_quota_bytes(value.user_storage_quota_bytes),
+            user_storage_quota_env_fallback_bytes: None,
             updated_at: value.updated_at,
         }
     }
@@ -595,5 +687,123 @@ impl From<AuditLogEntry> for AuditLogEntryResponse {
             metadata: value.metadata_json.map(|metadata| metadata.0),
             created_at: value.created_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn sample_settings(user_storage_quota_bytes: Option<i64>) -> AppSettings {
+        AppSettings {
+            id: 1,
+            owner_user_id: None,
+            allow_vod_uploads: true,
+            vod_threshold_minutes: 30,
+            about_text: "About".to_string(),
+            smtp_enabled: false,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_tls_mode: "starttls".to_string(),
+            smtp_username: None,
+            smtp_password: None,
+            smtp_from_email: None,
+            smtp_from_name: None,
+            user_storage_quota_bytes,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn effective_user_storage_quota_prefers_settings_over_env() {
+        let settings = sample_settings(Some(2048));
+        let config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        assert_eq!(
+            effective_user_storage_quota_bytes(&settings, &config),
+            Some(2048)
+        );
+    }
+
+    #[test]
+    fn effective_user_storage_quota_treats_zero_as_disabled() {
+        let settings = sample_settings(Some(0));
+        let config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        assert_eq!(effective_user_storage_quota_bytes(&settings, &config), None);
+    }
+
+    #[test]
+    fn settings_response_exposes_stored_quota_separately_from_env_fallback() {
+        let mut settings = sample_settings(None);
+        settings.user_storage_quota_bytes = None;
+        let mut config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        config.user_storage_quota_bytes = Some(4096);
+        let response = AdminSettingsResponse::from_settings(settings, &config);
+        assert_eq!(response.user_storage_quota_bytes, None);
+        assert_eq!(response.user_storage_quota_env_fallback_bytes, Some(4096));
+    }
+
+    #[test]
+    fn stored_storage_quota_bytes_treats_zero_as_disabled() {
+        assert_eq!(stored_storage_quota_bytes(None), None);
+        assert_eq!(stored_storage_quota_bytes(Some(0)), None);
+        assert_eq!(stored_storage_quota_bytes(Some(4096)), Some(4096));
+    }
+
+    #[test]
+    fn effective_per_user_storage_quota_inherits_default_for_null_or_zero() {
+        let user = clipline_cloud_db::User {
+            id: "user-1".to_string(),
+            username: "user".to_string(),
+            display_name: None,
+            email: None,
+            bio: None,
+            avatar_key: None,
+            password_hash: "hash".to_string(),
+            role: "user".to_string(),
+            is_disabled: false,
+            storage_quota_bytes: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_login_at: None,
+        };
+        let settings = sample_settings(Some(1024));
+        let config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        assert_eq!(
+            effective_per_user_storage_quota_bytes(&user, &settings, &config),
+            Some(1024)
+        );
+
+        let mut zero_user = user;
+        zero_user.storage_quota_bytes = Some(0);
+        assert_eq!(
+            effective_per_user_storage_quota_bytes(&zero_user, &settings, &config),
+            Some(1024)
+        );
+    }
+
+    #[test]
+    fn settings_response_hides_zero_stored_quota() {
+        let settings = sample_settings(Some(0));
+        let config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        let response = AdminSettingsResponse::from_settings(settings, &config);
+        assert_eq!(response.user_storage_quota_bytes, None);
+        assert_eq!(response.user_storage_quota_env_fallback_bytes, None);
     }
 }
