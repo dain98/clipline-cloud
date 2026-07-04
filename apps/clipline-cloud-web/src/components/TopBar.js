@@ -3,6 +3,7 @@ import { icon } from "../lib/icons.js";
 import { session, useStore } from "../lib/store.js";
 import { navigate } from "../lib/router.js";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { UserAvatar } from "./UserAvatar.js";
 
 // The only routes that carry a `q` (publicLibrary covers both "/" and
 // "/search", publicGame carries one too via routes.js publicRouteQuery) —
@@ -70,7 +71,7 @@ export function TopBar({ active, route }) {
   return html`<header class="topbar">
     <a class="wordmark" href="/" aria-label="Clipline home">
       <img src="/clipline-icon.svg" alt="" width="24" height="24" />
-      CLIP<b>LINE</b>
+      <span class="wordmark-text">CLIP<span class="wordmark-accent">LINE</span></span>
     </a>
     <nav class="topnav" aria-label="Primary">
       ${nav.map(([key, href, label]) => html`
@@ -84,7 +85,7 @@ export function TopBar({ active, route }) {
       ? html`<div class="avatar-wrap" ref=${menuWrapRef}>
           <button class="avatar-btn" aria-haspopup="menu" aria-expanded=${menuOpen}
             onClick=${() => setMenuOpen(!menuOpen)}>
-            <span class="avatar">${(user.display_name || user.username)[0].toUpperCase()}</span>
+            <${UserAvatar} user=${user} size=${28} />
           </button>
           ${menuOpen && html`<div class="menu" role="menu" onClick=${() => setMenuOpen(false)}>
             <a role="menuitem" href="/profile">Profile</a>

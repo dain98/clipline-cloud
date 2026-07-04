@@ -72,8 +72,9 @@ body { margin: 0; }
 .ui .topbar { display: flex; align-items: center; gap: 24px; padding: 14px 28px;
   border-bottom: 1px solid var(--line); }
 .ui .wordmark { display: inline-flex; align-items: center; gap: 8px; font-weight: 600;
-  font-size: 14px; letter-spacing: .04em; color: var(--ink); text-decoration: none; }
-.ui .wordmark b { color: var(--highlight); font-weight: 700; }
+  font-size: 14px; color: var(--ink); text-decoration: none; }
+.ui .wordmark-text { letter-spacing: .04em; }
+.ui .wordmark-accent { color: var(--highlight); font-weight: 700; letter-spacing: .04em; margin-left: -.04em; }
 .ui .topnav { display: flex; align-items: center; gap: 18px; }
 .ui .topnav a { font-size: 13.5px; color: var(--muted); text-decoration: none; padding-bottom: 2px;
   border-bottom: 2px solid transparent; }
@@ -443,7 +444,7 @@ body { margin: 0; }
 .ui .login-brand { display: flex; align-items: baseline; gap: 10px; }
 .ui .login-brand img { align-self: center; }
 .ui .login-brand-word { font-size: 20px; font-weight: 700; letter-spacing: .02em; color: var(--ink); }
-.ui .login-brand-word b { color: var(--highlight); font-weight: 700; }
+.ui .login-brand-word .wordmark-accent { color: var(--highlight); font-weight: 700; letter-spacing: .02em; margin-left: -.02em; }
 .ui .login-brand-descriptor { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
 .ui .login-panel h1 { font-size: 22px; margin: 8px 0 0; }
 .ui .login-copy { margin: -8px 0 0; font-size: 13px; color: var(--muted); }
@@ -457,8 +458,27 @@ body { margin: 0; }
 .ui .form-error { margin: 0; padding: 8px 12px; font-size: 12.5px; color: var(--danger);
   background: var(--danger-soft); border: 1px solid var(--danger); border-radius: var(--radius-sm); }
 
-.clipline-theater .ui .player { position: fixed; inset: 0; z-index: 50; border-radius: 0; aspect-ratio: auto;
-  width: 100vw; height: 100vh; }
+.clipline-theater { --theater-side-width: clamp(17rem, 30vw, 22rem); }
+.clipline-theater .ui .topbar { position: relative; z-index: 60; background: var(--bg); }
+.clipline-theater .ui .watch { display: block; }
+.clipline-theater .ui .watch .upnext { display: none; }
+.clipline-theater .ui .watch-actions,
+.clipline-theater .ui .watch-desc,
+.clipline-theater .ui .details-strip,
+.clipline-theater .ui .details-full,
+.clipline-theater .ui .comments { display: none; }
+.clipline-theater .ui .player { position: fixed; top: 0; right: 0; bottom: 0; left: var(--theater-side-width);
+  z-index: 50; border-radius: 0; aspect-ratio: auto; width: auto; height: auto; }
+.clipline-theater .ui .watch-titlerow,
+.clipline-theater .ui .watch-meta { position: fixed; left: 28px; z-index: 51; width: calc(var(--theater-side-width) - 56px);
+  margin: 0; pointer-events: auto; }
+.clipline-theater .ui .watch-titlerow { top: 50%; transform: translateY(calc(-100% - 6px)); }
+.clipline-theater .ui .watch-meta { top: 50%; transform: translateY(0); }
+@media (max-width: 900px) {
+  .clipline-theater { --theater-side-width: clamp(12rem, 42vw, 16rem); }
+  .clipline-theater .ui .watch-titlerow,
+  .clipline-theater .ui .watch-meta { left: 16px; width: calc(var(--theater-side-width) - 32px); }
+}
 
 /* Admin, profile, account, public user, about — structural layout (panel,
    field, badge-warn, job-list, admin-grid, settings-section,
@@ -541,6 +561,16 @@ body { margin: 0; }
 .ui .admin-side-stack { display: grid; align-content: start; gap: 16px; min-width: 0; }
 @media (max-width: 900px) {
   .ui .admin-grid { grid-template-columns: 1fr; }
+}
+
+.ui .admin-users-layout { display: grid; gap: 20px; }
+.ui .admin-users-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 16px; }
+.ui .admin-users-table .lib-table th,
+.ui .admin-users-table .lib-table td { padding: 12px 14px; vertical-align: top; }
+.ui .admin-users-table .lib-table td:last-child { min-width: 11rem; }
+.ui .admin-users-table .actions { flex-direction: column; align-items: stretch; gap: 6px; }
+@media (min-width: 1100px) {
+  .ui .admin-users-table .actions { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
 }
 
 .ui .admin-settings-page { display: grid; gap: 16px; max-width: 62rem; }

@@ -1,6 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { avatarUrl } from "../src/components/UserAvatar.js";
+import { avatarUrl, resolveAvatarSrc } from "../src/components/UserAvatar.js";
+
+// resolveAvatarSrc: accept relative paths and same-origin absolute URLs.
+
+test("resolveAvatarSrc returns empty string for missing or invalid values", () => {
+  assert.equal(resolveAvatarSrc(null), "");
+  assert.equal(resolveAvatarSrc(""), "");
+  assert.equal(resolveAvatarSrc("not-a-url"), "");
+});
+
+test("resolveAvatarSrc returns relative paths unchanged", () => {
+  assert.equal(resolveAvatarSrc("/api/v1/public/users/kai/avatar"), "/api/v1/public/users/kai/avatar");
+});
+
+test("resolveAvatarSrc normalizes same-origin absolute URLs to a path", () => {
+  globalThis.window = { location: { origin: "https://clips.example.com" } };
+  assert.equal(
+    resolveAvatarSrc("https://clips.example.com/api/v1/public/users/kai/avatar"),
+    "/api/v1/public/users/kai/avatar"
+  );
+  delete globalThis.window;
+});
 
 // avatarUrl: pure port of legacy avatarUrl (src/app.js:2665-2670). Appends a
 // cache-busting `v=` param derived from updated_at so the browser refetches

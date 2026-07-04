@@ -1,14 +1,31 @@
 import { html } from "../lib/html.js";
 
+// Normalize avatar paths for <img src>. Session user responses use relative
+// paths; public author/comment payloads may use same-origin absolute URLs.
+export function resolveAvatarSrc(url) {
+  if (!url || typeof url !== "string") return "";
+  if (url.startsWith("/")) return url;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    if (parsed.origin === window.location.origin) {
+      return `${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
 // Pure port of legacy avatarUrl (src/app.js:2665-2670): appends a
 // cache-busting `v=` param derived from updated_at so the browser refetches
 // the image right after a re-upload even though the URL path never changes.
 export function avatarUrl(user) {
-  if (!user?.avatar_url) return "";
+  const base = resolveAvatarSrc(user?.avatar_url);
+  if (!base) return "";
   const cacheKey = user.updated_at || "";
-  if (!cacheKey) return user.avatar_url;
-  const separator = String(user.avatar_url).includes("?") ? "&" : "?";
-  return `${user.avatar_url}${separator}v=${encodeURIComponent(cacheKey)}`;
+  if (!cacheKey) return base;
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}v=${encodeURIComponent(cacheKey)}`;
 }
 
 // Pure port of legacy authorInitial (src/app.js:2671-2673).

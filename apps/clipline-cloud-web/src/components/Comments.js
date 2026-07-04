@@ -5,6 +5,7 @@ import { session, toast, useStore } from "../lib/store.js";
 import { formatRelativeTime } from "../lib/format.js";
 import { icon } from "../lib/icons.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { resolveAvatarSrc } from "./UserAvatar.js";
 
 // Ported verbatim from legacy publicCommentTree (src/app.js:2450-2469): group
 // flat comments into one level of replies (a reply's own replies collapse
@@ -50,12 +51,9 @@ function initials(name) {
   return (name || "?").trim().slice(0, 1).toUpperCase() || "?";
 }
 
-// Only trust a same-origin relative avatar path (CSP img-src 'self'); no
-// seeded/real data currently sets author_avatar_url, so this is defensive —
-// mirrors the relative-path discipline lib/media.js applies to thumbnails.
 function avatarNode(comment) {
-  const src = comment.author_avatar_url;
-  if (typeof src === "string" && src.startsWith("/")) {
+  const src = resolveAvatarSrc(comment.author_avatar_url);
+  if (src) {
     return html`<img class="comment-avatar" src=${src} alt="" />`;
   }
   return html`<div class="comment-avatar">${initials(comment.author_name)}</div>`;
