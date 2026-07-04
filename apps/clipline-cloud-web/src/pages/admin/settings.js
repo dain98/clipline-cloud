@@ -3,10 +3,16 @@ import { useState } from "preact/hooks";
 import { api } from "../../lib/api.js";
 import { toast } from "../../lib/store.js";
 import { icon } from "../../lib/icons.js";
+import { gibibytesToBytes } from "./users.js";
 
 function nullableString(value) {
   const text = String(value || "").trim();
   return text ? text : null;
+}
+
+function quotaGibFromBytes(bytes) {
+  if (bytes == null || bytes <= 0) return "";
+  return String(Math.round((bytes / (1024 ** 3)) * 100) / 100);
 }
 
 export function AdminSettings({ settings, isOwner, reload }) {
@@ -17,9 +23,11 @@ export function AdminSettings({ settings, isOwner, reload }) {
     if (busy) return;
     setBusy(true);
     const form = new FormData(event.currentTarget);
+    const quotaGib = String(form.get("user_storage_quota_gib") || "").trim();
     const body = {
       allow_vod_uploads: form.get("allow_vod_uploads") === "on",
       vod_threshold_minutes: Number(form.get("vod_threshold_minutes") || 30),
+      user_storage_quota_bytes: quotaGib ? gibibytesToBytes(quotaGib) : null,
     };
     if (isOwner) {
       body.about_text = String(form.get("about_text") || "");
@@ -58,6 +66,19 @@ export function AdminSettings({ settings, isOwner, reload }) {
         </label>
         <label class="field"><span>VOD threshold minutes</span>
           <input class="input" name="vod_threshold_minutes" type="number" min="0" value=${settings.vod_threshold_minutes ?? 30} /></label>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="settings-copy">
+        <h2>Default storage quota</h2>
+        <p>Per-user storage limit for accounts without an individual quota. Leave blank to disable quotas.</p>
+      </div>
+      <div class="settings-controls">
+        <label class="field"><span>Default quota GiB</span>
+          <input class="input" name="user_storage_quota_gib" type="number" min="0" step="0.1"
+            placeholder="No default quota"
+            value=${quotaGibFromBytes(settings.user_storage_quota_bytes)} /></label>
       </div>
     </section>
 

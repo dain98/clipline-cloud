@@ -26,8 +26,8 @@ use clipline_cloud_api_types::{
     DiscoveryResponse, MeResponse, SessionResponse, UserResponse,
 };
 use clipline_cloud_db::{
-    now_utc, AppSettings, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewInvitationToken,
-    NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
+    now_utc, AppSettings, Clip, DeviceToken, NewAuditLogEntry, NewDeviceToken,
+    NewInvitationToken, NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
 };
 use clipline_cloud_storage::{ObjectKey, ObjectMetadata, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
@@ -341,6 +341,7 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/users/{id}",
             get(get_user).patch(update_user).delete(disable_user),
         )
+        .route("/api/v1/users/{id}/purge", post(purge_user))
         .route("/api/v1/users/{id}/reset-password", post(reset_password))
         .route("/api/v1/me/profile", patch(update_me_profile))
         .route(
@@ -1154,6 +1155,102 @@ async fn disable_user(
     Ok(Json(json!({ "status": "ok" })))
 }
 
+async fn purge_user(
+    State(state): State<AppState>,
+    Extension(client_ip): Extension<ClientIp>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<ResetPasswordRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = require_admin(&state, &headers).await?;
+    require_csrf_for_cookie(&state, &headers, &auth)?;
+    require_reauth(&auth.user, &request.reauth_password)?;
+
+    let Some(existing) = state.repositories.users.get(&id).await? else {
+        return Err(ApiError::not_found("user not found"));
+    };
+    let settings = state.repositories.settings.get().await?;
+    enforce_user_purge_policy(&auth.user, &existing, &settings)?;
+
+    purge_user_account(&state, &existing).await?;
+    audit_with_ip(
+        &state.repositories,
+        Some(client_ip.as_str()),
+        Some(&auth.user),
+        "user.purged",
+        Some("user"),
+        Some(&id),
+        Some(json!({ "username": existing.username })),
+    )
+    .await?;
+    Ok(Json(json!({ "status": "ok" })))
+}
+
+async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiError> {
+    let clips = state
+        .repositories
+        .clips
+        .list_all_for_owner(&user.id)
+        .await?;
+    for clip in clips {
+        delete_clip_media(state, &clip).await?;
+        state
+            .repositories
+            .upload_sessions
+            .delete_for_clip(&clip.id)
+            .await?;
+        state.repositories.clips.delete(&clip.id).await?;
+    }
+    if let Some(avatar_key) = user.avatar_key.as_deref() {
+        if let Ok(key) = ObjectKey::parse(avatar_key) {
+            let _ = state.storage.delete_object(&key).await;
+        }
+    }
+    state
+        .repositories
+        .clip_comments
+        .delete_for_user(&user.id)
+        .await?;
+    state.repositories.sessions.delete_for_user(&user.id).await?;
+    state
+        .repositories
+        .device_tokens
+        .delete_for_user(&user.id)
+        .await?;
+    state
+        .repositories
+        .reset_password_tokens
+        .delete_for_user(&user.id)
+        .await?;
+    state
+        .repositories
+        .invitation_tokens
+        .clear_created_by(&user.id)
+        .await?;
+    state.repositories.audit_log.clear_actor(&user.id).await?;
+    state.repositories.users.delete(&user.id).await?;
+    Ok(())
+}
+
+async fn delete_clip_media(state: &AppState, clip: &Clip) -> Result<(), ApiError> {
+    for key in [
+        clip.storage_key.as_deref(),
+        clip.poster_key.as_deref(),
+        clip.thumbnail_key.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let parsed = ObjectKey::parse(key).map_err(|_| ApiError::internal("invalid clip key"))?;
+        if let Err(error) = state.storage.delete_object(&parsed).await {
+            if !matches!(error, StorageError::NotFound(_)) {
+                return Err(storage_api_error(error));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn revoke_user_auth(repositories: &Repositories, user_id: &str) -> Result<(), ApiError> {
     repositories.sessions.revoke_for_user(user_id).await?;
     repositories
@@ -1831,6 +1928,23 @@ fn enforce_user_disable_policy(
     }
     if matches!(target.role.as_str(), "admin" | "owner") && !is_owner_user(actor, settings) {
         return Err(ApiError::forbidden("owner role required to disable admins"));
+    }
+    Ok(())
+}
+
+fn enforce_user_purge_policy(
+    actor: &User,
+    target: &User,
+    settings: &AppSettings,
+) -> Result<(), ApiError> {
+    if actor.id == target.id {
+        return Err(ApiError::forbidden("users cannot delete themselves"));
+    }
+    if is_owner_user(target, settings) {
+        return Err(ApiError::forbidden("owner account cannot be deleted"));
+    }
+    if matches!(target.role.as_str(), "admin" | "owner") && !is_owner_user(actor, settings) {
+        return Err(ApiError::forbidden("owner role required to delete admins"));
     }
     Ok(())
 }
@@ -2642,6 +2756,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_can_promote_demote_and_reenable_users_via_patch() {
+        let app = test_app().await;
+        let owner = insert_user_with_role(&app.state, "owner", "admin").await;
+        let target = insert_user_with_role(&app.state, "target", "user").await;
+        app.state
+            .repositories
+            .settings
+            .set_owner_user_id(&owner.id)
+            .await
+            .expect("set owner");
+        set_user_password(&app.state, &owner.id, "owner-password").await;
+        let (headers, _) = cookie_auth_headers(&app.state, &owner.id).await;
+
+        let promoted = update_user(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            headers.clone(),
+            Path(target.id.clone()),
+            Json(UpdateUserRequest {
+                display_name: None,
+                role: Some("admin".to_string()),
+                is_disabled: None,
+                storage_quota_bytes: PatchField::Unset,
+                reauth_password: Some("owner-password".to_string()),
+            }),
+        )
+        .await
+        .expect("promote user");
+        assert_eq!(promoted.role, "admin");
+
+        let demoted = update_user(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            headers.clone(),
+            Path(target.id.clone()),
+            Json(UpdateUserRequest {
+                display_name: None,
+                role: Some("user".to_string()),
+                is_disabled: None,
+                storage_quota_bytes: PatchField::Unset,
+                reauth_password: Some("owner-password".to_string()),
+            }),
+        )
+        .await
+        .expect("demote user");
+        assert_eq!(demoted.role, "user");
+
+        app.state
+            .repositories
+            .users
+            .set_disabled(&target.id, true)
+            .await
+            .expect("disable target");
+        let reenabled = update_user(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            headers,
+            Path(target.id.clone()),
+            Json(UpdateUserRequest {
+                display_name: None,
+                role: None,
+                is_disabled: Some(false),
+                storage_quota_bytes: PatchField::Unset,
+                reauth_password: Some("owner-password".to_string()),
+            }),
+        )
+        .await
+        .expect("reenable user");
+        assert!(!reenabled.is_disabled);
+    }
+
+    #[tokio::test]
+    async fn owner_can_purge_user_and_owned_clips() {
+        let app = test_app().await;
+        let owner = insert_user_with_role(&app.state, "owner", "admin").await;
+        let target = insert_user_with_role(&app.state, "purge-target", "user").await;
+        app.state
+            .repositories
+            .settings
+            .set_owner_user_id(&owner.id)
+            .await
+            .expect("set owner");
+        set_user_password(&app.state, &owner.id, "owner-password").await;
+        let (headers, _) = cookie_auth_headers(&app.state, &owner.id).await;
+
+        let mut clip = clipline_cloud_db::NewClip::new(&target.id, "gone", "local");
+        clip.status = "ready".to_string();
+        let clip = app
+            .state
+            .repositories
+            .clips
+            .create(&clip)
+            .await
+            .expect("clip");
+        let session = insert_session(&app.state, &target.id).await;
+
+        let response = purge_user(
+            State(app.state.clone()),
+            Extension(ClientIp("203.0.113.10".to_string())),
+            headers,
+            Path(target.id.clone()),
+            Json(ResetPasswordRequest {
+                reauth_password: "owner-password".to_string(),
+            }),
+        )
+        .await
+        .expect("purge user");
+        assert_eq!(response.0["status"], "ok");
+
+        assert!(app
+            .state
+            .repositories
+            .users
+            .get(&target.id)
+            .await
+            .expect("user lookup")
+            .is_none());
+        assert!(app
+            .state
+            .repositories
+            .clips
+            .get(&clip.id)
+            .await
+            .expect("clip lookup")
+            .is_none());
+        assert!(app
+            .state
+            .repositories
+            .sessions
+            .get(&session.id)
+            .await
+            .expect("session lookup")
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn ensure_first_admin_recovers_disabled_configured_owner() {
         let app = test_app().await;
         let disabled_owner = insert_user_with_role(&app.state, "disabled-owner", "admin").await;
@@ -3055,6 +3305,15 @@ mod tests {
             ))
             .await
             .expect("user")
+    }
+
+    async fn set_user_password(state: &AppState, user_id: &str, password: &str) {
+        state
+            .repositories
+            .users
+            .update_password_hash(user_id, &hash_password(password).expect("hash"))
+            .await
+            .expect("set password");
     }
 
     async fn auth_headers(state: &AppState, user_id: &str) -> HeaderMap {

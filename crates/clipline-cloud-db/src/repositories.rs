@@ -333,6 +333,7 @@ pub struct UpdateAppSettings {
     pub smtp_password: Option<Option<String>>,
     pub smtp_from_email: Option<Option<String>>,
     pub smtp_from_name: Option<Option<String>>,
+    pub user_storage_quota_bytes: Option<Option<i64>>,
 }
 
 #[derive(Clone)]
@@ -352,7 +353,7 @@ impl AppSettingsRepository {
             AppSettings,
             "SELECT id, owner_user_id, allow_vod_uploads, vod_threshold_minutes, about_text,
                     smtp_enabled, smtp_host, smtp_port, smtp_tls_mode, smtp_username, smtp_password,
-                    smtp_from_email, smtp_from_name, created_at, updated_at
+                    smtp_from_email, smtp_from_name, user_storage_quota_bytes, created_at, updated_at
              FROM app_settings WHERE id = 1",
             []
         )?
@@ -371,6 +372,11 @@ impl AppSettingsRepository {
         let smtp_from_email = update.smtp_from_email.as_ref().and_then(Option::as_deref);
         let update_smtp_from_name = update.smtp_from_name.is_some();
         let smtp_from_name = update.smtp_from_name.as_ref().and_then(Option::as_deref);
+        let update_user_storage_quota_bytes = update.user_storage_quota_bytes.is_some();
+        let user_storage_quota_bytes = update
+            .user_storage_quota_bytes
+            .as_ref()
+            .and_then(|value| value.as_ref().copied());
         db_execute!(
             &self.database,
             "UPDATE app_settings
@@ -385,6 +391,7 @@ impl AppSettingsRepository {
                  smtp_password = CASE WHEN ? THEN ? ELSE smtp_password END,
                  smtp_from_email = CASE WHEN ? THEN ? ELSE smtp_from_email END,
                  smtp_from_name = CASE WHEN ? THEN ? ELSE smtp_from_name END,
+                 user_storage_quota_bytes = CASE WHEN ? THEN ? ELSE user_storage_quota_bytes END,
                  updated_at = ?
              WHERE id = 1",
             [
@@ -404,6 +411,8 @@ impl AppSettingsRepository {
                 smtp_from_email,
                 update_smtp_from_name,
                 smtp_from_name,
+                update_user_storage_quota_bytes,
+                user_storage_quota_bytes,
                 now_utc(),
             ]
         )?;
@@ -729,6 +738,15 @@ impl SessionRepository {
         Ok(())
     }
 
+    pub async fn delete_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM sessions WHERE user_id = ?",
+            [user_id]
+        )?;
+        Ok(())
+    }
+
     pub async fn revoke_for_user_by_id(&self, user_id: &str, id: &str) -> DbResult<u64> {
         Ok(db_execute_rows!(
             &self.database,
@@ -834,6 +852,15 @@ impl DeviceTokenRepository {
             &self.database,
             "UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
             [now_utc(), user_id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM device_tokens WHERE user_id = ?",
+            [user_id]
         )?;
         Ok(())
     }
@@ -1388,6 +1415,22 @@ impl ClipRepository {
         db_execute!(&self.database, "DELETE FROM clips WHERE id = ?", [id])?;
         Ok(())
     }
+
+    pub async fn list_all_for_owner(&self, owner_user_id: &str) -> DbResult<Vec<Clip>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            Clip,
+            "SELECT
+               id, owner_user_id, client_clip_id, title, description, game_name, game_id, game_executable, source_type,
+               recorded_at, uploaded_at, duration_ms, file_size_bytes, width, height, fps, container,
+               video_codec, audio_codec, checksum_sha256, visibility, status, storage_backend, storage_key,
+               poster_key, thumbnail_key, public_share_id, view_count, created_at, updated_at, deleted_at
+             FROM clips
+             WHERE owner_user_id = ?
+             ORDER BY id ASC",
+            [owner_user_id]
+        )?)
+    }
 }
 
 const CLIP_SELECT_SQL: &str = "SELECT
@@ -1777,6 +1820,15 @@ impl ClipCommentRepository {
         )?;
         Ok(rows_affected > 0)
     }
+
+    pub async fn delete_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM clip_comments WHERE user_id = ?",
+            [user_id]
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -2039,6 +2091,15 @@ impl UploadSessionRepository {
             &self.database,
             "DELETE FROM upload_sessions WHERE clip_id = ?",
             [clip_id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_for_user(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM upload_sessions WHERE user_id = ?",
+            [user_id]
         )?;
         Ok(())
     }
@@ -2473,6 +2534,15 @@ impl AuditLogRepository {
             [limit]
         )?)
     }
+
+    pub async fn clear_actor(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id = ?",
+            [user_id]
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -2666,6 +2736,15 @@ impl InvitationTokenRepository {
             &self.database,
             "DELETE FROM invitation_tokens WHERE id = ?",
             [id]
+        )?;
+        Ok(())
+    }
+
+    pub async fn clear_created_by(&self, user_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "UPDATE invitation_tokens SET created_by_user_id = NULL WHERE created_by_user_id = ?",
+            [user_id]
         )?;
         Ok(())
     }

@@ -11,15 +11,6 @@ function nullableString(value) {
   return text ? text : null;
 }
 
-// Pure port of legacy gibibytesToBytes (src/app.js:3714-3720).
-export function gibibytesToBytes(value) {
-  const amount = Number(String(value || "").trim());
-  if (!Number.isFinite(amount) || amount < 0) {
-    throw new Error("Storage quota must be a non-negative number");
-  }
-  return Math.round(amount * 1024 * 1024 * 1024);
-}
-
 // Pure port of legacy canDisableUser (src/app.js:3155-3162): governs the
 // per-row Disable button. Must agree with the server's own role checks
 // (apps/clipline-cloud-server/src/auth.rs around :1753-1832) or the button
@@ -34,6 +25,26 @@ export function canDisableUser(user, currentUser) {
   return true;
 }
 
+export function canEnableUser(user, currentUser) {
+  if (!user.is_disabled || currentUser?.id === user.id || user.role === "owner") {
+    return false;
+  }
+  if (user.role === "admin" && currentUser?.role !== "owner") {
+    return false;
+  }
+  return true;
+}
+
+export function canChangeRole(user, currentUser) {
+  return currentUser?.role === "owner"
+    && user.role !== "owner"
+    && currentUser?.id !== user.id;
+}
+
+export function canPurgeUser(user, currentUser) {
+  return canDisableUser(user, currentUser);
+}
+
 function roleOptions(isOwner) {
   return isOwner ? [["user", "User"], ["admin", "Admin"]] : [["user", "User"]];
 }
@@ -44,9 +55,6 @@ function CreateUserForm({ isOwner, onCreated }) {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
-    // Capture the form element before the `await` below: event.currentTarget
-    // is cleared once the event finishes dispatching, so reading it after an
-    // async gap throws "Cannot read properties of null".
     const formEl = event.currentTarget;
     const form = new FormData(formEl);
     try {
@@ -129,10 +137,6 @@ function InviteLinkForm({ isOwner, smtpEnabled, onCreated }) {
 function ResetLinkNotice({ resetLink }) {
   if (!resetLink) return null;
   const kind = resetLink.kind === "invite" ? "Invite" : "Reset";
-  // Legacy only ever attached a `username` here when one happened to be on
-  // the response (src/app.js:3147-3161); neither /reset-password nor
-  // /invites returns one, so this suffix is always empty — kept as-is for
-  // an exact port rather than inventing a lookup that never existed.
   const username = resetLink.username ? ` for ${resetLink.username}` : "";
   const copy = async () => {
     try {
@@ -158,16 +162,39 @@ function statusBadge(user) {
     : html`<span class="badge badge-public">Active</span>`;
 }
 
-function UserRow({ user, currentUser, onQuota, onReset, onDisable }) {
+function UserRow({
+  user,
+  currentUser,
+  onQuota,
+  onReset,
+  onDisable,
+  onEnable,
+  onRole,
+  onPurge,
+}) {
   const quotaLabel = user.storage_quota_bytes != null ? formatBytes(user.storage_quota_bytes) : "No limit";
   const disableDisabled = !canDisableUser(user, currentUser);
+  const enableDisabled = !canEnableUser(user, currentUser);
+  const purgeDisabled = !canPurgeUser(user, currentUser);
+  const roleEditable = canChangeRole(user, currentUser);
+
   return html`<tr>
     <td>
       <strong>${user.username}</strong>
       <div class="muted">${user.display_name || user.id}</div>
       ${user.email && html`<div class="muted">${user.email}</div>`}
     </td>
-    <td>${user.role}</td>
+    <td>
+      ${roleEditable
+        ? html`<select class="input input-compact" value=${user.role}
+            onChange=${(event) => {
+              if (event.target.value === user.role) return;
+              onRole(user, event.target.value);
+            }}>
+            ${roleOptions(true).map(([v, l]) => html`<option value=${v} selected=${user.role === v}>${l}</option>`)}
+          </select>`
+        : user.role}
+    </td>
     <td>${statusBadge(user)}</td>
     <td>
       <strong>${formatBytes(user.storage_bytes || 0)}</strong>
@@ -178,14 +205,17 @@ function UserRow({ user, currentUser, onQuota, onReset, onDisable }) {
       <div class="actions">
         <button class="btn" type="button" onClick=${() => onQuota(user)}>${icon("sliders", { size: 14 })} Quota</button>
         <button class="btn" type="button" onClick=${() => onReset(user)}>${icon("clipboard", { size: 14 })} Reset link</button>
-        <button class="btn btn-danger" type="button" disabled=${disableDisabled} onClick=${() => onDisable(user)}>${icon("x", { size: 14 })} Disable</button>
+        ${user.is_disabled
+          ? html`<button class="btn" type="button" disabled=${enableDisabled} onClick=${() => onEnable(user)}>${icon("check", { size: 14 })} Enable</button>`
+          : html`<button class="btn btn-danger" type="button" disabled=${disableDisabled} onClick=${() => onDisable(user)}>${icon("x", { size: 14 })} Disable</button>`}
+        <button class="btn btn-danger" type="button" disabled=${purgeDisabled} onClick=${() => onPurge(user)}>${icon("trash", { size: 14 })} Delete</button>
       </div>
     </td>
   </tr>`;
 }
 
 export function AdminUsers({ users, settings, currentUser, resetLink, setResetLink, reload }) {
-  const [dialog, setDialog] = useState(null); // { type: "quota" | "disable" | "reset", user, value }
+  const [dialog, setDialog] = useState(null);
   const isOwner = currentUser?.role === "owner";
   const smtpEnabled = Boolean(settings?.smtp_enabled);
 
@@ -202,6 +232,24 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
       } else if (type === "disable") {
         await api(`/api/v1/users/${encodeURIComponent(user.id)}`, { method: "DELETE", body: { reauth_password: value } });
         toast("User disabled.");
+      } else if (type === "enable") {
+        await api(`/api/v1/users/${encodeURIComponent(user.id)}`, {
+          method: "PATCH",
+          body: { is_disabled: false, reauth_password: value },
+        });
+        toast("User enabled.");
+      } else if (type === "role") {
+        await api(`/api/v1/users/${encodeURIComponent(user.id)}`, {
+          method: "PATCH",
+          body: { role: value.role, reauth_password: value.password },
+        });
+        toast(`Role updated to ${value.role}.`);
+      } else if (type === "purge") {
+        await api(`/api/v1/users/${encodeURIComponent(user.id)}/purge`, {
+          method: "POST",
+          body: { reauth_password: value },
+        });
+        toast("User deleted.");
       } else if (type === "reset") {
         const data = await api(`/api/v1/users/${encodeURIComponent(user.id)}/reset-password`, {
           method: "POST",
@@ -213,6 +261,7 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
       reload();
     } catch (err) {
       toast(err.message);
+      reload();
     }
   }
 
@@ -230,6 +279,33 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
       title: "Disable user?",
       description: "This immediately revokes the user's sessions and device tokens.",
       confirmLabel: "Disable",
+      danger: true,
+      field: html`<label class="field"><span>Your password</span>
+        <input class="input" type="password" required value=${dialog?.value || ""}
+          onInput=${(e) => setDialog((d) => ({ ...d, value: e.target.value }))} /></label>`,
+    },
+    enable: {
+      title: "Enable user?",
+      description: "This restores sign-in access for the selected account.",
+      confirmLabel: "Enable",
+      danger: false,
+      field: html`<label class="field"><span>Your password</span>
+        <input class="input" type="password" required value=${dialog?.value || ""}
+          onInput=${(e) => setDialog((d) => ({ ...d, value: e.target.value }))} /></label>`,
+    },
+    role: {
+      title: "Change user role?",
+      description: `Set ${dialog?.user?.username || "this user"} to ${dialog?.value?.role || "the selected role"}.`,
+      confirmLabel: "Save role",
+      danger: false,
+      field: html`<label class="field"><span>Your password</span>
+        <input class="input" type="password" required value=${dialog?.value?.password || ""}
+          onInput=${(e) => setDialog((d) => ({ ...d, value: { ...d.value, password: e.target.value } }))} /></label>`,
+    },
+    purge: {
+      title: "Delete user permanently?",
+      description: "This removes the account, clips, comments, and auth records. This cannot be undone.",
+      confirmLabel: "Delete user",
       danger: true,
       field: html`<label class="field"><span>Your password</span>
         <input class="input" type="password" required value=${dialog?.value || ""}
@@ -265,7 +341,10 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
             ${users.map((user) => html`<${UserRow} key=${user.id} user=${user} currentUser=${currentUser}
               onQuota=${(u) => setDialog({ type: "quota", user: u, value: "" })}
               onReset=${(u) => setDialog({ type: "reset", user: u, value: "" })}
-              onDisable=${(u) => setDialog({ type: "disable", user: u, value: "" })} />`)}
+              onDisable=${(u) => setDialog({ type: "disable", user: u, value: "" })}
+              onEnable=${(u) => setDialog({ type: "enable", user: u, value: "" })}
+              onRole=${(u, role) => setDialog({ type: "role", user: u, value: { role, password: "" } })}
+              onPurge=${(u) => setDialog({ type: "purge", user: u, value: "" })} />`)}
           </tbody>
         </table>
       </div>
@@ -274,7 +353,20 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
       title=${dialogCopy?.title}
       body=${dialogCopy && html`${dialogCopy.description} ${dialogCopy.field}`}
       confirmLabel=${dialogCopy?.confirmLabel} danger=${dialogCopy?.danger}
-      confirmDisabled=${dialog?.type !== "quota" && !dialog?.value?.trim()}
+      confirmDisabled=${dialog?.type === "quota"
+        ? false
+        : dialog?.type === "role"
+          ? !dialog?.value?.password?.trim()
+          : !dialog?.value?.trim()}
       onConfirm=${confirmDialog} onCancel=${closeDialog} />
   </div>`;
+}
+
+// Pure port of legacy gibibytesToBytes (src/app.js:3714-3720).
+export function gibibytesToBytes(value) {
+  const amount = Number(String(value || "").trim());
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Storage quota must be a non-negative number");
+  }
+  return Math.round(amount * 1024 * 1024 * 1024);
 }
