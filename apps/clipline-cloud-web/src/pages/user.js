@@ -2,7 +2,7 @@ import { html } from "../lib/html.js";
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
 import { session, useStore } from "../lib/store.js";
-import { publicThumbPath } from "../lib/media.js";
+import { publicMediaPath, publicThumbPath } from "../lib/media.js";
 import { icon } from "../lib/icons.js";
 import { EmptyState } from "../components/EmptyState.js";
 import { ClipCard } from "../components/ClipCard.js";
@@ -54,7 +54,7 @@ export function UserPage({ route }) {
       ? html`<${EmptyState} name="film" title="No public clips yet" />`
       : html`<div class="card-grid">
           ${clips.map((clip) => html`<${ClipCard} key=${clip.share_id}
-            clip=${{ ...clip, thumbnail_url: publicThumbPath(clip) }}
+            clip=${{ ...clip, thumbnail_url: publicThumbPath(clip), media_url: publicMediaPath(clip) }}
             href=${`/c/${encodeURIComponent(clip.share_id)}`} showAuthor=${false} />`)}
         </div>`}
   </main>`;

@@ -111,6 +111,20 @@ export function deriveGameChips(clips, max = 6) {
     .slice(0, max);
 }
 
+// Pure helper shared by the forward (updateVisibility) and revert
+// (undoVisibility) bulk-visibility flows: given the attempted ids and the
+// failures collected while POSTing each one, returns which ids actually
+// succeeded plus a human toast message for any failures (or null if none).
+export function summarizeBulkOutcome(ids, failed, { verb, allFailedMessage }) {
+  const succeeded = ids.filter((id) => !failed.some((f) => f.id === id));
+  if (!failed.length) return { succeeded, message: null };
+  const message =
+    failed.length === ids.length
+      ? failed[0]?.message || allFailedMessage
+      : `Couldn't ${verb} ${failed.length} of ${ids.length} clips.`;
+  return { succeeded, message };
+}
+
 // Simple bounded-concurrency runner for the sequential-but-parallel-ish bulk
 // visibility requests (spec: "sequentially, <=4 in flight").
 async function runPool(items, limit, worker) {
@@ -225,11 +239,60 @@ export function LibraryPage() {
     patchClips(ids, { visibility: newVisibility });
 
     const failed = [];
+    // Track each success's server-confirmed { visibility, public_url } so an
+    // eventual undo can roll a failed revert back to exactly this state
+    // (visibility→public regenerates the share id, so "pre-undo" is not the
+    // same as the local `newVisibility` patch above).
+    const confirmedState = new Map();
     await runPool(ids, 4, async (id) => {
       try {
         const updated = await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
           method: "POST",
           body: { visibility: newVisibility },
+        });
+        const patch = { visibility: updated.visibility, public_url: updated.public_url };
+        patchClip(id, patch);
+        confirmedState.set(id, patch);
+      } catch (e) {
+        failed.push({ id, message: e.message });
+      }
+    });
+
+    const { succeeded, message } = summarizeBulkOutcome(ids, failed, {
+      verb: "update",
+      allFailedMessage: "Couldn't update visibility.",
+    });
+    if (message) {
+      for (const { id } of failed) {
+        const original = snapshot.get(id);
+        if (original) patchClip(id, { visibility: original.visibility, public_url: original.public_url });
+      }
+      toast(message);
+    }
+
+    if (succeeded.length) {
+      setSelected(new Set());
+      toast(`Made ${succeeded.length} clip${succeeded.length === 1 ? "" : "s"} ${newVisibility}`, {
+        actionLabel: "Undo",
+        onAction: () => undoVisibility(succeeded, snapshot, confirmedState),
+      });
+    }
+  }
+
+  async function undoVisibility(ids, snapshot, confirmedState) {
+    for (const id of ids) {
+      const original = snapshot.get(id);
+      if (original) patchClip(id, { visibility: original.visibility, public_url: original.public_url });
+    }
+
+    const failed = [];
+    await runPool(ids, 4, async (id) => {
+      const original = snapshot.get(id);
+      if (!original) return;
+      try {
+        const updated = await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
+          method: "POST",
+          body: { visibility: original.visibility },
         });
         patchClip(id, { visibility: updated.visibility, public_url: updated.public_url });
       } catch (e) {
@@ -237,45 +300,20 @@ export function LibraryPage() {
       }
     });
 
-    if (failed.length) {
-      for (const { id } of failed) {
-        const original = snapshot.get(id);
-        if (original) patchClip(id, { visibility: original.visibility, public_url: original.public_url });
-      }
-      toast(
-        failed.length === ids.length
-          ? failed[0].message || "Couldn't update visibility."
-          : `Couldn't update ${failed.length} of ${ids.length} clips.`
-      );
-    }
-
-    const succeeded = ids.filter((id) => !failed.some((f) => f.id === id));
-    if (succeeded.length) {
-      setSelected(new Set());
-      toast(`Made ${succeeded.length} clip${succeeded.length === 1 ? "" : "s"} ${newVisibility}`, {
-        actionLabel: "Undo",
-        onAction: () => undoVisibility(succeeded, snapshot),
-      });
-    }
-  }
-
-  async function undoVisibility(ids, snapshot) {
-    for (const id of ids) {
-      const original = snapshot.get(id);
-      if (original) patchClip(id, { visibility: original.visibility, public_url: original.public_url });
-    }
-    await runPool(ids, 4, async (id) => {
-      const original = snapshot.get(id);
-      if (!original) return;
-      try {
-        await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
-          method: "POST",
-          body: { visibility: original.visibility },
-        });
-      } catch {
-        // best-effort revert; the clip keeps its restored local state either way
-      }
+    const { message } = summarizeBulkOutcome(ids, failed, {
+      verb: "undo",
+      allFailedMessage: "Couldn't undo visibility change.",
     });
+    if (message) {
+      // Revert failed — put those clips back to the state they were in right
+      // before this undo ran (the confirmed post-forward-change state), not
+      // the optimistic pre-undo local patch, which may be stale.
+      for (const { id } of failed) {
+        const current = confirmedState.get(id);
+        if (current) patchClip(id, current);
+      }
+      toast(message);
+    }
   }
 
   async function onCopyLinks() {

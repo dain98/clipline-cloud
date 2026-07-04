@@ -4,10 +4,26 @@ import { session, useStore } from "../lib/store.js";
 import { navigate } from "../lib/router.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 
-export function TopBar({ active }) {
+// The only routes that carry a `q` (publicLibrary covers both "/" and
+// "/search", publicGame carries one too via routes.js publicRouteQuery) —
+// every other route (library, watch, admin, …) has no query.q, so the box
+// should read empty rather than echoing a stale search.
+export function topBarSearchValue(route) {
+  return route?.query?.q || "";
+}
+
+export function TopBar({ active, route }) {
   const { user } = useStore(session);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuWrapRef = useRef(null);
+  const routeSearchValue = topBarSearchValue(route);
+  const [searchValue, setSearchValue] = useState(routeSearchValue);
+  // Re-sync the box whenever the route's own q changes (new search, cleared
+  // filters, navigating away and back) without fighting the user's typing —
+  // typing only touches local state, never route.query, until submit.
+  useEffect(() => {
+    setSearchValue(routeSearchValue);
+  }, [routeSearchValue]);
   // Legacy isAdminLike (src/app.js:579-581): both "admin" and "owner" get
   // the Admin nav entry — role === "admin" alone would hide it from the
   // bootstrap owner account.
@@ -51,7 +67,8 @@ export function TopBar({ active }) {
         <a class=${key === active ? "topnav-on" : ""} href=${href}>${label}</a>`)}
     </nav>
     <form class="topsearch" role="search" onSubmit=${onSearch}>
-      <input class="input" name="q" placeholder="Search clips, games, players…" aria-label="Search" />
+      <input class="input" name="q" value=${searchValue} onInput=${(e) => setSearchValue(e.target.value)}
+        placeholder="Search clips, games, players…" aria-label="Search" />
     </form>
     ${user
       ? html`<div class="avatar-wrap" ref=${menuWrapRef}>

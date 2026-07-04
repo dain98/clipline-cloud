@@ -53,7 +53,7 @@ function App() {
   const Page = PAGES[route.name] || FeedPage;
   const bare = route.name === "login" || route.name === "resetPassword";
   return html`<div class="ui" onClick=${onLinkClick}>
-    ${!bare && html`<${TopBar} active=${NAV_KEY[route.name] || ""} />`}
+    ${!bare && html`<${TopBar} active=${NAV_KEY[route.name] || ""} route=${route} />`}
     <${Page} route=${route} />
     ${!bare && html`<${TabBar} active=${NAV_KEY[route.name] || ""} />`}
     <${ToastHost} />

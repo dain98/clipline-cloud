@@ -3,7 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
 import { formatDuration, formatViews } from "../lib/format.js";
-import { publicThumbPath } from "../lib/media.js";
+import { publicMediaPath, publicThumbPath } from "../lib/media.js";
 import { ClipCard, clipAuthor } from "../components/ClipCard.js";
 import { EmptyState } from "../components/EmptyState.js";
 
@@ -107,7 +107,9 @@ export function FeedPage({ route }) {
           ${(isDefaultView ? clips.slice(4) : clips).map(
             // Override the API's absolute thumbnail_url with the relative
             // path so ClipCard's poster survives host-alias CSP (see media.js).
-            (c) => html`<${ClipCard} clip=${{ ...c, thumbnail_url: publicThumbPath(c) }}
+            // media_url is likewise supplied so ClipCard's HoverPreview has
+            // something to play — the public listing response never sends one.
+            (c) => html`<${ClipCard} clip=${{ ...c, thumbnail_url: publicThumbPath(c), media_url: publicMediaPath(c) }}
               href=${shareHref(c)} showAuthor />`
           )}
         </div>
