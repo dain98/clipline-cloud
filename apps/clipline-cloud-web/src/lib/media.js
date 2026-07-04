@@ -19,3 +19,11 @@ export function ownedThumbPath(clip) {
 export function ownedMediaPath(clip) {
   return `/api/v1/clips/${encodeURIComponent(clip.id)}/media`;
 }
+
+// The public clip detail response's media_url is likewise an ABSOLUTE URL
+// (apps/clipline-cloud-server/src/media.rs :489, `absolute_url(&state, …)`).
+// Build the relative route directly (same route registered at :81-83) so the
+// watch page's <video src> survives host-alias CSP the same way thumbnails do.
+export function publicMediaPath(clip) {
+  return `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/media`;
+}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { publicThumbPath, ownedThumbPath, ownedMediaPath } from "../src/lib/media.js";
+import { publicThumbPath, ownedThumbPath, ownedMediaPath, publicMediaPath } from "../src/lib/media.js";
 
 // The public API's thumbnail_url is an ABSOLUTE URL built from the server's
 // configured CLIPLINE_PUBLIC_URL, so it breaks img-src 'self' whenever the
@@ -40,4 +40,19 @@ test("ownedMediaPath builds the relative owned media path", () => {
 
 test("ownedMediaPath URL-encodes the id", () => {
   assert.equal(ownedMediaPath({ id: "a b/c" }), "/api/v1/clips/a%20b%2Fc/media");
+});
+
+// The public clip detail response's media_url is likewise absolute (verified
+// with curl against GET /api/v1/public/clips/{share_id}); the route exists at
+// apps/clipline-cloud-server/src/media.rs:81-83 so we build it relatively.
+
+test("publicMediaPath builds the relative public media path", () => {
+  assert.equal(
+    publicMediaPath({ share_id: "c_rnn3Eq2pKPH4DwyaujKDfV" }),
+    "/api/v1/public/clips/c_rnn3Eq2pKPH4DwyaujKDfV/media"
+  );
+});
+
+test("publicMediaPath URL-encodes the share_id", () => {
+  assert.equal(publicMediaPath({ share_id: "c a/b?x" }), "/api/v1/public/clips/c%20a%2Fb%3Fx/media");
 });

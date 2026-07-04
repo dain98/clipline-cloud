@@ -10,14 +10,16 @@ import { ToastHost } from "./components/ToastHost.js";
 import { FeedPage } from "./pages/feed.js";
 import { GamesPage } from "./pages/games.js";
 import { LibraryPage } from "./pages/library.js";
+import { WatchPage } from "./pages/watch.js";
 
 const PAGES = {
   publicLibrary: FeedPage,
   publicGame: FeedPage,
   games: GamesPage,
   library: LibraryPage,
+  clip: WatchPage,
+  public: WatchPage,
   // filled in by later tasks:
-  // clip: ClipPage, …
 };
 
 const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",
