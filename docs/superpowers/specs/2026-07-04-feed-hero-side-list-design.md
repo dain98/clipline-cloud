@@ -24,7 +24,7 @@ All in `apps/clipline-cloud-web` (plus rebuilt `dist/`).
 ### Sizing (ui.css, hero block)
 
 - Replace the fixed side-thumbnail width with
-  `width: clamp(144px, 19.1vw - 28px, 300px)`.
+  `width: clamp(144px, 19.1vw - 32px, 300px)`.
   The formula derives from the hero geometry: 1.6fr/1fr columns with an 18px
   column gap, 16:8.4 hero aspect ratio, `.page` horizontal padding (28px × 2)
   and its 1720px max-width, and a 12px row gap. Three rows then match the

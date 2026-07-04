@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-07-04-feed-hero-side-list-design.md`.
-- Thumbnail width formula, exactly: `clamp(144px, 19.1vw - 28px, 300px)`.
+- Thumbnail width formula, exactly: `clamp(144px, 19.1vw - 32px, 300px)`.
 - `dist/` is committed in this repo: run `npm run build` and commit `dist/` changes alongside `src/` in every task.
 - The sub-900px stacked hero layout must keep working; the `@media (min-width: 1500px)` 160px override is deleted.
 - No new test files: the suite covers exported pure helpers only, and these tasks add no new logic units. The gate is the existing suite staying green plus the visual checks written into each task.
@@ -27,7 +27,7 @@
 
 **Interfaces:**
 - Consumes: existing markup from `renderHero` (`.hero-side` > `.hero-row` > `img` + text `span`).
-- Produces: `.hero-row img` sized by `clamp(144px, 19.1vw - 28px, 300px)`; 12px gaps. Task 2 moves this width onto a new `.hero-thumb` wrapper — keep the value identical.
+- Produces: `.hero-row img` sized by `clamp(144px, 19.1vw - 32px, 300px)`; 12px gaps. Task 2 moves this width onto a new `.hero-thumb` wrapper — keep the value identical.
 
 - [ ] **Step 1: Update the hero CSS**
 
@@ -37,7 +37,7 @@ In `src/ui.css`, change these three rules (leave `.hero`, `.hero-main`, `.hero-c
 .ui .hero-side { display: flex; flex-direction: column; gap: 12px; }
 .ui .hero-row { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--ink);
   flex: 1; }
-.ui .hero-row img { width: clamp(144px, 19.1vw - 28px, 300px); aspect-ratio: 16 / 9; object-fit: cover;
+.ui .hero-row img { width: clamp(144px, 19.1vw - 32px, 300px); aspect-ratio: 16 / 9; object-fit: cover;
   border-radius: 10px; background: var(--surface); flex-shrink: 0; }
 ```
 
@@ -107,7 +107,7 @@ In `src/pages/feed.js`, replace the side-row template:
 In `src/ui.css`, replace the Task 1 `.hero-row img` rule and the `.hero-row span` / `b` / `small` rules with:
 
 ```css
-.ui .hero-thumb { position: relative; width: clamp(144px, 19.1vw - 28px, 300px); flex-shrink: 0; }
+.ui .hero-thumb { position: relative; width: clamp(144px, 19.1vw - 32px, 300px); flex-shrink: 0; }
 .ui .hero-thumb img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px;
   background: var(--surface); display: block; }
 .ui .hero-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
