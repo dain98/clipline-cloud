@@ -4,7 +4,14 @@ import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
 import { session, toast, useStore } from "../lib/store.js";
 import { formatBytes, formatDate, formatDuration, formatViews } from "../lib/format.js";
-import { deriveShareLink, ownedMediaPath, ownedThumbPath, publicMediaPath, publicThumbPath } from "../lib/media.js";
+import {
+  deriveShareLink,
+  ownedMediaPath,
+  ownedPosterPath,
+  publicMediaPath,
+  publicPosterPath,
+  publicThumbPath,
+} from "../lib/media.js";
 import { icon } from "../lib/icons.js";
 import { Player } from "../components/Player.js";
 import { Comments } from "../components/Comments.js";
@@ -138,7 +145,7 @@ export function WatchPage({ route }) {
   const mediaSrc =
     route.name === "clip" ? ownedMediaPath({ id: clip.id }) : publicMediaPath({ share_id: route.shareId });
   const posterSrc =
-    route.name === "clip" ? ownedThumbPath({ id: clip.id }) : publicThumbPath({ share_id: route.shareId });
+    route.name === "clip" ? ownedPosterPath({ id: clip.id }) : publicPosterPath({ share_id: route.shareId });
   const authorName =
     route.name === "clip" ? user?.display_name || user?.username || "You" : clip.author_name || "Unknown creator";
   const rawShareUrl = clip.public_url ?? clip.share_url ?? null;
