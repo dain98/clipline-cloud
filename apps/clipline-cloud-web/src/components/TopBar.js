@@ -8,7 +8,10 @@ export function TopBar({ active }) {
   const { user } = useStore(session);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuWrapRef = useRef(null);
-  const isAdmin = user?.role === "admin";
+  // Legacy isAdminLike (src/app.js:579-581): both "admin" and "owner" get
+  // the Admin nav entry — role === "admin" alone would hide it from the
+  // bootstrap owner account.
+  const isAdmin = user?.role === "admin" || user?.role === "owner";
 
   useEffect(() => {
     if (!menuOpen) return;

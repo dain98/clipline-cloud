@@ -1,7 +1,7 @@
 import { html } from "../lib/html.js";
 import { useEffect, useRef } from "preact/hooks";
 
-export function ConfirmDialog({ open, title, body, confirmLabel = "Confirm", onConfirm, onCancel, danger = false }) {
+export function ConfirmDialog({ open, title, body, confirmLabel = "Confirm", onConfirm, onCancel, danger = false, confirmDisabled = false }) {
   const dialogRef = useRef(null);
   const confirmRef = useRef(null);
 
@@ -25,7 +25,7 @@ export function ConfirmDialog({ open, title, body, confirmLabel = "Confirm", onC
       <div class="confirm-dialog-actions">
         <button type="button" class="btn" onClick=${onCancel}>Cancel</button>
         <button type="button" ref=${confirmRef} class=${`btn ${danger ? "btn-danger" : "btn-primary"}`}
-          onClick=${onConfirm}>${confirmLabel}</button>
+          disabled=${confirmDisabled} onClick=${onConfirm}>${confirmLabel}</button>
       </div>
     </div>`}
   </dialog>`;

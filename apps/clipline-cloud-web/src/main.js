@@ -12,6 +12,11 @@ import { GamesPage } from "./pages/games.js";
 import { LibraryPage } from "./pages/library.js";
 import { WatchPage } from "./pages/watch.js";
 import { LoginPage, ResetPasswordPage } from "./pages/login.js";
+import { AdminPage } from "./pages/admin.js";
+import { ProfilePage } from "./pages/profile.js";
+import { AccountPage } from "./pages/account.js";
+import { UserPage } from "./pages/user.js";
+import { AboutPage } from "./pages/about.js";
 
 const PAGES = {
   publicLibrary: FeedPage,
@@ -22,7 +27,11 @@ const PAGES = {
   public: WatchPage,
   login: LoginPage,
   resetPassword: ResetPasswordPage,
-  // filled in by later tasks:
+  admin: AdminPage,
+  profile: ProfilePage,
+  account: AccountPage,
+  publicUser: UserPage,
+  about: AboutPage,
 };
 
 const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",

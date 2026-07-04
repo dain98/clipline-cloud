@@ -441,3 +441,45 @@
 
 .clipline-theater .ui .player { position: fixed; inset: 0; z-index: 50; border-radius: 0; aspect-ratio: auto;
   width: 100vw; height: 100vh; }
+
+/* Admin, profile, account, public user, about. Structural layout (panel,
+   field, badge, job-list, admin-grid, settings-section, management-list,
+   public-user-header, profile-form, etc.) is still styled by legacy
+   styles.css (loaded alongside ui.css until the Task 11 cutover, which moves
+   any still-referenced rules over before deleting it) — only the pieces with
+   no legacy analog are defined here. */
+.ui .page-subtitle { margin: -6px 0 20px; font-size: 12.5px; color: var(--muted); }
+
+.ui .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+@media (max-width: 900px) {
+  .ui .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.ui .stat-card { background: var(--surface-raised); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+.ui .stat-label { margin: 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.ui .stat-value { margin: 0; font-size: 22px; font-weight: 700; color: var(--ink); }
+.ui .stat-value.stat-success { color: var(--success); }
+.ui .stat-value.stat-danger { color: var(--danger); }
+.ui .stat-sub { margin: 0; font-size: 11.5px; color: var(--muted); }
+.ui .stat-meter { margin-top: 4px; height: 5px; border-radius: 999px; background: var(--scrim); overflow: hidden; }
+.ui .stat-meter span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--highlight)); }
+.ui .stat-meter.stat-danger span { background: var(--danger); }
+
+.ui .ad-tabs { display: flex; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+.ui .ad-tab { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted);
+  text-decoration: none; padding: 0 0 10px; border-bottom: 2px solid transparent; }
+.ui .ad-tab:hover { color: var(--ink); }
+.ui .ad-tab.ad-tab-on { color: var(--ink); border-bottom-color: var(--accent); }
+
+.ui .ad-kv { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 24px; font-size: 12px; margin: 0; }
+@media (max-width: 640px) {
+  .ui .ad-kv { grid-template-columns: 1fr; }
+}
+.ui .ad-kv div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0;
+  border-bottom: 1px solid var(--line); }
+.ui .ad-kv dt { margin: 0; color: var(--muted); }
+.ui .ad-kv dd { margin: 0; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
+
+.ui .user-avatar { border-radius: 50%; object-fit: cover; display: inline-flex; flex-shrink: 0; }
+.ui .user-avatar-fallback { align-items: center; justify-content: center; font-weight: 700;
+  color: var(--on-accent); background-image: linear-gradient(135deg, var(--accent), var(--highlight)); }
