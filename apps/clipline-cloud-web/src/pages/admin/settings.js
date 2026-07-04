@@ -2,6 +2,7 @@ import { html } from "../../lib/html.js";
 import { useState } from "preact/hooks";
 import { api } from "../../lib/api.js";
 import { toast } from "../../lib/store.js";
+import { formatBytes } from "../../lib/format.js";
 import { icon } from "../../lib/icons.js";
 import { gibibytesToBytes } from "./users.js";
 
@@ -17,6 +18,7 @@ function quotaGibFromBytes(bytes) {
 
 export function AdminSettings({ settings, isOwner, reload }) {
   const [busy, setBusy] = useState(false);
+  const [quotaDirty, setQuotaDirty] = useState(false);
 
   async function onSubmit(event) {
     event.preventDefault();
@@ -24,12 +26,14 @@ export function AdminSettings({ settings, isOwner, reload }) {
     setBusy(true);
     try {
       const form = new FormData(event.currentTarget);
-      const quotaGib = String(form.get("user_storage_quota_gib") || "").trim();
       const body = {
         allow_vod_uploads: form.get("allow_vod_uploads") === "on",
         vod_threshold_minutes: Number(form.get("vod_threshold_minutes") || 30),
-        user_storage_quota_bytes: quotaGib ? gibibytesToBytes(quotaGib) : null,
       };
+      if (quotaDirty) {
+        const quotaGib = String(form.get("user_storage_quota_gib") || "").trim();
+        body.user_storage_quota_bytes = quotaGib ? gibibytesToBytes(quotaGib) : null;
+      }
       if (isOwner) {
         body.about_text = String(form.get("about_text") || "");
         body.smtp_enabled = form.get("smtp_enabled") === "on";
@@ -45,6 +49,7 @@ export function AdminSettings({ settings, isOwner, reload }) {
       }
       await api("/api/v1/admin/settings", { method: "PATCH", body });
       toast("Settings saved.");
+      setQuotaDirty(false);
       reload();
     } catch (err) {
       toast(err.message);
@@ -72,13 +77,19 @@ export function AdminSettings({ settings, isOwner, reload }) {
     <section class="settings-section">
       <div class="settings-copy">
         <h2>Default storage quota</h2>
-        <p>Per-user storage limit for accounts without an individual quota. Leave blank to disable quotas.</p>
+        <p>Per-user storage limit for accounts without an individual quota. Leave blank and save to disable quotas, or leave unchanged to keep using the environment default.</p>
       </div>
       <div class="settings-controls">
         <label class="field"><span>Default quota GiB</span>
           <input class="input" name="user_storage_quota_gib" type="number" min="0" step="0.1"
-            placeholder="No default quota"
-            value=${quotaGibFromBytes(settings.user_storage_quota_bytes)} /></label>
+            placeholder=${settings.user_storage_quota_env_fallback_bytes
+              ? `Env default: ${quotaGibFromBytes(settings.user_storage_quota_env_fallback_bytes)} GiB`
+              : "No default quota"}
+            value=${quotaGibFromBytes(settings.user_storage_quota_bytes)}
+            onInput=${() => setQuotaDirty(true)} /></label>
+        ${settings.user_storage_quota_bytes == null && settings.user_storage_quota_env_fallback_bytes
+          ? html`<p class="muted">Effective default: ${formatBytes(settings.user_storage_quota_env_fallback_bytes)} from CLIPLINE_USER_STORAGE_QUOTA_BYTES.</p>`
+          : null}
       </div>
     </section>
 

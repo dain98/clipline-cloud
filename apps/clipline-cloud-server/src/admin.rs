@@ -54,6 +54,7 @@ struct AdminSettingsResponse {
     smtp_from_email: Option<String>,
     smtp_from_name: Option<String>,
     user_storage_quota_bytes: Option<u64>,
+    user_storage_quota_env_fallback_bytes: Option<u64>,
     updated_at: DateTime<Utc>,
 }
 
@@ -518,13 +519,24 @@ pub(crate) fn effective_user_storage_quota_bytes(
     }
 }
 
+fn stored_user_storage_quota_bytes(settings: &AppSettings) -> Option<u64> {
+    settings
+        .user_storage_quota_bytes
+        .and_then(|value| u64::try_from(value).ok())
+}
+
 impl AdminSettingsResponse {
     fn from_settings(settings: AppSettings, config: &crate::config::Config) -> Self {
         let smtp_password_configured = settings
             .smtp_password
             .as_deref()
             .is_some_and(|password| !password.trim().is_empty());
-        let user_storage_quota_bytes = effective_user_storage_quota_bytes(&settings, config);
+        let user_storage_quota_bytes = stored_user_storage_quota_bytes(&settings);
+        let user_storage_quota_env_fallback_bytes = if settings.user_storage_quota_bytes.is_none() {
+            config.user_storage_quota_bytes
+        } else {
+            None
+        };
         Self {
             owner_user_id: settings.owner_user_id,
             allow_vod_uploads: settings.allow_vod_uploads,
@@ -539,6 +551,7 @@ impl AdminSettingsResponse {
             smtp_from_email: settings.smtp_from_email,
             smtp_from_name: settings.smtp_from_name,
             user_storage_quota_bytes,
+            user_storage_quota_env_fallback_bytes,
             updated_at: settings.updated_at,
         }
     }
@@ -564,8 +577,8 @@ impl From<AppSettings> for AdminSettingsResponse {
             smtp_from_name: value.smtp_from_name,
             user_storage_quota_bytes: value
                 .user_storage_quota_bytes
-                .and_then(|quota| u64::try_from(quota).ok())
-                .filter(|quota| *quota > 0),
+                .and_then(|quota| u64::try_from(quota).ok()),
+            user_storage_quota_env_fallback_bytes: None,
             updated_at: value.updated_at,
         }
     }
@@ -709,5 +722,19 @@ mod tests {
             std::path::PathBuf::from("/tmp"),
         );
         assert_eq!(effective_user_storage_quota_bytes(&settings, &config), None);
+    }
+
+    #[test]
+    fn settings_response_exposes_stored_quota_separately_from_env_fallback() {
+        let mut settings = sample_settings(None);
+        settings.user_storage_quota_bytes = None;
+        let mut config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        config.user_storage_quota_bytes = Some(4096);
+        let response = AdminSettingsResponse::from_settings(settings, &config);
+        assert_eq!(response.user_storage_quota_bytes, None);
+        assert_eq!(response.user_storage_quota_env_fallback_bytes, Some(4096));
     }
 }

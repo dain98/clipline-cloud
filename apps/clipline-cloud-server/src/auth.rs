@@ -1173,7 +1173,7 @@ async fn purge_user(
     enforce_user_purge_policy(&auth.user, &existing, &settings)?;
 
     purge_user_account(&state, &existing).await?;
-    audit_with_ip(
+    if let Err(error) = audit_with_ip(
         &state.repositories,
         Some(client_ip.as_str()),
         Some(&auth.user),
@@ -1182,7 +1182,14 @@ async fn purge_user(
         Some(&id),
         Some(json!({ "username": existing.username })),
     )
-    .await?;
+    .await
+    {
+        warn!(
+            event = "user.purge_audit_failed",
+            user_id = %id,
+            error = %error.message(),
+        );
+    }
     Ok(Json(json!({ "status": "ok" })))
 }
 
