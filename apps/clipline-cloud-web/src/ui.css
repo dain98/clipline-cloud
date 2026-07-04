@@ -183,18 +183,20 @@ body { margin: 0; }
    16:8.4 hero ratio, 28px page padding, 1720px page cap) so three rows plus
    two 12px gaps exactly match the hero-main height from 900px up; flex: 1 on
    the rows absorbs the ±2px rounding drift. */
-.ui .hero-row img { width: clamp(144px, 19.1vw - 32px, 300px); aspect-ratio: 16 / 9; object-fit: cover;
-  border-radius: 10px; background: var(--surface); flex-shrink: 0; }
-.ui .hero-row span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.ui .hero-row b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+.ui .hero-thumb { position: relative; width: clamp(144px, 19.1vw - 32px, 300px); flex-shrink: 0; }
+.ui .hero-thumb img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px;
+  background: var(--surface); display: block; }
+.ui .hero-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ui .hero-row b { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
-.ui .hero-row small { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+.ui .hero-row small { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
+.ui .hero-row:hover b { color: var(--accent); }
 @media (max-width: 900px) {
   .ui .hero { grid-template-columns: 1fr; }
   .ui .hero-side { flex-direction: row; }
   .ui .hero-row { flex-direction: column; align-items: flex-start; }
-  .ui .hero-row img { width: 100%; }
+  .ui .hero-thumb { width: 100%; }
 }
 
 .ui .feed-toolbar { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
