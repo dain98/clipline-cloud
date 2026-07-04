@@ -209,6 +209,43 @@ export function Player({ src, poster, durationMs, markers }) {
     if (videoRef.current) videoRef.current.playbackRate = rate;
   }, [rate]);
 
+  // Start playback when a clip loads; fall back to muted if the browser blocks
+  // autoplay with sound (common on first visit before any user gesture).
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    let cancelled = false;
+
+    async function startPlayback() {
+      if (cancelled) return;
+      try {
+        await video.play();
+        return;
+      } catch {
+        if (cancelled || !video.paused) return;
+        video.muted = true;
+        setMuted(true);
+        try {
+          await video.play();
+        } catch (error) {
+          setNote(error?.message || "Playback unavailable");
+        }
+      }
+    }
+
+    if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      startPlayback();
+    } else {
+      video.addEventListener("canplay", startPlayback, { once: true });
+    }
+
+    return () => {
+      cancelled = true;
+      video.removeEventListener("canplay", startPlayback);
+    };
+  }, [src]);
+
   // Theater mode: class on <html> so the watch page can become a wide
   // in-page stage while leaving the surrounding page scrollable.
   useEffect(() => {
