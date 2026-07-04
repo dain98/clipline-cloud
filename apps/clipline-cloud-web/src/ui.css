@@ -458,26 +458,24 @@ body { margin: 0; }
 .ui .form-error { margin: 0; padding: 8px 12px; font-size: 12.5px; color: var(--danger);
   background: var(--danger-soft); border: 1px solid var(--danger); border-radius: var(--radius-sm); }
 
-.clipline-theater { --theater-side-width: clamp(17rem, 30vw, 22rem); }
-.clipline-theater .ui .topbar { position: relative; z-index: 60; background: var(--bg); }
-.clipline-theater .ui .watch { display: block; }
-.clipline-theater .ui .watch .upnext { display: none; }
-.clipline-theater .ui .watch-actions,
-.clipline-theater .ui .watch-desc,
-.clipline-theater .ui .details-strip,
-.clipline-theater .ui .details-full,
-.clipline-theater .ui .comments { display: none; }
-.clipline-theater .ui .player { position: fixed; top: 0; right: 0; bottom: 0; left: var(--theater-side-width);
-  z-index: 50; border-radius: 0; aspect-ratio: auto; width: auto; height: auto; }
-.clipline-theater .ui .watch-titlerow,
-.clipline-theater .ui .watch-meta { position: fixed; left: 28px; z-index: 51; width: calc(var(--theater-side-width) - 56px);
-  margin: 0; pointer-events: auto; }
-.clipline-theater .ui .watch-titlerow { top: 50%; transform: translateY(calc(-100% - 6px)); }
-.clipline-theater .ui .watch-meta { top: 50%; transform: translateY(0); }
-@media (max-width: 900px) {
-  .clipline-theater { --theater-side-width: clamp(12rem, 42vw, 16rem); }
-  .clipline-theater .ui .watch-titlerow,
-  .clipline-theater .ui .watch-meta { left: 16px; width: calc(var(--theater-side-width) - 32px); }
+.clipline-theater { --theater-stage-max-height: calc(100vh - 78px); }
+.clipline-theater .ui { overflow-x: hidden; }
+.clipline-theater .ui .watch { display: block; max-width: none; padding: 0 0 32px; }
+.clipline-theater .ui .watch > div:first-child,
+.clipline-theater .ui .watch > .upnext { max-width: 1200px; margin: 0 auto; padding: 0 28px; }
+.clipline-theater .ui .player { width: 100vw; max-width: 100vw;
+  height: min(56.25vw, var(--theater-stage-max-height)); margin-left: calc(50% - 50vw);
+  border-radius: 0; aspect-ratio: auto; box-shadow: none; }
+.clipline-theater .ui .player-overlay { padding: 10px 16px; }
+.clipline-theater .ui .watch-titlerow { margin-top: 18px; }
+.clipline-theater .ui .upnext { margin-top: 24px; }
+@media (max-width: 719px) {
+  .clipline-theater { --theater-stage-max-height: calc(100vh - 140px); }
+  .clipline-theater .ui .watch > div:first-child,
+  .clipline-theater .ui .watch > .upnext { padding: 0 16px; }
+}
+@media (max-width: 520px) {
+  .clipline-theater .ui .player-volume { display: none; }
 }
 
 /* Admin, profile, account, public user, about — structural layout (panel,
