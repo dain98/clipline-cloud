@@ -76,7 +76,7 @@ GET /.well-known/clipline-cloud
 {
   "name": "Clipline Cloud",
   "api_version": "v1",
-  "server_version": "1.2.28",
+  "server_version": "1.2.29",
   "min_client_version": "0.1.0",
   "public_url": "https://clips.example.com",
   "features": {
