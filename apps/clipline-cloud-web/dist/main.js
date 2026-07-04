@@ -602,7 +602,7 @@ var Ea=Object.defineProperty;var Ra=(e,t)=>()=>(e&&(t=e(e=0)),t);var Da=(e,t)=>{
       <code>${e.reset_url}</code>
     </div>
     <button class="btn" type="button" onClick=${a}>${C("copy",{size:14})} Copy</button>
-  </div>`}function Xs(e){return e.is_disabled?o`<span class="badge badge-warn">Disabled</span>`:o`<span class="badge badge-public">Active</span>`}function er({user:e,currentUser:t,onQuota:n,onReset:a,onDisable:r,onEnable:s,onRole:i,onPurge:u}){let p=e.storage_quota_bytes!=null?z(e.storage_quota_bytes):"No limit",c=!Ks(e,t),d=!Ws(e,t),h=!Zs(e,t),l=js(e,t);return o`<tr>
+  </div>`}function Xs(e){return e.is_disabled?o`<span class="badge badge-warn">Disabled</span>`:o`<span class="badge badge-public">Active</span>`}function er({user:e,currentUser:t,onQuota:n,onReset:a,onDisable:r,onEnable:s,onRole:i,onPurge:u}){let p=e.storage_quota_bytes!=null&&e.storage_quota_bytes>0?z(e.storage_quota_bytes):"No limit",c=!Ks(e,t),d=!Ws(e,t),h=!Zs(e,t),l=js(e,t);return o`<tr>
     <td>
       <strong>${e.username}</strong>
       <div class="muted">${e.display_name||e.id}</div>
@@ -692,7 +692,7 @@ var Ea=Object.defineProperty;var Ra=(e,t)=>()=>(e&&(t=e(e=0)),t);var Da=(e,t)=>{
     <section class="settings-section">
       <div class="settings-copy">
         <h2>Default storage quota</h2>
-        <p>Per-user storage limit for accounts without an individual quota. Leave blank and save to disable quotas, or leave unchanged to keep using the environment default.</p>
+        <p>Per-user storage limit for accounts without an individual quota. Leave blank and save to use the environment default when set. Enter 0 to disable quotas. Leave unchanged to keep the current stored value.</p>
       </div>
       <div class="settings-controls">
         <label class="field"><span>Default quota GiB</span>

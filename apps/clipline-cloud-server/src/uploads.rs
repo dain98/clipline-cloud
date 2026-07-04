@@ -687,10 +687,7 @@ async fn enforce_user_storage_quota(
     requested_size_bytes: u64,
 ) -> Result<(), ApiError> {
     let quota_bytes = match user.storage_quota_bytes {
-        Some(value) => Some(
-            u64::try_from(value)
-                .map_err(|_| ApiError::internal("stored user storage quota is negative"))?,
-        ),
+        Some(value) => crate::admin::stored_storage_quota_bytes(Some(value)),
         None => {
             let settings = state.repositories.settings.get().await?;
             crate::admin::effective_user_storage_quota_bytes(&settings, &state.config)

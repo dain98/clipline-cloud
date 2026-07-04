@@ -201,7 +201,7 @@ async fn update_settings(
 
     if let Some(quota) = request.user_storage_quota_bytes {
         let stored = match quota {
-            None => Some(0_i64),
+            None => None,
             Some(bytes) => {
                 let bytes = i64::try_from(bytes)
                     .map_err(|_| ApiError::bad_request("storage quota is too large"))?;
@@ -519,6 +519,14 @@ pub(crate) fn effective_user_storage_quota_bytes(
     }
 }
 
+pub(crate) fn stored_storage_quota_bytes(stored: Option<i64>) -> Option<u64> {
+    match stored {
+        None => None,
+        Some(0) => None,
+        Some(value) => u64::try_from(value).ok(),
+    }
+}
+
 fn stored_user_storage_quota_bytes(settings: &AppSettings) -> Option<u64> {
     settings
         .user_storage_quota_bytes
@@ -736,5 +744,12 @@ mod tests {
         let response = AdminSettingsResponse::from_settings(settings, &config);
         assert_eq!(response.user_storage_quota_bytes, None);
         assert_eq!(response.user_storage_quota_env_fallback_bytes, Some(4096));
+    }
+
+    #[test]
+    fn stored_storage_quota_bytes_treats_zero_as_disabled() {
+        assert_eq!(stored_storage_quota_bytes(None), None);
+        assert_eq!(stored_storage_quota_bytes(Some(0)), None);
+        assert_eq!(stored_storage_quota_bytes(Some(4096)), Some(4096));
     }
 }

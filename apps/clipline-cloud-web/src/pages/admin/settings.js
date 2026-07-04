@@ -77,7 +77,7 @@ export function AdminSettings({ settings, isOwner, reload }) {
     <section class="settings-section">
       <div class="settings-copy">
         <h2>Default storage quota</h2>
-        <p>Per-user storage limit for accounts without an individual quota. Leave blank and save to disable quotas, or leave unchanged to keep using the environment default.</p>
+        <p>Per-user storage limit for accounts without an individual quota. Leave blank and save to use the environment default when set. Enter 0 to disable quotas. Leave unchanged to keep the current stored value.</p>
       </div>
       <div class="settings-controls">
         <label class="field"><span>Default quota GiB</span>

@@ -178,7 +178,9 @@ function UserRow({
   onRole,
   onPurge,
 }) {
-  const quotaLabel = user.storage_quota_bytes != null ? formatBytes(user.storage_quota_bytes) : "No limit";
+  const quotaLabel = user.storage_quota_bytes != null && user.storage_quota_bytes > 0
+    ? formatBytes(user.storage_quota_bytes)
+    : "No limit";
   const disableDisabled = !canDisableUser(user, currentUser);
   const enableDisabled = !canEnableUser(user, currentUser);
   const purgeDisabled = !canPurgeUser(user, currentUser);
