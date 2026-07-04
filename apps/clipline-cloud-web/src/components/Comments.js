@@ -30,6 +30,22 @@ export function commentTree(comments) {
   return { roots, repliesByParent, count };
 }
 
+export async function postComment({ apiClient = api, shareId, body, parentCommentId, onReload = () => {}, onError = toast }) {
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+  try {
+    await apiClient(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`, {
+      method: "POST",
+      body: parentCommentId ? { body: trimmed, parent_comment_id: parentCommentId } : { body: trimmed },
+    });
+    onReload();
+    return true;
+  } catch (error) {
+    onError(error.message);
+    return false;
+  }
+}
+
 function initials(name) {
   return (name || "?").trim().slice(0, 1).toUpperCase() || "?";
 }
@@ -74,30 +90,20 @@ export function Comments({ shareId }) {
   }, [shareId]);
 
   async function post(body, parentCommentId) {
-    const trimmed = body.trim();
-    if (!trimmed) return;
-    try {
-      await api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`, {
-        method: "POST",
-        body: parentCommentId ? { body: trimmed, parent_comment_id: parentCommentId } : { body: trimmed },
-      });
-      reload();
-    } catch (error) {
-      toast(error.message);
-    }
+    return postComment({ shareId, body, parentCommentId, onReload: reload, onError: toast });
   }
 
   async function submitComment(event) {
     event.preventDefault();
-    await post(draft);
-    setDraft("");
+    if (await post(draft)) setDraft("");
   }
 
   async function submitReply(event, parentCommentId) {
     event.preventDefault();
-    await post(replyDraft, parentCommentId);
-    setReplyDraft("");
-    setReplyOpenId(null);
+    if (await post(replyDraft, parentCommentId)) {
+      setReplyDraft("");
+      setReplyOpenId(null);
+    }
   }
 
   async function confirmDelete() {

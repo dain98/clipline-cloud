@@ -38,6 +38,21 @@ export function gameLabel(clip) {
   return clip?.game_name || "No game";
 }
 
+export function feedGameChips(games, activeGame, max = MAX_GAME_CHIPS) {
+  const sortedGames = [...(games || [])].sort((a, b) => (b.clip_count || 0) - (a.clip_count || 0));
+  const topGames = sortedGames.slice(0, max);
+  const normalizedActiveGame = String(activeGame || "").trim();
+  const activeInTop = normalizedActiveGame && topGames.some((game) => game.game === normalizedActiveGame);
+  const activeGameChip =
+    normalizedActiveGame && !activeInTop
+      ? sortedGames.find((game) => game.game === normalizedActiveGame) || { game: normalizedActiveGame, clip_count: 0 }
+      : null;
+  const chips = activeGameChip ? [activeGameChip, ...topGames] : topGames;
+  const visibleGames = new Set(chips.map((game) => game.game));
+  const extraGameCount = sortedGames.filter((game) => !visibleGames.has(game.game)).length;
+  return { chips, extraGameCount };
+}
+
 export function FeedPage({ route }) {
   const query = {
     sort: "uploaded_at_desc",
@@ -85,9 +100,7 @@ export function FeedPage({ route }) {
   const hasFilter = Boolean(query.game || query.q) || Number(query.page) > 1;
   const isDefaultView = !hasFilter;
 
-  const sortedGames = [...games].sort((a, b) => (b.clip_count || 0) - (a.clip_count || 0));
-  const topGames = sortedGames.slice(0, MAX_GAME_CHIPS);
-  const extraGameCount = sortedGames.length - topGames.length;
+  const { chips: gameChips, extraGameCount } = feedGameChips(games, query.game);
 
   return html`<main class="page">
     ${clips == null
@@ -108,7 +121,7 @@ export function FeedPage({ route }) {
           </select>
           <div class="chips">
             <button class=${`chip ${!query.game ? "chip-on" : ""}`} onClick=${() => setQ({ game: "" })}>All</button>
-            ${topGames.map((g) => html`<button
+            ${gameChips.map((g) => html`<button
               class=${`chip ${query.game === g.game ? "chip-on" : ""}`}
               onClick=${() => setQ({ game: g.game })}>${g.game}</button>`)}
             ${extraGameCount > 0 && html`<a class="chip" href="/games">+${extraGameCount}</a>`}
