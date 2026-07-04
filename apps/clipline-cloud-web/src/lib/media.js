@@ -20,6 +20,17 @@ export function ownedMediaPath(clip) {
   return `/api/v1/clips/${encodeURIComponent(clip.id)}/media`;
 }
 
+// The poster is the full-size first frame (max 1280px) vs the small thumbnail;
+// use it where the image renders large (watch player). The server falls back
+// to the thumbnail for clips that predate poster generation.
+export function ownedPosterPath(clip) {
+  return `/api/v1/clips/${encodeURIComponent(clip.id)}/poster`;
+}
+
+export function publicPosterPath(clip) {
+  return `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/poster`;
+}
+
 // The public clip detail response's media_url is likewise an ABSOLUTE URL
 // (apps/clipline-cloud-server/src/media.rs :489, `absolute_url(&state, …)`).
 // Build the relative route directly (same route registered at :81-83) so the

@@ -85,6 +85,10 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/public/clips/{share_id}/thumbnail",
             get(get_public_thumbnail),
         )
+        .route(
+            "/api/v1/public/clips/{share_id}/poster",
+            get(get_public_poster),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +166,7 @@ struct PublicClipResponse {
     view_count: i64,
     media_url: String,
     thumbnail_url: String,
+    poster_url: String,
     share_url: String,
     copy_notice: &'static str,
 }
@@ -437,6 +442,7 @@ async fn get_owned_thumbnail(
         &headers,
         &clip,
         clip.thumbnail_key.as_deref(),
+        None,
         CacheScope::Owner,
     )
     .await
@@ -449,11 +455,15 @@ async fn get_owned_poster(
 ) -> Result<Response, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
     let clip = ensure_owned_ready_clip(&state, &auth.user.id, &id).await?;
+    // poster_key is assigned at upload creation but the poster object is only
+    // written by a post-ready job, so fall back per object (not per key) to the
+    // thumbnail when the poster is still pending, failed, or predates posters.
     serve_clip_image_or_placeholder(
         &state,
         &headers,
         &clip,
         clip.poster_key.as_deref(),
+        clip.thumbnail_key.as_deref(),
         CacheScope::Owner,
     )
     .await
@@ -488,6 +498,7 @@ async fn get_public_clip(
         view_count: clip.view_count,
         media_url: absolute_url(&state, &format!("api/v1/public/clips/{share_id}/media")),
         thumbnail_url: absolute_url(&state, &format!("api/v1/public/clips/{share_id}/thumbnail")),
+        poster_url: absolute_url(&state, &format!("api/v1/public/clips/{share_id}/poster")),
         share_url: absolute_url(&state, &format!("c/{share_id}")),
         copy_notice: COPY_NOTICE,
     }))
@@ -709,6 +720,26 @@ async fn get_public_thumbnail(
         &headers,
         &clip,
         clip.thumbnail_key.as_deref(),
+        None,
+        CacheScope::Public,
+    )
+    .await
+}
+
+async fn get_public_poster(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(share_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let clip = load_public_clip(&state, &share_id).await?;
+    // Same object-level thumbnail fallback as get_owned_poster: og:image and
+    // the watch player point here unconditionally.
+    serve_clip_image_or_placeholder(
+        &state,
+        &headers,
+        &clip,
+        clip.poster_key.as_deref(),
+        clip.thumbnail_key.as_deref(),
         CacheScope::Public,
     )
     .await
@@ -777,22 +808,42 @@ async fn serve_clip_image_or_placeholder(
     state: &AppState,
     headers: &HeaderMap,
     clip: &Clip,
-    storage_key: Option<&str>,
+    primary_key: Option<&str>,
+    fallback_key: Option<&str>,
     scope: CacheScope,
 ) -> Result<Response, ApiError> {
-    let Some(storage_key) = storage_key else {
-        return Ok(placeholder_response(headers));
-    };
+    if let Some(storage_key) = primary_key {
+        if let Some(response) = try_serve_clip_image(state, headers, clip, storage_key, scope).await
+        {
+            return Ok(response);
+        }
+    }
+    if let Some(storage_key) = fallback_key {
+        if let Some(response) = try_serve_clip_image(state, headers, clip, storage_key, scope).await
+        {
+            return Ok(response);
+        }
+    }
+    Ok(placeholder_response(headers))
+}
+
+async fn try_serve_clip_image(
+    state: &AppState,
+    headers: &HeaderMap,
+    clip: &Clip,
+    storage_key: &str,
+    scope: CacheScope,
+) -> Option<Response> {
     let key = match ObjectKey::parse(storage_key) {
         Ok(key) => key,
         Err(error) => {
             warn!(event = "media.invalid_artifact_key", clip_id = %clip.id, error = %error);
-            return Ok(placeholder_response(headers));
+            return None;
         }
     };
     let metadata = match state.storage.head_object(&key).await {
         Ok(metadata) => metadata,
-        Err(StorageError::NotFound(_)) => return Ok(placeholder_response(headers)),
+        Err(StorageError::NotFound(_)) => return None,
         Err(error) => {
             warn!(
                 event = "media.artifact_head_failed",
@@ -800,16 +851,16 @@ async fn serve_clip_image_or_placeholder(
                 key = %key,
                 error = %error
             );
-            return Ok(placeholder_response(headers));
+            return None;
         }
     };
     if etag_matches(headers, metadata.etag.as_deref()) {
-        return Ok(not_modified_response(&metadata, scope));
+        return Some(not_modified_response(&metadata, scope));
     }
 
     match state.storage.get_object_stream(&key, None).await {
-        Ok(object) => Ok(media_response(object, scope)),
-        Err(StorageError::NotFound(_)) => Ok(placeholder_response(headers)),
+        Ok(object) => Some(media_response(object, scope)),
+        Err(StorageError::NotFound(_)) => None,
         Err(error) => {
             warn!(
                 event = "media.artifact_get_failed",
@@ -817,7 +868,7 @@ async fn serve_clip_image_or_placeholder(
                 key = %key,
                 error = %error
             );
-            Ok(placeholder_response(headers))
+            None
         }
     }
 }
@@ -1058,17 +1109,18 @@ fn public_share_page_response(
     let description = public_share_description(clip, Some(author_name));
     let share_url = absolute_url(state, &format!("c/{share_id}"));
     let media_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/media"));
-    let thumbnail_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/thumbnail"));
-    let width = clip.width.unwrap_or(1280).max(1);
-    let height = clip.height.unwrap_or(720).max(1);
+    let poster_url = absolute_url(state, &format!("api/v1/public/clips/{share_id}/poster"));
+    let (image_width, image_height) = public_embed_image_dimensions(clip);
     let html = public_share_html(PublicShareHtml {
         title: &title,
         description: &description,
         share_url: &share_url,
         media_url: &media_url,
-        thumbnail_url: &thumbnail_url,
-        width,
-        height,
+        image_url: &poster_url,
+        image_width,
+        image_height,
+        video_width: clip.width.unwrap_or(1280).max(1),
+        video_height: clip.height.unwrap_or(720).max(1),
         status_message: "Loading public clip...",
     });
     html_response(StatusCode::OK, html)
@@ -1083,12 +1135,30 @@ fn public_share_unavailable_response(state: &AppState, share_id: &str) -> Respon
         description,
         share_url: &share_url,
         media_url: "",
-        thumbnail_url: "",
-        width: 1280,
-        height: 720,
+        image_url: "",
+        image_width: 1280,
+        image_height: 720,
+        video_width: 1280,
+        video_height: 720,
         status_message: "Clip unavailable",
     });
     html_response(StatusCode::NOT_FOUND, html)
+}
+
+fn public_embed_image_dimensions(clip: &Clip) -> (i64, i64) {
+    // Poster artifacts are always rendered at this width (`scale=1280:-2` in
+    // media_processing::generate_poster), including upscaled small sources,
+    // so advertise that size rather than the source dimensions.
+    const POSTER_WIDTH: i64 = 1280;
+    // Same sane bound the metadata probe enforces; stored dimensions can come
+    // straight from the upload request, so clamp before multiplying.
+    const MAX_DIMENSION: i64 = 16_384;
+    let width = clip.width.unwrap_or(POSTER_WIDTH).clamp(1, MAX_DIMENSION);
+    let height = clip.height.unwrap_or(720).clamp(1, MAX_DIMENSION);
+    let scaled_height = (height * POSTER_WIDTH + width / 2) / width;
+    // `-2` keeps the proportional height even.
+    let even_height = ((scaled_height + 1) / 2) * 2;
+    (POSTER_WIDTH, even_height.max(2))
 }
 
 struct PublicShareHtml<'a> {
@@ -1096,9 +1166,13 @@ struct PublicShareHtml<'a> {
     description: &'a str,
     share_url: &'a str,
     media_url: &'a str,
-    thumbnail_url: &'a str,
-    width: i64,
-    height: i64,
+    image_url: &'a str,
+    // og:image sizing matches the generated poster (capped at 1280px);
+    // og:video keeps the clip's real pixel dimensions.
+    image_width: i64,
+    image_height: i64,
+    video_width: i64,
+    video_height: i64,
     status_message: &'a str,
 }
 
@@ -1107,17 +1181,26 @@ fn public_share_html(data: PublicShareHtml<'_>) -> String {
     let description = escape_html(data.description);
     let share_url = escape_html(data.share_url);
     let media_url = escape_html(data.media_url);
-    let thumbnail_url = escape_html(data.thumbnail_url);
+    let image_url = escape_html(data.image_url);
     let status_message = escape_html(data.status_message);
-    let image_meta = if data.thumbnail_url.is_empty() {
+    let image_alt = escape_html(&format!("Preview image for {}", data.title));
+    let image_meta = if data.image_url.is_empty() {
         String::new()
     } else {
         format!(
             r#"
-    <meta property="og:image" content="{thumbnail_url}">
-    <meta property="og:image:secure_url" content="{thumbnail_url}">
+    <meta property="og:image" content="{image_url}">
+    <meta property="og:image:secure_url" content="{image_url}">
     <meta property="og:image:type" content="image/jpeg">
-    <meta name="twitter:image" content="{thumbnail_url}">"#
+    <meta property="og:image:width" content="{image_width}">
+    <meta property="og:image:height" content="{image_height}">
+    <meta property="og:image:alt" content="{image_alt}">
+    <meta name="twitter:image" content="{image_url}">
+    <meta name="twitter:image:width" content="{image_width}">
+    <meta name="twitter:image:height" content="{image_height}">
+    <meta name="twitter:image:alt" content="{image_alt}">"#,
+            image_width = data.image_width,
+            image_height = data.image_height,
         )
     };
     let video_meta = if data.media_url.is_empty() {
@@ -1130,8 +1213,8 @@ fn public_share_html(data: PublicShareHtml<'_>) -> String {
     <meta property="og:video:type" content="video/mp4">
     <meta property="og:video:width" content="{width}">
     <meta property="og:video:height" content="{height}">"#,
-            width = data.width,
-            height = data.height
+            width = data.video_width,
+            height = data.video_height
         )
     };
 
@@ -1607,18 +1690,55 @@ mod tests {
             description: "A&B's clip",
             share_url: "https://clips.example.com/c/share",
             media_url: "https://clips.example.com/api/v1/public/clips/share/media",
-            thumbnail_url: "https://clips.example.com/api/v1/public/clips/share/thumbnail",
-            width: 1920,
-            height: 1080,
+            image_url: "https://clips.example.com/api/v1/public/clips/share/poster",
+            image_width: 1280,
+            image_height: 720,
+            video_width: 1920,
+            video_height: 1080,
             status_message: "Loading <clip>",
         });
 
         assert!(html.contains("Clip &lt;one&gt; &quot;win&quot;"));
         assert!(html.contains("A&amp;B&#39;s clip"));
         assert!(html.contains(r#"<meta property="og:video:type" content="video/mp4">"#));
+        assert!(html.contains(
+            r#"<meta property="og:image" content="https://clips.example.com/api/v1/public/clips/share/poster">"#
+        ));
+        assert!(html.contains(r#"<meta property="og:image:width" content="1280">"#));
+        assert!(html.contains(r#"<meta property="og:image:height" content="720">"#));
         assert!(html.contains(r#"<meta property="og:video:width" content="1920">"#));
+        assert!(html.contains(r#"<meta property="og:video:height" content="1080">"#));
         assert!(html.contains(r#"<meta property="og:image:type" content="image/jpeg">"#));
         assert!(!html.contains("Loading <clip>"));
+    }
+
+    #[test]
+    fn public_embed_image_dimensions_match_generated_poster_width() {
+        let mut clip = test_clip_with_metadata(Some("League"), Some(26_000));
+        clip.width = Some(1920);
+        clip.height = Some(1080);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 720));
+
+        // Small sources are upscaled by the poster job (`scale=1280:-2`), so
+        // the advertised size matches the artifact, not the source.
+        clip.width = Some(800);
+        clip.height = Some(600);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 960));
+
+        // Vertical video keeps aspect with an even height.
+        clip.width = Some(720);
+        clip.height = Some(1280);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 2276));
+
+        // Client-supplied dimensions outside probe bounds must not overflow;
+        // height clamps to 16_384 before scaling.
+        clip.width = Some(1281);
+        clip.height = Some(i64::MAX);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 16_372));
+
+        clip.width = Some(0);
+        clip.height = Some(-42);
+        assert_eq!(public_embed_image_dimensions(&clip), (1280, 1280));
     }
 
     #[test]
