@@ -154,8 +154,11 @@ function renderHero(clips) {
       <div class="hero-side">
         ${sideRows.map(
           (c) => html`<a class="hero-row" href=${shareHref(c)}>
-            <img src=${publicThumbPath(c)} alt="" loading="lazy" />
-            <span><b>${c.title}</b>
+            <span class="hero-thumb">
+              <img src=${publicThumbPath(c)} alt="" loading="lazy" />
+              <span class="dur-pill">${formatDuration(c.duration_ms)}</span>
+            </span>
+            <span class="hero-copy"><b>${c.title}</b>
               <small>${clipAuthor(c)} · ${gameLabel(c)} · ${formatViews(c.view_count)}</small></span>
           </a>`
         )}
