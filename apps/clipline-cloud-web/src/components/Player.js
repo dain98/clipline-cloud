@@ -209,20 +209,13 @@ export function Player({ src, poster, durationMs, markers }) {
     if (videoRef.current) videoRef.current.playbackRate = rate;
   }, [rate]);
 
-  // Theater mode: class on <html> (kept out of .ui so it can toggle chrome
-  // that lives above the app root), persisted, plus a body scroll lock.
+  // Theater mode: class on <html> so the watch page can become a wide
+  // in-page stage while leaving the surrounding page scrollable.
   useEffect(() => {
-    document.documentElement.classList.toggle("clipline-theater", theater);
-    if (theater) {
-      const previousOverflow = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = previousOverflow;
-      };
-    }
-    return undefined;
+    const root = document.documentElement;
+    root.classList.toggle("clipline-theater", theater);
+    return () => root.classList.remove("clipline-theater");
   }, [theater]);
-  useEffect(() => () => document.documentElement.classList.remove("clipline-theater"), []);
 
   function setTheaterMode(next) {
     setTheater(next);
