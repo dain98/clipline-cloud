@@ -27,7 +27,7 @@ use clipline_cloud_api_types::{
 };
 use clipline_cloud_db::{
     now_utc, AppSettings, Clip, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewInvitationToken,
-    NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
+    NewResetPasswordToken, NewSession, NewUser, Repositories, Session, UploadSession, User,
 };
 use clipline_cloud_storage::{ObjectKey, ObjectMetadata, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
@@ -1187,18 +1187,40 @@ async fn purge_user(
 }
 
 async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiError> {
+    let upload_sessions = state
+        .repositories
+        .upload_sessions
+        .list_for_user(&user.id)
+        .await?;
+    for session in upload_sessions {
+        abort_upload_session_storage(state, &session).await;
+        if let Err(error) = state
+            .repositories
+            .upload_parts
+            .delete_for_session(&session.id)
+            .await
+        {
+            warn!(
+                event = "user.purge_upload_parts_failed",
+                user_id = %user.id,
+                session_id = %session.id,
+                error = %error,
+            );
+        }
+    }
+    state
+        .repositories
+        .upload_sessions
+        .delete_for_user(&user.id)
+        .await?;
+
     let clips = state
         .repositories
         .clips
         .list_all_for_owner(&user.id)
         .await?;
     for clip in clips {
-        delete_clip_media(state, &clip).await?;
-        state
-            .repositories
-            .upload_sessions
-            .delete_for_clip(&clip.id)
-            .await?;
+        delete_clip_media_best_effort(state, &clip).await;
         state.repositories.clips.delete(&clip.id).await?;
     }
     if let Some(avatar_key) = user.avatar_key.as_deref() {
@@ -1236,7 +1258,38 @@ async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiErro
     Ok(())
 }
 
-async fn delete_clip_media(state: &AppState, clip: &Clip) -> Result<(), ApiError> {
+async fn abort_upload_session_storage(state: &AppState, session: &UploadSession) {
+    if session.status == "completed" {
+        return;
+    }
+    let Ok(key) = ObjectKey::parse(&session.storage_key) else {
+        warn!(
+            event = "user.purge_upload_invalid_key",
+            session_id = %session.id,
+            storage_key = %session.storage_key,
+        );
+        return;
+    };
+    let result = if let Some(storage_upload_id) = session.storage_upload_id.as_deref() {
+        state
+            .storage
+            .abort_multipart_upload(storage_upload_id, &key)
+            .await
+    } else {
+        state.storage.delete_object(&key).await
+    };
+    if let Err(error) = result {
+        if !matches!(error, StorageError::NotFound(_)) {
+            warn!(
+                event = "user.purge_upload_storage_failed",
+                session_id = %session.id,
+                error = %error,
+            );
+        }
+    }
+}
+
+async fn delete_clip_media_best_effort(state: &AppState, clip: &Clip) {
     for key in [
         clip.storage_key.as_deref(),
         clip.poster_key.as_deref(),
@@ -1245,14 +1298,25 @@ async fn delete_clip_media(state: &AppState, clip: &Clip) -> Result<(), ApiError
     .into_iter()
     .flatten()
     {
-        let parsed = ObjectKey::parse(key).map_err(|_| ApiError::internal("invalid clip key"))?;
+        let Ok(parsed) = ObjectKey::parse(key) else {
+            warn!(
+                event = "user.purge_clip_invalid_key",
+                clip_id = %clip.id,
+                storage_key = %key,
+            );
+            continue;
+        };
         if let Err(error) = state.storage.delete_object(&parsed).await {
             if !matches!(error, StorageError::NotFound(_)) {
-                return Err(storage_api_error(error));
+                warn!(
+                    event = "user.purge_clip_media_failed",
+                    clip_id = %clip.id,
+                    storage_key = %key,
+                    error = %error,
+                );
             }
         }
     }
-    Ok(())
 }
 
 async fn revoke_user_auth(repositories: &Repositories, user_id: &str) -> Result<(), ApiError> {

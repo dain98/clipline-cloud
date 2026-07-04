@@ -22,27 +22,27 @@ export function AdminSettings({ settings, isOwner, reload }) {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
-    const form = new FormData(event.currentTarget);
-    const quotaGib = String(form.get("user_storage_quota_gib") || "").trim();
-    const body = {
-      allow_vod_uploads: form.get("allow_vod_uploads") === "on",
-      vod_threshold_minutes: Number(form.get("vod_threshold_minutes") || 30),
-      user_storage_quota_bytes: quotaGib ? gibibytesToBytes(quotaGib) : null,
-    };
-    if (isOwner) {
-      body.about_text = String(form.get("about_text") || "");
-      body.smtp_enabled = form.get("smtp_enabled") === "on";
-      body.smtp_host = nullableString(form.get("smtp_host"));
-      body.smtp_port = Number(form.get("smtp_port") || 587);
-      body.smtp_tls_mode = String(form.get("smtp_tls_mode") || "starttls");
-      body.smtp_username = nullableString(form.get("smtp_username"));
-      body.smtp_from_email = nullableString(form.get("smtp_from_email"));
-      body.smtp_from_name = nullableString(form.get("smtp_from_name"));
-      const smtpPassword = String(form.get("smtp_password") || "").trim();
-      if (smtpPassword) body.smtp_password = smtpPassword;
-      if (form.get("smtp_password_clear") === "on") body.smtp_password_clear = true;
-    }
     try {
+      const form = new FormData(event.currentTarget);
+      const quotaGib = String(form.get("user_storage_quota_gib") || "").trim();
+      const body = {
+        allow_vod_uploads: form.get("allow_vod_uploads") === "on",
+        vod_threshold_minutes: Number(form.get("vod_threshold_minutes") || 30),
+        user_storage_quota_bytes: quotaGib ? gibibytesToBytes(quotaGib) : null,
+      };
+      if (isOwner) {
+        body.about_text = String(form.get("about_text") || "");
+        body.smtp_enabled = form.get("smtp_enabled") === "on";
+        body.smtp_host = nullableString(form.get("smtp_host"));
+        body.smtp_port = Number(form.get("smtp_port") || 587);
+        body.smtp_tls_mode = String(form.get("smtp_tls_mode") || "starttls");
+        body.smtp_username = nullableString(form.get("smtp_username"));
+        body.smtp_from_email = nullableString(form.get("smtp_from_email"));
+        body.smtp_from_name = nullableString(form.get("smtp_from_name"));
+        const smtpPassword = String(form.get("smtp_password") || "").trim();
+        if (smtpPassword) body.smtp_password = smtpPassword;
+        if (form.get("smtp_password_clear") === "on") body.smtp_password_clear = true;
+      }
       await api("/api/v1/admin/settings", { method: "PATCH", body });
       toast("Settings saved.");
       reload();

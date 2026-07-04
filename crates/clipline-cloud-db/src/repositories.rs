@@ -1953,6 +1953,19 @@ impl UploadSessionRepository {
         )?)
     }
 
+    pub async fn list_for_user(&self, user_id: &str) -> DbResult<Vec<UploadSession>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            UploadSession,
+            "SELECT id, clip_id, user_id, status, expected_size_bytes, received_size_bytes, part_size_bytes,
+                    storage_key, storage_upload_id, checksum_sha256, failure_reason, created_at, updated_at, completed_at, failed_at, expires_at
+             FROM upload_sessions
+             WHERE user_id = ?
+             ORDER BY created_at ASC, id ASC",
+            [user_id]
+        )?)
+    }
+
     pub async fn count_active_for_user(
         &self,
         user_id: &str,

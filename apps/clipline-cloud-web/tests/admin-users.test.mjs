@@ -71,3 +71,9 @@ test("purge follows the same permission rules as disable", () => {
   assert.equal(canPurgeUser(target, admin), false);
   assert.equal(canPurgeUser(target, owner), true);
 });
+
+test("disabled users can still be purged when permitted", () => {
+  const target = { id: "u8", role: "user", is_disabled: true };
+  assert.equal(canPurgeUser(target, admin), true);
+  assert.equal(canDisableUser(target, admin), false);
+});

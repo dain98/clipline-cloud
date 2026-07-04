@@ -42,7 +42,13 @@ export function canChangeRole(user, currentUser) {
 }
 
 export function canPurgeUser(user, currentUser) {
-  return canDisableUser(user, currentUser);
+  if (currentUser?.id === user.id || user.role === "owner") {
+    return false;
+  }
+  if (user.role === "admin" && currentUser?.role !== "owner") {
+    return false;
+  }
+  return true;
 }
 
 function roleOptions(isOwner) {
