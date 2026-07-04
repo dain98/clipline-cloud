@@ -1155,13 +1155,14 @@ fn public_share_html(data: PublicShareHtml<'_>) -> String {
     <meta name="twitter:description" content="{description}">{image_meta}{video_meta}
     <link rel="canonical" href="{share_url}">
     <link rel="icon" type="image/svg+xml" href="/clipline-icon.svg">
-    <link rel="stylesheet" href="/styles.css">
-    <script type="module" src="/app.js"></script>
+    <link rel="stylesheet" href="/tokens.css">
+    <link rel="stylesheet" href="/ui.css">
+    <script type="module" src="/main.js"></script>
   </head>
   <body>
     <div id="app" class="app-root">
       <main class="boot-screen">
-        <div class="brand-mark" aria-hidden="true">CL</div>
+        <img class="boot-icon" src="/clipline-icon.svg" alt="" width="48" height="48">
         <p>{status_message}</p>
       </main>
     </div>

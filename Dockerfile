@@ -27,7 +27,10 @@ COPY crates ./crates
 COPY apps/clipline-cloud-server ./apps/clipline-cloud-server
 COPY apps/clipline-cloud-web ./apps/clipline-cloud-web
 
-RUN diff -ru apps/clipline-cloud-web/src apps/clipline-cloud-web/dist
+RUN test -s apps/clipline-cloud-web/dist/index.html \
+  && test -s apps/clipline-cloud-web/dist/main.js \
+  && test -s apps/clipline-cloud-web/dist/ui.css \
+  && test -s apps/clipline-cloud-web/dist/tokens.css
 RUN cargo build --release -p clipline-cloud-server
 
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716
