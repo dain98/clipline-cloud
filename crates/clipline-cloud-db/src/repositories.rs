@@ -2486,6 +2486,15 @@ impl JobRepository {
         db_execute!(&self.database, "DELETE FROM jobs WHERE id = ?", [id])?;
         Ok(())
     }
+
+    pub async fn delete_for_clip(&self, clip_id: &str) -> DbResult<()> {
+        db_execute!(
+            &self.database,
+            "DELETE FROM jobs WHERE target_type = 'clip' AND target_id = ?",
+            [clip_id]
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

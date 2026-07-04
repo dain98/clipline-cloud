@@ -1228,6 +1228,7 @@ async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiErro
         .await?;
     for clip in clips {
         delete_clip_media_best_effort(state, &clip).await;
+        state.repositories.jobs.delete_for_clip(&clip.id).await?;
         state.repositories.clips.delete(&clip.id).await?;
     }
     if let Some(avatar_key) = user.avatar_key.as_deref() {
@@ -2514,7 +2515,8 @@ mod tests {
     use axum::http::{HeaderName, HeaderValue};
     use axum::response::IntoResponse;
     use clipline_cloud_db::{
-        new_ulid, Database, DeviceToken, NewDeviceToken, NewSession, NewUser, Repositories, Session,
+        new_ulid, Database, DeviceToken, NewDeviceToken, NewJob, NewSession, NewUser, Repositories,
+        Session,
     };
     use clipline_cloud_storage::{LocalStorage, SharedStorageBackend};
     use tempfile::TempDir;
@@ -2925,6 +2927,10 @@ mod tests {
             .create(&clip)
             .await
             .expect("clip");
+        let mut job = NewJob::new("validate_object", chrono::Utc::now());
+        job.target_type = Some("clip".to_string());
+        job.target_id = Some(clip.id.clone());
+        let job = app.state.repositories.jobs.create(&job).await.expect("job");
         let session = insert_session(&app.state, &target.id).await;
 
         let response = purge_user(
@@ -2963,6 +2969,14 @@ mod tests {
             .get(&session.id)
             .await
             .expect("session lookup")
+            .is_none());
+        assert!(app
+            .state
+            .repositories
+            .jobs
+            .get(&job.id)
+            .await
+            .expect("job lookup")
             .is_none());
     }
 
