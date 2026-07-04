@@ -2,32 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 // router.js touches window.addEventListener at module load time (to wire up
-// popstate/hashchange), so shim just enough of `window` before importing it.
+// popstate), so shim just enough of `window` before importing it.
 globalThis.window = new EventTarget();
-window.location = { pathname: "/", hash: "", search: "" };
+window.location = { pathname: "/", search: "" };
 window.history = { pushState() {} };
 
-const { previewHashToLocation, initialRouteName } = await import("../src/lib/router.js");
-
-test("previewHashToLocation defaults to root when hash is empty", () => {
-  assert.deepEqual(previewHashToLocation(""), { pathname: "/", search: "" });
-  assert.deepEqual(previewHashToLocation("#"), { pathname: "/", search: "" });
-});
-
-test("previewHashToLocation splits pathname and search off the hash", () => {
-  assert.deepEqual(previewHashToLocation("#/library"), { pathname: "/library", search: "" });
-  assert.deepEqual(previewHashToLocation("#/admin?tab=users"), {
-    pathname: "/admin",
-    search: "?tab=users",
-  });
-});
-
-test("previewHashToLocation preserves multiple query params", () => {
-  assert.deepEqual(previewHashToLocation("#/search?q=ace&page=2"), {
-    pathname: "/search",
-    search: "?q=ace&page=2",
-  });
-});
+const { initialRouteName } = await import("../src/lib/router.js");
 
 // Regression for the bootstrap-redirect bug: main.js must seed its
 // module-level currentRouteName from the *actual* initial location before
@@ -39,4 +19,12 @@ test("initialRouteName resolves the root path to the public library route", () =
 
 test("initialRouteName resolves a shared-clip path to the public route", () => {
   assert.equal(initialRouteName({ pathname: "/c/c_abc", search: "" }), "public");
+});
+
+test("initialRouteName resolves an admin path with a query string to the admin route", () => {
+  assert.equal(initialRouteName({ pathname: "/admin", search: "?tab=users" }), "admin");
+});
+
+test("initialRouteName falls back to the public library route for an unknown path", () => {
+  assert.equal(initialRouteName({ pathname: "/bogus", search: "" }), "publicLibrary");
 });

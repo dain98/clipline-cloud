@@ -7,8 +7,23 @@
 @font-face { font-family: "Space Grotesk"; font-weight: 700; font-display: swap;
   src: url("/fonts/space-grotesk-700.woff2") format("woff2"); }
 
+* { box-sizing: border-box; }
+body { margin: 0; }
+
+/* Static boot markup in index.html, replaced once main.js mounts the app —
+   lives outside the .ui-scoped tree so it must be styled unscoped. */
+.app-root { min-height: 100vh; }
+.boot-screen { display: grid; place-items: center; gap: 12px; min-height: 100vh; padding: 20px;
+  font-family: var(--font-sans); background: var(--bg); color: var(--muted); text-align: center; }
+.boot-icon { width: 48px; height: 48px; border-radius: 12px; }
+
 .ui { font-family: var(--font-sans); background: var(--bg); color: var(--ink);
   min-height: 100vh; line-height: 1.5; }
+/* Base link reset — most anchors below set their own color, but this covers
+   any bare <a> (e.g. comment author links) and keeps .btn/.chip anchors from
+   picking up the browser's default underline now that legacy styles.css
+   (which carried this reset globally) is gone. */
+.ui a { color: inherit; text-decoration: none; }
 .ui :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .ui *, .ui *::before, .ui *::after { transition: none !important; animation: none !important; }
@@ -442,13 +457,107 @@
 .clipline-theater .ui .player { position: fixed; inset: 0; z-index: 50; border-radius: 0; aspect-ratio: auto;
   width: 100vw; height: 100vh; }
 
-/* Admin, profile, account, public user, about. Structural layout (panel,
-   field, badge, job-list, admin-grid, settings-section, management-list,
-   public-user-header, profile-form, etc.) is still styled by legacy
-   styles.css (loaded alongside ui.css until the Task 11 cutover, which moves
-   any still-referenced rules over before deleting it) — only the pieces with
-   no legacy analog are defined here. */
+/* Admin, profile, account, public user, about — structural layout (panel,
+   field, badge-warn, job-list, admin-grid, settings-section,
+   management-list, public-user-header, profile-form, etc.), ported in from
+   legacy styles.css at the Task 11 cutover. */
 .ui .page-subtitle { margin: -6px 0 20px; font-size: 12.5px; color: var(--muted); }
+
+.ui .section { display: grid; gap: 14px; }
+.ui .section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ui .section-header h2, .ui .panel h2, .ui .panel h3 { margin: 0; font-size: 16px; }
+
+.ui .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px;
+  min-width: 0; }
+
+.ui .about-panel p { margin: 0; color: var(--muted); }
+.ui .about-text { white-space: pre-line; }
+
+.ui .field { display: grid; gap: 5px; }
+.ui .field > span { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.ui .field small { color: var(--muted); }
+
+.ui .check-field { display: flex; align-items: center; gap: 9px; font-weight: 600; color: var(--ink); }
+.ui .check-field input { accent-color: var(--accent); }
+
+.ui .account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) {
+  .ui .account-grid { grid-template-columns: 1fr; }
+}
+
+.ui .management-list { display: grid; gap: 10px; }
+.ui .management-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+@media (max-width: 719px) {
+  .ui .management-item { grid-template-columns: 1fr; }
+}
+
+.ui .meta-line { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 5px; font-size: 12px; color: var(--muted); }
+
+.ui .badge-warn { background: var(--warning-soft); color: var(--warning); }
+
+.ui .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+@media (max-width: 900px) {
+  .ui .actions { justify-content: flex-start; }
+}
+
+.ui .empty-state { padding: 40px 16px; text-align: center; font-size: 12.5px; color: var(--muted); }
+
+.ui .notice { background: var(--highlight-soft); border: 1px solid var(--highlight); border-radius: var(--radius);
+  padding: 14px 16px; color: var(--highlight); }
+
+.ui .clip-inline-actions { display: flex; justify-content: flex-start; }
+
+.ui .player-play { width: 36px; height: 36px; }
+
+.ui .job-list { display: grid; gap: 8px; margin: 0; padding: 0; }
+.ui .job-item { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); list-style: none; }
+.ui .job-item:last-child { border-bottom: 0; }
+.ui .job-title-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+
+.ui .progress-meter { height: 6px; border-radius: 999px; background: var(--surface-raised);
+  border: 1px solid var(--line); overflow: hidden; }
+.ui .progress-meter span { display: block; height: 100%; background: var(--accent); }
+
+.ui .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: .9em; }
+.ui .muted { color: var(--muted); }
+
+.ui .profile-settings-header, .ui .public-user-header { display: flex; align-items: center; gap: 16px;
+  padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.ui .profile-settings-header h2, .ui .public-user-header h1 { margin: 0; font-size: 23px; line-height: 1.2; }
+.ui .profile-settings-header p, .ui .public-user-header p { margin: 3px 0 0; color: var(--muted); }
+
+.ui .public-user-header-body { display: grid; gap: 6px; flex: 1; min-width: 0; }
+.ui .public-user-title-row { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 12px; }
+.ui .public-user-bio { margin-top: 10px; max-width: 52rem; color: var(--ink); line-height: 1.55; white-space: pre-line; }
+
+.ui .profile-form { display: grid; gap: 11px; }
+.ui .profile-public-link { display: flex; justify-content: flex-start; }
+
+.ui .admin-grid { display: grid; grid-template-columns: minmax(18rem, .85fr) minmax(0, 1.15fr); gap: 16px; }
+.ui .admin-side-stack { display: grid; align-content: start; gap: 16px; min-width: 0; }
+@media (max-width: 900px) {
+  .ui .admin-grid { grid-template-columns: 1fr; }
+}
+
+.ui .admin-settings-page { display: grid; gap: 16px; max-width: 62rem; }
+.ui .settings-section { display: grid; grid-template-columns: minmax(12rem, .42fr) minmax(0, .58fr); gap: 16px;
+  padding-top: 16px; border-top: 1px solid var(--line); }
+@media (max-width: 900px) {
+  .ui .settings-section { grid-template-columns: 1fr; }
+}
+.ui .settings-copy { display: grid; align-content: start; gap: 5px; min-width: 0; }
+.ui .settings-copy h2, .ui .settings-copy p { margin: 0; }
+.ui .settings-copy p { color: var(--muted); }
+.ui .settings-controls { display: grid; gap: 14px; min-width: 0; }
+.ui .settings-action-row { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--line); }
+
+.ui .admin-reset-link { display: flex; align-items: center; justify-content: space-between; gap: 13px; }
+.ui .admin-reset-link div { display: grid; gap: 4px; min-width: 0; }
+.ui .admin-reset-link span { font-size: 13px; color: var(--muted); }
+.ui .admin-reset-link code { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ui .table-wrap { overflow-x: auto; }
 
 .ui .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
 @media (max-width: 900px) {

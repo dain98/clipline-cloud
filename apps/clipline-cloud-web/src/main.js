@@ -2,7 +2,7 @@ import { render } from "preact";
 import { html } from "./lib/html.js";
 import { api, setCsrfToken } from "./lib/api.js";
 import { session, useStore } from "./lib/store.js";
-import { useRoute, onLinkClick, navigate, readLocation, initialRouteName } from "./lib/router.js";
+import { useRoute, onLinkClick, navigate, initialRouteName } from "./lib/router.js";
 import { isPublicRouteName } from "./lib/routes.js";
 import { TopBar } from "./components/TopBar.js";
 import { TabBar } from "./components/TabBar.js";
@@ -40,20 +40,17 @@ const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",
 // Seeded from the *actual* initial location so the unauthorized-listener
 // below knows whether the very first paint is on a public route, before the
 // session-bootstrap fetch below has resolved (and possibly 401'd).
-let currentRouteName = initialRouteName(readLocation());
-
-function LegacyRedirect({ route }) {
-  return html`<main class="page"><p class="kicker">Not ported yet</p>
-    <p>Route <code>${route.name}</code> still renders in the legacy app — open it from
-    <a href="/">the served site</a>.</p></main>`;
-}
+let currentRouteName = initialRouteName({ pathname: window.location.pathname, search: window.location.search });
 
 function App() {
   const route = useRoute();
   currentRouteName = route.name;
   const { ready } = useStore(session);
   if (!ready) return html`<div class="boot">Loading…</div>`;
-  const Page = PAGES[route.name] || LegacyRedirect;
+  // parseRoute() (lib/routes.js) always returns one of the names below —
+  // an unmatched pathname falls back to "publicLibrary" itself — so this
+  // default is just a defensive backstop, not a reachable "not ported" path.
+  const Page = PAGES[route.name] || FeedPage;
   const bare = route.name === "login" || route.name === "resetPassword";
   return html`<div class="ui" onClick=${onLinkClick}>
     ${!bare && html`<${TopBar} active=${NAV_KEY[route.name] || ""} />`}
@@ -76,5 +73,10 @@ window.addEventListener("clipline:unauthorized", () => {
   } catch {
     session.set({ user: null, csrfToken: null, ready: true });
   }
-  render(html`<${App} />`, document.querySelector("#app"));
+  // Preact's render() appends into the container rather than replacing its
+  // contents, so the static boot-screen markup from index.html must be
+  // cleared first or it stays in the DOM alongside the mounted app.
+  const root = document.querySelector("#app");
+  root.textContent = "";
+  render(html`<${App} />`, root);
 })();

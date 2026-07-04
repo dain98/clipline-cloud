@@ -319,6 +319,7 @@ fn router(
         .route("/about", get(spa_index))
         .route("/public", get(spa_index))
         .route("/search", get(spa_index))
+        .route("/games", get(spa_index))
         .route("/game/{*path}", get(spa_index))
         .route("/library", get(spa_index))
         .route("/admin", get(spa_index))
