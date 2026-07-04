@@ -250,6 +250,9 @@ body { margin: 0; }
 .ui .lib-table th, .ui .lib-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .ui .lib-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
   letter-spacing: .06em; }
+.ui .lib-table tr.is-selected { background: rgba(58, 160, 255, .08); }
+.ui .lib-table .row-select-cell { width: 38px; text-align: center; padding-left: 8px; padding-right: 6px; }
+.ui .row-select { accent-color: var(--accent); }
 .ui .lib-table .sort-btn { font: inherit; font-size: inherit; color: inherit; background: none; border: 0;
   padding: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 .ui .lib-table th[aria-sort="ascending"] .sort-btn::after { content: "\2191"; }

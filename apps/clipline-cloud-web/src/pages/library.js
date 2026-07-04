@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
 import { toast } from "../lib/store.js";
 import { formatBytes, formatDate, formatDuration } from "../lib/format.js";
-import { ownedMediaPath, ownedThumbPath } from "../lib/media.js";
+import { deriveShareLink, ownedMediaPath, ownedThumbPath } from "../lib/media.js";
 import { ClipCard } from "../components/ClipCard.js";
 import { EmptyState } from "../components/EmptyState.js";
 import { Popover } from "../components/Popover.js";
@@ -123,6 +123,12 @@ export function summarizeBulkOutcome(ids, failed, { verb, allFailedMessage }) {
       ? failed[0]?.message || allFailedMessage
       : `Couldn't ${verb} ${failed.length} of ${ids.length} clips.`;
   return { succeeded, message };
+}
+
+export function bulkShareLinks(clips, origin) {
+  return (clips || [])
+    .map((clip) => deriveShareLink(clip.public_url, origin, clip.public_share_id))
+    .filter(Boolean);
 }
 
 // Simple bounded-concurrency runner for the sequential-but-parallel-ish bulk
@@ -250,7 +256,11 @@ export function LibraryPage() {
           method: "POST",
           body: { visibility: newVisibility },
         });
-        const patch = { visibility: updated.visibility, public_url: updated.public_url };
+        const patch = {
+          visibility: updated.visibility,
+          public_url: updated.public_url,
+          public_share_id: updated.public_share_id,
+        };
         patchClip(id, patch);
         confirmedState.set(id, patch);
       } catch (e) {
@@ -265,7 +275,11 @@ export function LibraryPage() {
     if (message) {
       for (const { id } of failed) {
         const original = snapshot.get(id);
-        if (original) patchClip(id, { visibility: original.visibility, public_url: original.public_url });
+        if (original) patchClip(id, {
+          visibility: original.visibility,
+          public_url: original.public_url,
+          public_share_id: original.public_share_id,
+        });
       }
       toast(message);
     }
@@ -282,7 +296,11 @@ export function LibraryPage() {
   async function undoVisibility(ids, snapshot, confirmedState) {
     for (const id of ids) {
       const original = snapshot.get(id);
-      if (original) patchClip(id, { visibility: original.visibility, public_url: original.public_url });
+      if (original) patchClip(id, {
+        visibility: original.visibility,
+        public_url: original.public_url,
+        public_share_id: original.public_share_id,
+      });
     }
 
     const failed = [];
@@ -294,7 +312,11 @@ export function LibraryPage() {
           method: "POST",
           body: { visibility: original.visibility },
         });
-        patchClip(id, { visibility: updated.visibility, public_url: updated.public_url });
+        patchClip(id, {
+          visibility: updated.visibility,
+          public_url: updated.public_url,
+          public_share_id: updated.public_share_id,
+        });
       } catch (e) {
         failed.push({ id, message: e.message });
       }
@@ -320,16 +342,16 @@ export function LibraryPage() {
     const ids = Array.from(selected);
     const clips = data?.clips || [];
     const picked = ids.map((id) => clips.find((c) => c.id === id)).filter(Boolean);
-    const withLinks = picked.filter((c) => c.public_url);
-    const skipped = picked.length - withLinks.length;
-    if (!withLinks.length) {
+    const links = bulkShareLinks(picked, window.location.origin);
+    const skipped = picked.length - links.length;
+    if (!links.length) {
       toast("No links to copy — selected clips are private.");
       return;
     }
     try {
-      await navigator.clipboard.writeText(withLinks.map((c) => c.public_url).join("\n"));
+      await navigator.clipboard.writeText(links.join("\n"));
       toast(
-        `Copied ${withLinks.length} link${withLinks.length === 1 ? "" : "s"}` +
+        `Copied ${links.length} link${links.length === 1 ? "" : "s"}` +
           (skipped ? ` (${skipped} skipped, private)` : "")
       );
     } catch {
@@ -462,7 +484,8 @@ export function LibraryPage() {
             href=${`/clip/${encodeURIComponent(clip.id)}`}
             selectable selected=${selected.has(clip.id)} onToggleSelect=${toggleSelect} showVisibility />`)}
         </div>`
-      : html`<${RowsTable} clips=${clips} query=${query} onSort=${setSort} />`}
+      : html`<${RowsTable} clips=${clips} query=${query} onSort=${setSort}
+          selected=${selected} onToggleSelect=${toggleSelect} />`}
 
     <${BulkBar} count=${selected.size}
       onPublic=${() => updateVisibility("public")}
@@ -486,7 +509,7 @@ function sortHeaderState(query, [ascKey, descKey]) {
   return { ariaSort, next };
 }
 
-function RowsTable({ clips, query, onSort }) {
+function RowsTable({ clips, query, onSort, selected, onToggleSelect }) {
   const title = sortHeaderState(query, SORT_COLUMNS.title);
   const size = sortHeaderState(query, SORT_COLUMNS.size);
   const duration = sortHeaderState(query, SORT_COLUMNS.duration);
@@ -494,6 +517,7 @@ function RowsTable({ clips, query, onSort }) {
   return html`<table class="lib-table">
     <thead>
       <tr>
+        <th class="row-select-cell"></th>
         <th></th>
         <th aria-sort=${title.ariaSort}><button type="button" class="sort-btn" onClick=${() => onSort(title.next)}>Title</button></th>
         <th>Game</th>
@@ -504,7 +528,11 @@ function RowsTable({ clips, query, onSort }) {
       </tr>
     </thead>
     <tbody>
-      ${clips.map((clip) => html`<tr key=${clip.id}>
+      ${clips.map((clip) => html`<tr key=${clip.id} class=${selected?.has(clip.id) ? "is-selected" : ""}>
+        <td class="row-select-cell">
+          <input class="row-select" type="checkbox" checked=${selected?.has(clip.id)}
+            aria-label=${`Select ${clip.title}`} onChange=${() => onToggleSelect?.(clip.id)} />
+        </td>
         <td><img class="row-thumb" src=${ownedThumbPath(clip)} alt="" width="64" height="36" loading="lazy" /></td>
         <td><a href=${`/clip/${encodeURIComponent(clip.id)}`}>${clip.title}</a></td>
         <td>${clip.game_name || "—"}</td>

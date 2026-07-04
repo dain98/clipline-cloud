@@ -1,7 +1,8 @@
 import { html } from "../lib/html.js";
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
-import { session, useStore } from "../lib/store.js";
+import { navigate } from "../lib/router.js";
+import { session, toast, useStore } from "../lib/store.js";
 import { icon } from "../lib/icons.js";
 import { EmptyState } from "../components/EmptyState.js";
 import { AdminOverview } from "./admin/overview.js";
@@ -15,6 +16,10 @@ const TABS = [
   ["settings", "sliders", "Settings"],
   ["jobs", "alert", "Jobs"],
 ];
+
+export function isAdminLike(user) {
+  return user?.role === "admin" || user?.role === "owner";
+}
 
 // Legacy fetches all six admin endpoints together regardless of which tab is
 // active (src/app.js renderAdmin :2979-2999) so switching tabs is instant;
@@ -33,6 +38,8 @@ async function loadAdminData() {
 
 export function AdminPage({ route }) {
   const { user: currentUser } = useStore(session);
+  const canUseAdmin = isAdminLike(currentUser);
+  const shouldRedirect = Boolean(currentUser && !canUseAdmin);
   const tab = TABS.some(([key]) => key === route.tab) ? route.tab : "overview";
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -41,6 +48,13 @@ export function AdminPage({ route }) {
   const reload = () => setReloadTick((t) => t + 1);
 
   useEffect(() => {
+    if (!shouldRedirect) return;
+    toast("Admin access required.");
+    navigate("/library");
+  }, [shouldRedirect]);
+
+  useEffect(() => {
+    if (!canUseAdmin) return;
     let live = true;
     setError(null);
     loadAdminData()
@@ -49,7 +63,9 @@ export function AdminPage({ route }) {
     return () => {
       live = false;
     };
-  }, [reloadTick]);
+  }, [canUseAdmin, reloadTick]);
+
+  if (!canUseAdmin) return null;
 
   return html`<main class="page">
     <h1>Admin</h1>

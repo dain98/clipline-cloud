@@ -27,3 +27,17 @@ export function ownedMediaPath(clip) {
 export function publicMediaPath(clip) {
   return `/api/v1/public/clips/${encodeURIComponent(clip.share_id)}/media`;
 }
+
+// Visibility/detail responses ship absolute share URLs built from the server's
+// configured public URL. Resolve the path against the browser's actual origin
+// so copied/opened links match the host alias the user is browsing through.
+export function deriveShareLink(rawUrl, origin, shareId) {
+  if (rawUrl) {
+    try {
+      return `${origin}${new URL(rawUrl).pathname}`;
+    } catch {
+      // fall through to the share-id fallback below
+    }
+  }
+  return shareId ? `${origin}/c/${encodeURIComponent(shareId)}` : null;
+}

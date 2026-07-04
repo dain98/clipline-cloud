@@ -5,6 +5,7 @@ import {
   libraryParams,
   countActiveFilters,
   deriveGameChips,
+  bulkShareLinks,
 } from "../src/pages/library.js";
 
 // libraryParams is a pure port of legacy libraryParams (src/app.js:765-786):
@@ -129,4 +130,30 @@ test("deriveGameChips caps the result at the top 6 by count", () => {
 test("deriveGameChips breaks count ties alphabetically", () => {
   const clips = [{ game_name: "Zeta" }, { game_name: "Alpha" }, { game_name: "Mid" }];
   assert.deepEqual(deriveGameChips(clips).map((c) => c.game), ["Alpha", "Mid", "Zeta"]);
+});
+
+test("bulkShareLinks rewrites server public URLs onto the current origin", () => {
+  assert.deepEqual(
+    bulkShareLinks(
+      [
+        { public_url: "http://localhost:18080/c/c_one" },
+        { public_url: "https://clips.example.com/c/c_two" },
+      ],
+      "http://127.0.0.1:18080"
+    ),
+    ["http://127.0.0.1:18080/c/c_one", "http://127.0.0.1:18080/c/c_two"]
+  );
+});
+
+test("bulkShareLinks skips private clips and can fall back to public_share_id", () => {
+  assert.deepEqual(
+    bulkShareLinks(
+      [
+        { public_url: null },
+        { public_url: "not a url", public_share_id: "c fallback" },
+      ],
+      "http://127.0.0.1:18080"
+    ),
+    ["http://127.0.0.1:18080/c/c%20fallback"]
+  );
 });

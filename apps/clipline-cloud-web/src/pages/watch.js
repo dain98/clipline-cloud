@@ -4,12 +4,14 @@ import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
 import { session, toast, useStore } from "../lib/store.js";
 import { formatBytes, formatDate, formatDuration, formatViews } from "../lib/format.js";
-import { ownedMediaPath, ownedThumbPath, publicMediaPath, publicThumbPath } from "../lib/media.js";
+import { deriveShareLink, ownedMediaPath, ownedThumbPath, publicMediaPath, publicThumbPath } from "../lib/media.js";
 import { icon } from "../lib/icons.js";
 import { Player } from "../components/Player.js";
 import { Comments } from "../components/Comments.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { EmptyState } from "../components/EmptyState.js";
+
+export { deriveShareLink } from "../lib/media.js";
 
 const VISIBILITIES = ["private", "public", "unlisted"];
 
@@ -35,23 +37,6 @@ export function resolveShareId(routeName, route, clip) {
 export function resolveOwnedClipId(routeName, route, clip) {
   if (routeName === "clip") return route.clipId;
   return clip?.viewer_clip_id || null;
-}
-
-// Both visibility responses ship an absolute public_url/share_url built from
-// the server's configured public URL, which breaks under host-alias CSP the
-// same way thumbnail/media URLs do (lib/media.js). Resolve just the pathname
-// against the browser's *actual* origin instead; fall back to /c/{shareId}
-// when no url is present yet but a share id is (e.g. right after making a
-// clip public, before a refetch).
-export function deriveShareLink(rawUrl, origin, shareId) {
-  if (rawUrl) {
-    try {
-      return `${origin}${new URL(rawUrl).pathname}`;
-    } catch {
-      // fall through to the share-id fallback below
-    }
-  }
-  return shareId ? `${origin}/c/${encodeURIComponent(shareId)}` : null;
 }
 
 // Details-strip resolution label, ported from the brief's summary line

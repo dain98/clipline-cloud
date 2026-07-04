@@ -22,6 +22,17 @@ const SORTS = [
 ];
 
 const MAX_GAME_CHIPS = 6;
+const PUBLIC_PAGE_SIZE = 60;
+
+export function publicFeedParams(query) {
+  const params = new URLSearchParams();
+  params.set("page_size", String(PUBLIC_PAGE_SIZE));
+  if (query.sort !== "uploaded_at_desc") params.set("sort", query.sort);
+  if (query.game) params.set("game", query.game);
+  if (query.q) params.set("q", query.q);
+  if (Number(query.page) > 1) params.set("page", String(query.page));
+  return params;
+}
 
 export function FeedPage({ route }) {
   const query = {
@@ -39,12 +50,8 @@ export function FeedPage({ route }) {
     let live = true;
     setData(null);
     setError(null);
-    const params = new URLSearchParams();
-    if (query.sort !== "uploaded_at_desc") params.set("sort", query.sort);
-    if (query.game) params.set("game", query.game);
-    if (query.q) params.set("q", query.q);
-    if (Number(query.page) > 1) params.set("page", String(query.page));
-    api(`/api/v1/public/clips${params.size ? `?${params}` : ""}`)
+    const params = publicFeedParams(query);
+    api(`/api/v1/public/clips?${params}`)
       .then((d) => live && setData(d))
       .catch((e) => live && setError(e));
     return () => {

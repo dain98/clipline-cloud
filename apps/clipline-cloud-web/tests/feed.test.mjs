@@ -8,7 +8,7 @@ globalThis.window = new EventTarget();
 window.location = { pathname: "/", hash: "", search: "" };
 window.history = { pushState() {} };
 
-const { feedPath } = await import("../src/pages/feed.js");
+const { feedPath, publicFeedParams } = await import("../src/pages/feed.js");
 
 // Port of legacy publicLibraryPath (src/app.js:1063-1089): the default sort
 // is omitted from the URL, game/q/page are only appended when non-default,
@@ -51,4 +51,20 @@ test("feedPath combines sort + page for the default (no game/q) view", () => {
 
 test("feedPath trims whitespace-only game/q filters", () => {
   assert.equal(feedPath({ game: "  ", q: "  " }), "/");
+});
+
+test("publicFeedParams requests the legacy 60-clip page size by default", () => {
+  const params = publicFeedParams({ sort: "uploaded_at_desc", game: "", q: "", page: 1 });
+  assert.equal(params.get("page_size"), "60");
+  assert.equal(params.has("sort"), false);
+  assert.equal(params.has("page"), false);
+});
+
+test("publicFeedParams keeps filters while preserving the fixed page size", () => {
+  const params = publicFeedParams({ sort: "title_asc", game: "VALORANT", q: "ace", page: 2 });
+  assert.equal(params.get("page_size"), "60");
+  assert.equal(params.get("sort"), "title_asc");
+  assert.equal(params.get("game"), "VALORANT");
+  assert.equal(params.get("q"), "ace");
+  assert.equal(params.get("page"), "2");
 });
