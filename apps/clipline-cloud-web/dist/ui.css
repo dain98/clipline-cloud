@@ -67,6 +67,7 @@ body { margin: 0; }
 .ui .input { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 8px 14px; }
 .ui .input::placeholder { color: var(--faint); }
+.ui .input-compact { padding: 5px 10px; font-size: 12px; }
 
 /* Shell: topbar, tabbar, toasts, page shell */
 .ui .topbar { display: flex; align-items: center; gap: 24px; padding: 14px 28px;
@@ -481,7 +482,7 @@ body { margin: 0; }
    legacy styles.css at the Task 11 cutover. */
 .ui .page-subtitle { margin: -6px 0 20px; font-size: 12.5px; color: var(--muted); }
 
-.ui .section { display: grid; gap: 14px; }
+.ui .section { display: grid; gap: 14px; align-content: start; }
 .ui .section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ui .section-header h2, .ui .panel h2, .ui .panel h3 { margin: 0; font-size: 16px; }
 
@@ -577,7 +578,7 @@ body { margin: 0; }
 .ui .settings-copy { display: grid; align-content: start; gap: 5px; min-width: 0; }
 .ui .settings-copy h2, .ui .settings-copy p { margin: 0; }
 .ui .settings-copy p { color: var(--muted); }
-.ui .settings-controls { display: grid; gap: 14px; min-width: 0; }
+.ui .settings-controls { display: grid; gap: 14px; min-width: 0; align-content: start; }
 .ui .settings-action-row { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--line); }
 
 .ui .admin-reset-link { display: flex; align-items: center; justify-content: space-between; gap: 13px; }
