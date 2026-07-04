@@ -185,9 +185,9 @@ export function WatchPage({ route }) {
     }
   }
 
-  async function setVisibility(next) {
+  async function setVisibility(next, { force = false } = {}) {
     const previous = clip.visibility;
-    if (previous === next) return;
+    if (previous === next && !force) return;
     setClip((c) => ({ ...c, visibility: next }));
     try {
       const updated = await api(`/api/v1/clips/${encodeURIComponent(ownedClipId)}/visibility`, {
@@ -200,7 +200,10 @@ export function WatchPage({ route }) {
         public_url: updated.public_url,
         public_share_id: updated.public_share_id,
       }));
-      toast(`Visibility set to ${next}.`, { actionLabel: "Undo", onAction: () => setVisibility(previous) });
+      toast(`Visibility set to ${next}.`, {
+        actionLabel: "Undo",
+        onAction: () => setVisibility(previous, { force: true }),
+      });
     } catch (e) {
       setClip((c) => ({ ...c, visibility: previous }));
       toast(e.message);

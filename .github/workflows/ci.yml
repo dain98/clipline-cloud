@@ -47,6 +47,8 @@ jobs:
           node-version: 22
       - name: Install web deps
         run: npm ci --prefix apps/clipline-cloud-web
+      - name: Run web tests
+        run: npm test --prefix apps/clipline-cloud-web
       - name: Check committed dist
         run: npm run check:dist --prefix apps/clipline-cloud-web
 

@@ -10,7 +10,7 @@ const dist = process.env.DIST_DIR ? join(root, process.env.DIST_DIR) : join(root
 await rm(dist, { force: true, recursive: true });
 await mkdir(dist, { recursive: true });
 
-const entryPointNames = new Set(["app.js", "main.js"]);
+const entryPointNames = new Set(["main.js"]);
 const entries = [];
 for (const entry of await readdir(src, { withFileTypes: true })) {
   const path = join(src, entry.name);
