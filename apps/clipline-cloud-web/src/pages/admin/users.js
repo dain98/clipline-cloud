@@ -168,9 +168,29 @@ function statusBadge(user) {
     : html`<span class="badge badge-public">Active</span>`;
 }
 
+export function effectiveDefaultQuotaBytes(settings) {
+  if (!settings) return null;
+  if (settings.user_storage_quota_bytes != null && settings.user_storage_quota_bytes > 0) {
+    return settings.user_storage_quota_bytes;
+  }
+  return settings.user_storage_quota_env_fallback_bytes ?? null;
+}
+
+export function perUserQuotaLabel(user, settings) {
+  if (user.storage_quota_bytes != null && user.storage_quota_bytes > 0) {
+    return formatBytes(user.storage_quota_bytes);
+  }
+  const defaultQuota = effectiveDefaultQuotaBytes(settings);
+  if (defaultQuota != null && defaultQuota > 0) {
+    return `Default (${formatBytes(defaultQuota)})`;
+  }
+  return "No limit";
+}
+
 function UserRow({
   user,
   currentUser,
+  settings,
   onQuota,
   onReset,
   onDisable,
@@ -178,9 +198,7 @@ function UserRow({
   onRole,
   onPurge,
 }) {
-  const quotaLabel = user.storage_quota_bytes != null && user.storage_quota_bytes > 0
-    ? formatBytes(user.storage_quota_bytes)
-    : "No limit";
+  const quotaLabel = perUserQuotaLabel(user, settings);
   const disableDisabled = !canDisableUser(user, currentUser);
   const enableDisabled = !canEnableUser(user, currentUser);
   const purgeDisabled = !canPurgeUser(user, currentUser);
@@ -353,7 +371,7 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
         <table class="lib-table">
           <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Storage</th><th>Last login</th><th></th></tr></thead>
           <tbody>
-            ${users.map((user) => html`<${UserRow} key=${user.id} user=${user} currentUser=${currentUser}
+            ${users.map((user) => html`<${UserRow} key=${user.id} user=${user} currentUser=${currentUser} settings=${settings}
               onQuota=${(u) => setDialog({ type: "quota", user: u, value: "" })}
               onReset=${(u) => setDialog({ type: "reset", user: u, value: "" })}
               onDisable=${(u) => setDialog({ type: "disable", user: u, value: "" })}

@@ -5,6 +5,7 @@ import {
   canEnableUser,
   canChangeRole,
   canPurgeUser,
+  perUserQuotaLabel,
 } from "../src/pages/admin/users.js";
 
 // canDisableUser: pure port of legacy canDisableUser (src/app.js:3155-3162) —
@@ -76,4 +77,18 @@ test("disabled users can still be purged when permitted", () => {
   const target = { id: "u8", role: "user", is_disabled: true };
   assert.equal(canPurgeUser(target, admin), true);
   assert.equal(canDisableUser(target, admin), false);
+});
+
+test("per-user quota label reflects the instance default when unset", () => {
+  const user = { storage_quota_bytes: null };
+  const settings = {
+    user_storage_quota_bytes: 5 * 1024 * 1024 * 1024,
+    user_storage_quota_env_fallback_bytes: null,
+  };
+  assert.match(perUserQuotaLabel(user, settings), /^Default \(/);
+});
+
+test("per-user quota label stays explicit when overridden", () => {
+  const user = { storage_quota_bytes: 1024 };
+  assert.match(perUserQuotaLabel(user, null), /1(\.0)? KiB/);
 });

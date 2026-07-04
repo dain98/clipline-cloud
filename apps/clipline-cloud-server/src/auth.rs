@@ -1194,6 +1194,29 @@ async fn purge_user(
 }
 
 async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiError> {
+    state
+        .repositories
+        .users
+        .update_profile(
+            &user.id,
+            user.display_name.as_deref(),
+            &user.role,
+            true,
+            user.storage_quota_bytes,
+        )
+        .await?;
+    revoke_user_auth(&state.repositories, &user.id).await?;
+    state
+        .repositories
+        .sessions
+        .delete_for_user(&user.id)
+        .await?;
+    state
+        .repositories
+        .device_tokens
+        .delete_for_user(&user.id)
+        .await?;
+
     let upload_sessions = state
         .repositories
         .upload_sessions
@@ -1239,16 +1262,6 @@ async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiErro
     state
         .repositories
         .clip_comments
-        .delete_for_user(&user.id)
-        .await?;
-    state
-        .repositories
-        .sessions
-        .delete_for_user(&user.id)
-        .await?;
-    state
-        .repositories
-        .device_tokens
         .delete_for_user(&user.id)
         .await?;
     state

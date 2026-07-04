@@ -686,13 +686,9 @@ async fn enforce_user_storage_quota(
     user: &clipline_cloud_db::User,
     requested_size_bytes: u64,
 ) -> Result<(), ApiError> {
-    let quota_bytes = match user.storage_quota_bytes {
-        Some(value) => crate::admin::stored_storage_quota_bytes(Some(value)),
-        None => {
-            let settings = state.repositories.settings.get().await?;
-            crate::admin::effective_user_storage_quota_bytes(&settings, &state.config)
-        }
-    };
+    let settings = state.repositories.settings.get().await?;
+    let quota_bytes =
+        crate::admin::effective_per_user_storage_quota_bytes(user, &settings, &state.config);
     let Some(quota_bytes) = quota_bytes else {
         return Ok(());
     };

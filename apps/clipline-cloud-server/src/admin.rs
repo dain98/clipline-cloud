@@ -527,6 +527,17 @@ pub(crate) fn stored_storage_quota_bytes(stored: Option<i64>) -> Option<u64> {
     }
 }
 
+pub(crate) fn effective_per_user_storage_quota_bytes(
+    user: &clipline_cloud_db::User,
+    settings: &AppSettings,
+    config: &crate::config::Config,
+) -> Option<u64> {
+    match user.storage_quota_bytes {
+        None | Some(0) => effective_user_storage_quota_bytes(settings, config),
+        Some(value) => u64::try_from(value).ok().filter(|quota| *quota > 0),
+    }
+}
+
 fn stored_user_storage_quota_bytes(settings: &AppSettings) -> Option<u64> {
     stored_storage_quota_bytes(settings.user_storage_quota_bytes)
 }
@@ -747,6 +758,41 @@ mod tests {
         assert_eq!(stored_storage_quota_bytes(None), None);
         assert_eq!(stored_storage_quota_bytes(Some(0)), None);
         assert_eq!(stored_storage_quota_bytes(Some(4096)), Some(4096));
+    }
+
+    #[test]
+    fn effective_per_user_storage_quota_inherits_default_for_null_or_zero() {
+        let user = clipline_cloud_db::User {
+            id: "user-1".to_string(),
+            username: "user".to_string(),
+            display_name: None,
+            email: None,
+            bio: None,
+            avatar_key: None,
+            password_hash: "hash".to_string(),
+            role: "user".to_string(),
+            is_disabled: false,
+            storage_quota_bytes: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_login_at: None,
+        };
+        let settings = sample_settings(Some(1024));
+        let config = crate::config::Config::for_tests(
+            "sqlite:///:memory:".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        assert_eq!(
+            effective_per_user_storage_quota_bytes(&user, &settings, &config),
+            Some(1024)
+        );
+
+        let mut zero_user = user;
+        zero_user.storage_quota_bytes = Some(0);
+        assert_eq!(
+            effective_per_user_storage_quota_bytes(&zero_user, &settings, &config),
+            Some(1024)
+        );
     }
 
     #[test]
