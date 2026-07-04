@@ -205,9 +205,7 @@ async fn update_settings(
                 let bytes = i64::try_from(bytes)
                     .map_err(|_| ApiError::bad_request("storage quota is too large"))?;
                 if bytes < 0 {
-                    return Err(ApiError::bad_request(
-                        "storage quota must be non-negative",
-                    ));
+                    return Err(ApiError::bad_request("storage quota must be non-negative"));
                 }
                 Some(bytes)
             }
@@ -330,7 +328,10 @@ async fn update_settings(
     )
     .await?;
 
-    Ok(Json(AdminSettingsResponse::from_settings(updated, &state.config)))
+    Ok(Json(AdminSettingsResponse::from_settings(
+        updated,
+        &state.config,
+    )))
 }
 
 async fn overview(
@@ -523,8 +524,7 @@ impl AdminSettingsResponse {
             .smtp_password
             .as_deref()
             .is_some_and(|password| !password.trim().is_empty());
-        let user_storage_quota_bytes =
-            effective_user_storage_quota_bytes(&settings, config);
+        let user_storage_quota_bytes = effective_user_storage_quota_bytes(&settings, config);
         Self {
             owner_user_id: settings.owner_user_id,
             allow_vod_uploads: settings.allow_vod_uploads,
@@ -708,9 +708,6 @@ mod tests {
             "sqlite:///:memory:".to_string(),
             std::path::PathBuf::from("/tmp"),
         );
-        assert_eq!(
-            effective_user_storage_quota_bytes(&settings, &config),
-            None
-        );
+        assert_eq!(effective_user_storage_quota_bytes(&settings, &config), None);
     }
 }

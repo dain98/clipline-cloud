@@ -26,8 +26,8 @@ use clipline_cloud_api_types::{
     DiscoveryResponse, MeResponse, SessionResponse, UserResponse,
 };
 use clipline_cloud_db::{
-    now_utc, AppSettings, Clip, DeviceToken, NewAuditLogEntry, NewDeviceToken,
-    NewInvitationToken, NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
+    now_utc, AppSettings, Clip, DeviceToken, NewAuditLogEntry, NewDeviceToken, NewInvitationToken,
+    NewResetPasswordToken, NewSession, NewUser, Repositories, Session, User,
 };
 use clipline_cloud_storage::{ObjectKey, ObjectMetadata, PutObjectMetadata, StorageError};
 use cookie::{Cookie, SameSite};
@@ -1211,7 +1211,11 @@ async fn purge_user_account(state: &AppState, user: &User) -> Result<(), ApiErro
         .clip_comments
         .delete_for_user(&user.id)
         .await?;
-    state.repositories.sessions.delete_for_user(&user.id).await?;
+    state
+        .repositories
+        .sessions
+        .delete_for_user(&user.id)
+        .await?;
     state
         .repositories
         .device_tokens

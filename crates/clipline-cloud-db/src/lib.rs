@@ -552,7 +552,10 @@ mod tests {
             })
             .await
             .expect("set default quota");
-        assert_eq!(settings.user_storage_quota_bytes, Some(5 * 1024 * 1024 * 1024));
+        assert_eq!(
+            settings.user_storage_quota_bytes,
+            Some(5 * 1024 * 1024 * 1024)
+        );
         let settings = repos
             .settings
             .update(&UpdateAppSettings {
