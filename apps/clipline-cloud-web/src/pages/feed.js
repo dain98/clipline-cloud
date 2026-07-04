@@ -34,6 +34,10 @@ export function publicFeedParams(query) {
   return params;
 }
 
+export function gameLabel(clip) {
+  return clip?.game_name || "No game";
+}
+
 export function FeedPage({ route }) {
   const query = {
     sort: "uploaded_at_desc",
@@ -132,14 +136,14 @@ function renderHero(clips) {
     <section class="hero">
       <a class="hero-main" href=${shareHref(hero)}>
         <img src=${publicThumbPath(hero)} alt="" loading="lazy" />
-        <span class="hero-caption">▶ ${hero.title} — ${hero.game_name} · ${formatDuration(hero.duration_ms)}</span>
+        <span class="hero-caption">▶ ${hero.title} — ${gameLabel(hero)} · ${formatDuration(hero.duration_ms)}</span>
       </a>
       <div class="hero-side">
         ${sideRows.map(
           (c) => html`<a class="hero-row" href=${shareHref(c)}>
             <img src=${publicThumbPath(c)} alt="" loading="lazy" />
             <span><b>${c.title}</b>
-              <small>${clipAuthor(c)} · ${c.game_name} · ${formatViews(c.view_count)}</small></span>
+              <small>${clipAuthor(c)} · ${gameLabel(c)} · ${formatViews(c.view_count)}</small></span>
           </a>`
         )}
       </div>

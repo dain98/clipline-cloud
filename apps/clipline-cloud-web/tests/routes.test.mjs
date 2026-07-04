@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRoute } from "../src/lib/routes.js";
+import { parseRoute, tabNavKeyForRoute, topNavKeyForRoute } from "../src/lib/routes.js";
 
 test("parseRoute maps every route", () => {
   assert.deepEqual(parseRoute("/c/c_abc", ""), { name: "public", shareId: "c_abc" });
@@ -11,4 +11,19 @@ test("parseRoute maps every route", () => {
   assert.equal(parseRoute("/reset-password", "?token=t&invite=1").invite, true);
   assert.deepEqual(parseRoute("/games", ""), { name: "games" });
   assert.equal(parseRoute("/nonsense", "").name, "publicLibrary");
+});
+
+test("parseRoute marks /search as the search surface", () => {
+  assert.deepEqual(parseRoute("/search", "?q=ace"), {
+    name: "publicLibrary",
+    query: { sort: "uploaded_at_desc", game: "", q: "ace", page: 1 },
+    surface: "search",
+  });
+  assert.equal(parseRoute("/", "").surface, "feed");
+});
+
+test("tabNavKeyForRoute highlights Search for /search while top nav stays on Feed", () => {
+  const route = parseRoute("/search", "?q=ace");
+  assert.equal(tabNavKeyForRoute(route), "search");
+  assert.equal(topNavKeyForRoute(route), "feed");
 });

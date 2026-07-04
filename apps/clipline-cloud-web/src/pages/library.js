@@ -159,6 +159,7 @@ export function LibraryPage() {
   const [data, setData] = useState(null); // { page, page_size, clips }
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   const searchTimer = useRef(null);
@@ -238,10 +239,12 @@ export function LibraryPage() {
   }
 
   async function updateVisibility(newVisibility) {
+    if (bulkBusy) return;
     const ids = Array.from(selected);
     if (!ids.length) return;
     const clips = data?.clips || [];
     const snapshot = new Map(ids.map((id) => [id, clips.find((c) => c.id === id)]));
+    setBulkBusy(true);
     patchClips(ids, { visibility: newVisibility });
 
     const failed = [];
@@ -250,46 +253,50 @@ export function LibraryPage() {
     // (visibility→public regenerates the share id, so "pre-undo" is not the
     // same as the local `newVisibility` patch above).
     const confirmedState = new Map();
-    await runPool(ids, 4, async (id) => {
-      try {
-        const updated = await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
-          method: "POST",
-          body: { visibility: newVisibility },
-        });
-        const patch = {
-          visibility: updated.visibility,
-          public_url: updated.public_url,
-          public_share_id: updated.public_share_id,
-        };
-        patchClip(id, patch);
-        confirmedState.set(id, patch);
-      } catch (e) {
-        failed.push({ id, message: e.message });
-      }
-    });
-
-    const { succeeded, message } = summarizeBulkOutcome(ids, failed, {
-      verb: "update",
-      allFailedMessage: "Couldn't update visibility.",
-    });
-    if (message) {
-      for (const { id } of failed) {
-        const original = snapshot.get(id);
-        if (original) patchClip(id, {
-          visibility: original.visibility,
-          public_url: original.public_url,
-          public_share_id: original.public_share_id,
-        });
-      }
-      toast(message);
-    }
-
-    if (succeeded.length) {
-      setSelected(new Set());
-      toast(`Made ${succeeded.length} clip${succeeded.length === 1 ? "" : "s"} ${newVisibility}`, {
-        actionLabel: "Undo",
-        onAction: () => undoVisibility(succeeded, snapshot, confirmedState),
+    try {
+      await runPool(ids, 4, async (id) => {
+        try {
+          const updated = await api(`/api/v1/clips/${encodeURIComponent(id)}/visibility`, {
+            method: "POST",
+            body: { visibility: newVisibility },
+          });
+          const patch = {
+            visibility: updated.visibility,
+            public_url: updated.public_url,
+            public_share_id: updated.public_share_id,
+          };
+          patchClip(id, patch);
+          confirmedState.set(id, patch);
+        } catch (e) {
+          failed.push({ id, message: e.message });
+        }
       });
+
+      const { succeeded, message } = summarizeBulkOutcome(ids, failed, {
+        verb: "update",
+        allFailedMessage: "Couldn't update visibility.",
+      });
+      if (message) {
+        for (const { id } of failed) {
+          const original = snapshot.get(id);
+          if (original) patchClip(id, {
+            visibility: original.visibility,
+            public_url: original.public_url,
+            public_share_id: original.public_share_id,
+          });
+        }
+        toast(message);
+      }
+
+      if (succeeded.length) {
+        setSelected(new Set());
+        toast(`Made ${succeeded.length} clip${succeeded.length === 1 ? "" : "s"} ${newVisibility}`, {
+          actionLabel: "Undo",
+          onAction: () => undoVisibility(succeeded, snapshot, confirmedState),
+        });
+      }
+    } finally {
+      setBulkBusy(false);
     }
   }
 
@@ -339,6 +346,10 @@ export function LibraryPage() {
   }
 
   async function onCopyLinks() {
+    if (bulkBusy) {
+      toast("Wait for visibility changes to finish.");
+      return;
+    }
     const ids = Array.from(selected);
     const clips = data?.clips || [];
     const picked = ids.map((id) => clips.find((c) => c.id === id)).filter(Boolean);
@@ -487,7 +498,7 @@ export function LibraryPage() {
       : html`<${RowsTable} clips=${clips} query=${query} onSort=${setSort}
           selected=${selected} onToggleSelect=${toggleSelect} />`}
 
-    <${BulkBar} count=${selected.size}
+    <${BulkBar} count=${selected.size} busy=${bulkBusy}
       onPublic=${() => updateVisibility("public")}
       onPrivate=${() => updateVisibility("private")}
       onCopyLinks=${onCopyLinks}

@@ -30,6 +30,29 @@ export function isPublicRouteName(name) {
   return PUBLIC_ROUTE_NAMES.includes(name);
 }
 
+export function shouldRedirectToLogin(routeName, user) {
+  return !user && !isPublicRouteName(routeName);
+}
+
+const TOP_NAV_KEYS = {
+  publicLibrary: "feed",
+  publicGame: "feed",
+  games: "games",
+  library: "library",
+  clip: "library",
+  admin: "admin",
+  profile: "profile",
+};
+
+export function topNavKeyForRoute(route) {
+  return TOP_NAV_KEYS[route?.name] || "";
+}
+
+export function tabNavKeyForRoute(route) {
+  if (route?.name === "publicLibrary" && route.surface === "search") return "search";
+  return topNavKeyForRoute(route);
+}
+
 export function parseRoute(pathname, search) {
   const params = new URLSearchParams(search || "");
   const path = pathname;
@@ -38,7 +61,7 @@ export function parseRoute(pathname, search) {
     return { name: "public", shareId: safeDecodeURIComponent(path.slice(3)) };
   }
   if (path === "/" || path === "/public" || path === "/search") {
-    return { name: "publicLibrary", query: publicRouteQuery(params) };
+    return { name: "publicLibrary", query: publicRouteQuery(params), surface: path === "/search" ? "search" : "feed" };
   }
   if (path.startsWith("/game/")) {
     return {

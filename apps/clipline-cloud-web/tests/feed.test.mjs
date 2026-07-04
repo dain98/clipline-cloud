@@ -8,7 +8,7 @@ globalThis.window = new EventTarget();
 window.location = { pathname: "/", hash: "", search: "" };
 window.history = { pushState() {} };
 
-const { feedPath, publicFeedParams } = await import("../src/pages/feed.js");
+const { feedPath, gameLabel, publicFeedParams } = await import("../src/pages/feed.js");
 
 // Port of legacy publicLibraryPath (src/app.js:1063-1089): the default sort
 // is omitted from the URL, game/q/page are only appended when non-default,
@@ -67,4 +67,10 @@ test("publicFeedParams keeps filters while preserving the fixed page size", () =
   assert.equal(params.get("game"), "VALORANT");
   assert.equal(params.get("q"), "ace");
   assert.equal(params.get("page"), "2");
+});
+
+test("gameLabel falls back when public clip summaries omit game_name", () => {
+  assert.equal(gameLabel({ game_name: "VALORANT" }), "VALORANT");
+  assert.equal(gameLabel({ game_name: null }), "No game");
+  assert.equal(gameLabel({}), "No game");
 });

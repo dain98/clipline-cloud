@@ -1,9 +1,10 @@
 import { render } from "preact";
+import { useEffect } from "preact/hooks";
 import { html } from "./lib/html.js";
 import { api, setCsrfToken } from "./lib/api.js";
 import { session, useStore } from "./lib/store.js";
 import { useRoute, onLinkClick, navigate, initialRouteName } from "./lib/router.js";
-import { isPublicRouteName } from "./lib/routes.js";
+import { isPublicRouteName, shouldRedirectToLogin, tabNavKeyForRoute, topNavKeyForRoute } from "./lib/routes.js";
 import { TopBar } from "./components/TopBar.js";
 import { TabBar } from "./components/TabBar.js";
 import { ToastHost } from "./components/ToastHost.js";
@@ -34,9 +35,6 @@ const PAGES = {
   about: AboutPage,
 };
 
-const NAV_KEY = { publicLibrary: "feed", publicGame: "feed", games: "games",
-  library: "library", clip: "library", admin: "admin", profile: "profile" };
-
 // Seeded from the *actual* initial location so the unauthorized-listener
 // below knows whether the very first paint is on a public route, before the
 // session-bootstrap fetch below has resolved (and possibly 401'd).
@@ -45,17 +43,21 @@ let currentRouteName = initialRouteName({ pathname: window.location.pathname, se
 function App() {
   const route = useRoute();
   currentRouteName = route.name;
-  const { ready } = useStore(session);
-  if (!ready) return html`<div class="boot">Loading…</div>`;
+  const { ready, user } = useStore(session);
+  const loginRedirect = ready && shouldRedirectToLogin(route.name, user);
+  useEffect(() => {
+    if (loginRedirect) navigate("/login");
+  }, [loginRedirect]);
+  if (!ready || loginRedirect) return html`<div class="boot">Loading…</div>`;
   // parseRoute() (lib/routes.js) always returns one of the names below —
   // an unmatched pathname falls back to "publicLibrary" itself — so this
   // default is just a defensive backstop, not a reachable "not ported" path.
   const Page = PAGES[route.name] || FeedPage;
   const bare = route.name === "login" || route.name === "resetPassword";
   return html`<div class="ui" onClick=${onLinkClick}>
-    ${!bare && html`<${TopBar} active=${NAV_KEY[route.name] || ""} route=${route} />`}
+    ${!bare && html`<${TopBar} active=${topNavKeyForRoute(route)} route=${route} />`}
     <${Page} route=${route} />
-    ${!bare && html`<${TabBar} active=${NAV_KEY[route.name] || ""} />`}
+    ${!bare && html`<${TabBar} active=${tabNavKeyForRoute(route)} />`}
     <${ToastHost} />
   </div>`;
 }
