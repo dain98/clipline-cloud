@@ -11,6 +11,7 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::{
     config::Region,
+    error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
     presigning::PresigningConfig,
     primitives::ByteStream,
     types::{CompletedMultipartUpload, CompletedPart, MetadataDirective},
@@ -1783,16 +1784,24 @@ fn trim_s3_etag(etag: &str) -> String {
     etag.trim_matches('"').to_string()
 }
 
-fn s3_error(error: impl std::fmt::Display) -> StorageError {
-    StorageError::S3(error.to_string())
+fn s3_error<E>(error: SdkError<E>) -> StorageError
+where
+    E: std::error::Error + 'static,
+{
+    StorageError::S3(DisplayErrorContext(&error).to_string())
 }
 
-fn is_s3_not_found(error: &impl std::fmt::Display) -> bool {
-    let text = error.to_string();
-    text.contains("NotFound")
-        || text.contains("NoSuchKey")
-        || text.contains("NoSuchUpload")
-        || text.contains("404")
+fn is_s3_not_found<E>(error: &SdkError<E>) -> bool
+where
+    E: ProvideErrorMetadata,
+{
+    if matches!(
+        error.code(),
+        Some("NotFound" | "NoSuchKey" | "NoSuchUpload")
+    ) {
+        return true;
+    }
+    matches!(error.raw_response(), Some(response) if response.status().as_u16() == 404)
 }
 
 fn smithy_datetime_to_chrono(value: &aws_sdk_s3::primitives::DateTime) -> Option<DateTime<Utc>> {
@@ -2082,12 +2091,24 @@ mod tests {
         {
             Ok(_) => {}
             Err(error)
-                if error.to_string().contains("BucketAlreadyOwnedByYou")
-                    || error.to_string().contains("BucketAlreadyExists") => {}
+                if matches!(
+                    error.code(),
+                    Some("BucketAlreadyOwnedByYou" | "BucketAlreadyExists")
+                ) => {}
             Err(error) => panic!("create bucket failed: {error}"),
         }
 
         storage.probe().await.expect("probe");
+
+        let missing_key = MediaObjectKeys::generate().expect("keys").source;
+        assert!(!storage
+            .object_exists(&missing_key)
+            .await
+            .expect("missing object head"));
+        storage
+            .abort_multipart_upload("nonexistent-upload-id", &missing_key)
+            .await
+            .expect("abort of unknown upload is a no-op");
 
         let key = MediaObjectKeys::generate().expect("keys").source;
         storage
@@ -2144,5 +2165,81 @@ mod tests {
             .delete_object(&multipart_key)
             .await
             .expect("delete multipart object");
+    }
+
+    fn s3_response(status: u16) -> aws_sdk_s3::config::http::HttpResponse {
+        aws_sdk_s3::config::http::HttpResponse::new(
+            status.try_into().expect("status code"),
+            aws_sdk_s3::primitives::SdkBody::empty(),
+        )
+    }
+
+    #[test]
+    fn s3_head_object_404_is_classified_as_not_found() {
+        use aws_sdk_s3::operation::head_object::HeadObjectError;
+
+        // Real S3 HeadObject 404s have an empty body and no error code, so
+        // classification must fall back to the HTTP status.
+        let error = aws_sdk_s3::error::SdkError::service_error(
+            HeadObjectError::NotFound(aws_sdk_s3::types::error::NotFound::builder().build()),
+            s3_response(404),
+        );
+
+        assert!(is_s3_not_found(&error));
+    }
+
+    #[test]
+    fn s3_no_such_upload_code_is_classified_as_not_found() {
+        use aws_sdk_s3::operation::abort_multipart_upload::AbortMultipartUploadError;
+
+        let error = aws_sdk_s3::error::SdkError::service_error(
+            AbortMultipartUploadError::generic(
+                aws_sdk_s3::error::ErrorMetadata::builder()
+                    .code("NoSuchUpload")
+                    .message("The specified upload does not exist.")
+                    .build(),
+            ),
+            s3_response(400),
+        );
+
+        assert!(is_s3_not_found(&error));
+    }
+
+    #[test]
+    fn s3_access_denied_is_not_classified_as_not_found() {
+        use aws_sdk_s3::operation::head_object::HeadObjectError;
+
+        let error = aws_sdk_s3::error::SdkError::service_error(
+            HeadObjectError::generic(
+                aws_sdk_s3::error::ErrorMetadata::builder()
+                    .code("AccessDenied")
+                    .message("Access Denied")
+                    .build(),
+            ),
+            s3_response(403),
+        );
+
+        assert!(!is_s3_not_found(&error));
+    }
+
+    #[test]
+    fn s3_error_preserves_service_error_details() {
+        use aws_sdk_s3::operation::head_object::HeadObjectError;
+
+        let error = aws_sdk_s3::error::SdkError::service_error(
+            HeadObjectError::generic(
+                aws_sdk_s3::error::ErrorMetadata::builder()
+                    .code("AccessDenied")
+                    .message("Access Denied")
+                    .build(),
+            ),
+            s3_response(403),
+        );
+
+        let message = s3_error(error).to_string();
+        assert!(
+            message.contains("AccessDenied"),
+            "message should include the S3 error code, got: {message}"
+        );
     }
 }
