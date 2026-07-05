@@ -1,6 +1,6 @@
 [package]
 name = "clipline-cloud-storage"
-version = "1.2.33"
+version = "1.2.34"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
