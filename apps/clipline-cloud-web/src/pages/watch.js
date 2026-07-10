@@ -17,6 +17,7 @@ import { Player } from "../components/Player.js";
 import { Comments } from "../components/Comments.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { EmptyState } from "../components/EmptyState.js";
+import { UserAvatar } from "../components/UserAvatar.js";
 
 export { deriveShareLink } from "../lib/media.js";
 
@@ -66,6 +67,40 @@ export function recommendationsPath(shareId, limit = 8) {
 // as a defensive guard when the source share id is known.
 export function upNextList(clips, currentShareId, limit = 8) {
   return (clips || []).filter((c) => c.share_id !== currentShareId).slice(0, limit);
+}
+
+export function watchAuthor(routeName, clip, viewer) {
+  const avatarUser =
+    routeName === "clip"
+      ? viewer || {}
+      : {
+          display_name: clip?.author_name || null,
+          username: clip?.author_username || null,
+          avatar_url: clip?.author_avatar_url || null,
+        };
+  const username = avatarUser.username || null;
+  const label = avatarUser.display_name || username || "Unknown creator";
+  return {
+    label,
+    username,
+    href: username ? `/u/${encodeURIComponent(username)}` : null,
+    avatarUser,
+  };
+}
+
+export function WatchAuthorRow({ author }) {
+  const contents = html`
+    <${UserAvatar} user=${author.avatarUser} size=${36} />
+    <span class="watch-author-name">${author.label}</span>
+  `;
+  const identity = author.href
+    ? html`<a class="watch-author-link" href=${author.href}>${contents}</a>`
+    : html`<span class="watch-author-link watch-author-static">${contents}</span>`;
+
+  return html`<div class="watch-author-row">
+    ${identity}
+    <button type="button" class="btn btn-primary watch-follow" aria-disabled="true">Follow</button>
+  </div>`;
 }
 
 export function WatchPage({ route }) {
@@ -145,8 +180,7 @@ export function WatchPage({ route }) {
     route.name === "clip" ? ownedMediaPath({ id: clip.id }) : publicMediaPath({ share_id: route.shareId });
   const posterSrc =
     route.name === "clip" ? ownedPosterPath({ id: clip.id }) : publicPosterPath({ share_id: route.shareId });
-  const authorName =
-    route.name === "clip" ? user?.display_name || user?.username || "You" : clip.author_name || "Unknown creator";
+  const author = watchAuthor(route.name, clip, user);
   const rawShareUrl = clip.public_url ?? clip.share_url ?? null;
   const shareLink = deriveShareLink(rawShareUrl, window.location.origin, shareId);
   // Only the owned detail response carries file size/dimensions/codecs/checksum;
@@ -244,7 +278,6 @@ export function WatchPage({ route }) {
       html`<a class="chip chip-on" href=${`/game/${encodeURIComponent(clip.game_name)}`}>${clip.game_name}</a>`,
     formatViews(clip.view_count),
     `Recorded ${formatDate(clip.recorded_at)}`,
-    `by ${authorName}`,
   ].filter(Boolean);
 
   const upNextItems = upNextList(upNext, shareId, 8);
@@ -252,20 +285,23 @@ export function WatchPage({ route }) {
   return html`<main class="page watch">
     <div>
       <${Player} src=${mediaSrc} poster=${posterSrc} durationMs=${clip.duration_ms} markers=${clip.markers} />
-      <div class="watch-titlerow">
-        ${editingTitle
-          ? html`<input class="input watch-title-input" value=${titleDraft} autofocus
-              onInput=${(e) => setTitleDraft(e.target.value)} onBlur=${saveTitle}
-              onKeyDown=${(e) => {
-                if (e.key === "Enter") saveTitle(e);
-                if (e.key === "Escape") setEditingTitle(false);
-              }} />`
-          : html`<h1>${clip.title}
-              ${isOwner &&
-              html`<button type="button" class="edit-pencil" aria-label="Edit title" onClick=${startEditTitle}
-                >${icon("edit", { size: 14 })}</button>`}</h1>`}
+      <div class="watch-heading">
+        <div class="watch-titlerow">
+          ${editingTitle
+            ? html`<input class="input watch-title-input" value=${titleDraft} autofocus
+                onInput=${(e) => setTitleDraft(e.target.value)} onBlur=${saveTitle}
+                onKeyDown=${(e) => {
+                  if (e.key === "Enter") saveTitle(e);
+                  if (e.key === "Escape") setEditingTitle(false);
+                }} />`
+            : html`<h1>${clip.title}
+                ${isOwner &&
+                html`<button type="button" class="edit-pencil" aria-label="Edit title" onClick=${startEditTitle}
+                  >${icon("edit", { size: 14 })}</button>`}</h1>`}
+        </div>
+        <${WatchAuthorRow} author=${author} />
+        <p class="watch-meta">${metaParts.map((part, i) => html`${i > 0 ? " · " : ""}${part}`)}</p>
       </div>
-      <p class="watch-meta">${metaParts.map((part, i) => html`${i > 0 ? " · " : ""}${part}`)}</p>
 
       ${isOwner &&
       html`<div class="watch-actions">

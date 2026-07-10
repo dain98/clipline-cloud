@@ -16,6 +16,8 @@ const {
   resolutionLabel,
   recommendationsPath,
   upNextList,
+  watchAuthor,
+  WatchAuthorRow,
 } = await import("../src/pages/watch.js");
 
 // GET /api/v1/clips/{id} (route "clip") 404s unless the caller owns the clip
@@ -50,6 +52,88 @@ test("resolveOwnedClipId reads the route's clipId on the clip route", () => {
 test("resolveOwnedClipId reads viewer_clip_id from the public clip response", () => {
   assert.equal(resolveOwnedClipId("public", {}, { viewer_clip_id: "01ABC" }), "01ABC");
   assert.equal(resolveOwnedClipId("public", {}, {}), null);
+});
+
+test("watchAuthor uses the session user for an owned clip", () => {
+  const viewer = {
+    display_name: "Arua",
+    username: "arua",
+    avatar_url: "/api/v1/public/users/arua/avatar",
+    updated_at: "2026-07-10T00:00:00Z",
+  };
+  const author = watchAuthor("clip", {}, viewer);
+
+  assert.equal(author.label, "Arua");
+  assert.equal(author.username, "arua");
+  assert.equal(author.href, "/u/arua");
+  assert.equal(author.avatarUser, viewer);
+});
+
+test("watchAuthor adapts public clip author fields and encodes the profile link", () => {
+  const author = watchAuthor("public", {
+    author_name: "Kai Clips",
+    author_username: "kai+clips",
+    author_avatar_url: "/api/v1/public/users/kai%2Bclips/avatar",
+  });
+
+  assert.deepEqual(author, {
+    label: "Kai Clips",
+    username: "kai+clips",
+    href: "/u/kai%2Bclips",
+    avatarUser: {
+      display_name: "Kai Clips",
+      username: "kai+clips",
+      avatar_url: "/api/v1/public/users/kai%2Bclips/avatar",
+    },
+  });
+});
+
+test("watchAuthor keeps a public author visible when the username is unavailable", () => {
+  const author = watchAuthor("public", {
+    author_name: "Unknown upload owner",
+    author_username: null,
+    author_avatar_url: null,
+  });
+
+  assert.equal(author.label, "Unknown upload owner");
+  assert.equal(author.username, null);
+  assert.equal(author.href, null);
+});
+
+test("WatchAuthorRow links the complete identity and exposes a non-functional Follow control", () => {
+  const row = WatchAuthorRow({
+    author: {
+      label: "Arua",
+      username: "arua",
+      href: "/u/arua",
+      avatarUser: { display_name: "Arua", username: "arua" },
+    },
+  });
+  const [identity, follow] = row.props.children;
+
+  assert.equal(row.type, "div");
+  assert.equal(row.props.class, "watch-author-row");
+  assert.equal(identity.type, "a");
+  assert.equal(identity.props.href, "/u/arua");
+  assert.equal(follow.type, "button");
+  assert.equal(follow.props.type, "button");
+  assert.equal(follow.props["aria-disabled"], "true");
+  assert.equal(follow.props.onClick, undefined);
+  assert.equal(follow.props.children, "Follow");
+});
+
+test("WatchAuthorRow renders static identity text without a username", () => {
+  const row = WatchAuthorRow({
+    author: {
+      label: "Unknown creator",
+      username: null,
+      href: null,
+      avatarUser: {},
+    },
+  });
+
+  assert.equal(row.props.children[0].type, "span");
+  assert.equal(row.props.children[0].props.class, "watch-author-link watch-author-static");
 });
 
 // deriveShareLink resolves just the pathname of the server's absolute
