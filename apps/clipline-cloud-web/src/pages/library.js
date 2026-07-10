@@ -1,6 +1,7 @@
 import { html } from "../lib/html.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
+import { useApiResource } from "../lib/use-api-resource.js";
 import { toast } from "../lib/store.js";
 import { formatBytes, formatDate, formatDuration } from "../lib/format.js";
 import { deriveShareLink, ownedMediaPath, ownedThumbPath } from "../lib/media.js";
@@ -13,7 +14,7 @@ import { icon } from "../lib/icons.js";
 
 const VIEW_STORAGE_KEY = "clipline.libraryView";
 
-// Exact legacy sort key/label list (src/app.js:793-800) — must not drift.
+// Sort values are API contract keys; labels may change, values must stay synchronized with the server.
 const SORTS = [
   ["uploaded_at_desc", "Uploaded newest"],
   ["uploaded_at_asc", "Uploaded oldest"],
@@ -49,6 +50,7 @@ const POPOVER_FIELDS = [
 
 export const DEFAULT_LIBRARY_QUERY = {
   sort: "uploaded_at_desc",
+  page: 1,
   game: "",
   source_type: "",
   visibility: "",
@@ -68,15 +70,14 @@ function toFiniteNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-// Pure port of legacy libraryParams (src/app.js:765-786): sort + page_size
-// are always set; game/source_type/visibility/status/q are only set when
-// truthy; from/to get UTC day-boundary suffixes; duration seconds -> ms and
-// size MiB -> bytes conversions are only present when the input is a finite
-// number (matches legacy setNumericParam/secondsToMilliseconds/mebibytesToBytes).
+// Build the library API query. Required paging/sort values are always present;
+// optional filters are omitted until supplied, and display units are converted
+// to the milliseconds/bytes expected by the server.
 export function libraryParams(query) {
   const params = new URLSearchParams();
   params.set("sort", query.sort || DEFAULT_LIBRARY_QUERY.sort);
   params.set("page_size", "100");
+  params.set("page", String(Math.max(1, Number(query.page || 1))));
   for (const key of ["game", "source_type", "visibility", "status", "q"]) {
     if (query[key]) params.set(key, query[key]);
   }
@@ -156,33 +157,18 @@ export function LibraryPage() {
   const [view, setView] = useState(readStoredView);
   const [query, setQuery] = useState(DEFAULT_LIBRARY_QUERY);
   const [searchText, setSearchText] = useState(DEFAULT_LIBRARY_QUERY.q);
-  const [data, setData] = useState(null); // { page, page_size, clips }
-  const [error, setError] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const libraryResource = `/api/v1/clips?${libraryParams(query)}`;
+  const { data, error, setData } = useApiResource(libraryResource, reloadTick);
   const bulkBusyRef = useRef(false);
   const searchTimer = useRef(null);
 
   useEffect(() => () => clearTimeout(searchTimer.current), []);
 
-  useEffect(() => {
-    let live = true;
-    setData(null);
-    setError(null);
-    api(`/api/v1/clips?${libraryParams(query)}`)
-      .then((d) => {
-        if (!live) return;
-        setData(d);
-        setSelected(new Set());
-      })
-      .catch((e) => live && setError(e));
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(query), reloadTick]);
+  useEffect(() => setSelected(new Set()), [libraryResource, reloadTick]);
 
   const changeView = (next) => {
     setView(next);
@@ -205,26 +191,28 @@ export function LibraryPage() {
     setSearchText(value);
     clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => {
-      setQuery((q) => ({ ...q, q: value }));
+      setQuery((q) => ({ ...q, q: value, page: 1 }));
     }, 300);
   };
 
   const setFilter = (key) => (event) => {
     const value = event.target.value;
-    setQuery((q) => ({ ...q, [key]: value }));
+    setQuery((q) => ({ ...q, [key]: value, page: 1 }));
   };
 
   const clearFilters = () => {
     setQuery((q) => ({
       ...q,
+      page: 1,
       visibility: "", status: "", source_type: "", from: "", to: "",
       min_duration_seconds: "", max_duration_seconds: "", min_size_mib: "", max_size_mib: "",
     }));
   };
 
-  const setGame = (game) => setQuery((q) => ({ ...q, game: q.game === game ? "" : game }));
+  const setGame = (game) => setQuery((q) => ({ ...q, game: q.game === game ? "" : game, page: 1 }));
 
-  const setSort = (sort) => setQuery((q) => ({ ...q, sort }));
+  const setSort = (sort) => setQuery((q) => ({ ...q, sort, page: 1 }));
+  const setPage = (page) => setQuery((q) => ({ ...q, page: Math.max(1, page) }));
 
   const toggleSelect = (id) => {
     setSelected((prev) => {
@@ -408,7 +396,10 @@ export function LibraryPage() {
   const activeFilterCount = countActiveFilters(query);
   const hasFilter = Boolean(query.q || query.game) || activeFilterCount > 0;
   const chips = deriveGameChips(clips || []);
-  const totalBytes = (clips || []).reduce((sum, c) => sum + (c.file_size_bytes || 0), 0);
+  const totalClips = Number(data?.total ?? (clips || []).length);
+  const totalBytes = Number(data?.total_size_bytes ?? (clips || []).reduce((sum, c) => sum + (c.file_size_bytes || 0), 0));
+  const currentPage = Number(data?.page || query.page || 1);
+  const showPager = currentPage > 1 || Boolean(data?.has_more);
 
   const filterFields = html`<div class="popover-fields">
     <label class="field"><span>Visibility</span>
@@ -459,7 +450,7 @@ export function LibraryPage() {
     <div class="lib-header">
       <div>
         <h1>Library</h1>
-        <p>${(clips || []).length} clip${(clips || []).length === 1 ? "" : "s"} · ${formatBytes(totalBytes)} used</p>
+        <p>${totalClips} clip${totalClips === 1 ? "" : "s"} · ${formatBytes(totalBytes)} used</p>
       </div>
       <div class="seg" role="group" aria-label="View">
         <button type="button" class=${`seg-item ${view === "grid" ? "seg-on" : ""}`}
@@ -512,6 +503,14 @@ export function LibraryPage() {
         </div>`
       : html`<${RowsTable} clips=${clips} query=${query} onSort=${setSort}
           selected=${selected} onToggleSelect=${toggleSelect} />`}
+
+    ${showPager && html`<nav class="pager" aria-label="Library pages">
+      <button type="button" class="btn" disabled=${currentPage <= 1}
+        onClick=${() => setPage(currentPage - 1)}>Previous</button>
+      <span>Page ${currentPage}</span>
+      <button type="button" class="btn" disabled=${!data?.has_more}
+        onClick=${() => setPage(currentPage + 1)}>Next</button>
+    </nav>`}
 
     <${BulkBar} count=${selected.size} busy=${bulkBusy}
       onPublic=${() => updateVisibility("public")}

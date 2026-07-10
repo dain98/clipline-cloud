@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use clipline_cloud_api_types::{
-    ClipDetailResponse, ClipListResponse, ClipMarkerResponse, ClipSummaryResponse,
+    ClipDetailResponse, ClipListResponse, ClipMarkerResponse, ClipSummaryResponse, StatusResponse,
     UpdateVisibilityRequest,
 };
 use clipline_cloud_db::{BulkVisibilityUpdate, Clip, ClipListParams, ClipMarker, ClipSort};
@@ -15,7 +15,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    auth::{self, ApiError},
+    auth,
+    error::ApiError,
+    validation::{normalized_optional, validate_optional_char_count},
     AppState, ClientIp,
 };
 
@@ -25,6 +27,9 @@ const MAX_PAGE_SIZE: i64 = 100;
 const MAX_PAGE: i64 = 1_000_000;
 const MAX_BULK_CLIPS: usize = 100;
 const PUBLIC_SHARE_ID_LEN: usize = 22;
+const MAX_TITLE_LEN: usize = 300;
+const MAX_DESCRIPTION_LEN: usize = 10_000;
+const MAX_METADATA_FIELD_LEN: usize = 1_024;
 const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 pub fn routes() -> Router<AppState> {
@@ -147,18 +152,18 @@ async fn list_clips(
         max_size_bytes,
         query: normalized_optional(query.q),
         sort: parse_sort(query.sort.as_deref())?,
-        limit: page_size,
+        limit: page_size + 1,
         offset: page.saturating_sub(1).saturating_mul(page_size),
     };
     if matches!((params.from.as_ref(), params.to.as_ref()), (Some(from), Some(to)) if from > to) {
         return Err(ApiError::bad_request("from must be before or equal to to"));
     }
 
-    let clips = state
-        .repositories
-        .clips
-        .list_for_owner(&params)
-        .await?
+    let mut clips = state.repositories.clips.list_for_owner(&params).await?;
+    let has_more = clips.len() as i64 > page_size;
+    clips.truncate(page_size as usize);
+    let stats = state.repositories.clips.stats_for_owner(&params).await?;
+    let clips = clips
         .into_iter()
         .map(|clip| clip_summary_response(clip, &state))
         .collect();
@@ -166,6 +171,9 @@ async fn list_clips(
     Ok(Json(ClipListResponse {
         page,
         page_size,
+        has_more,
+        total: stats.total,
+        total_size_bytes: stats.total_size_bytes,
         clips,
     }))
 }
@@ -196,6 +204,7 @@ async fn update_clip(
 ) -> Result<Json<ClipDetailResponse>, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
     auth::require_csrf_for_cookie(&state, &headers, &auth)?;
+    validate_update_clip_request(&request)?;
     let Some(existing) = state
         .repositories
         .clips
@@ -273,12 +282,40 @@ async fn update_clip(
     Ok(Json(detail_response(&state, clip).await?))
 }
 
+fn validate_update_clip_request(request: &UpdateClipRequest) -> Result<(), ApiError> {
+    validate_optional_char_count(request.title.as_deref(), "title", MAX_TITLE_LEN)?;
+    if let PatchValue::Present(Value::String(description)) = &request.description {
+        validate_optional_char_count(Some(description), "description", MAX_DESCRIPTION_LEN)?;
+    }
+    for (name, value) in [
+        (
+            "game_name",
+            request.game_name.as_ref().and_then(Option::as_deref),
+        ),
+        (
+            "game_id",
+            request.game_id.as_ref().and_then(Option::as_deref),
+        ),
+        (
+            "game_executable",
+            request.game_executable.as_ref().and_then(Option::as_deref),
+        ),
+        (
+            "source_type",
+            request.source_type.as_ref().and_then(Option::as_deref),
+        ),
+    ] {
+        validate_optional_char_count(value, name, MAX_METADATA_FIELD_LEN)?;
+    }
+    Ok(())
+}
+
 async fn delete_clip(
     State(state): State<AppState>,
     Extension(client_ip): Extension<ClientIp>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let auth = auth::require_auth(&state, &headers).await?;
     auth::require_csrf_for_cookie(&state, &headers, &auth)?;
     let Some(clip) = state
@@ -301,7 +338,7 @@ async fn delete_clip(
         None,
     )
     .await?;
-    Ok(Json(json!({ "status": "ok" })))
+    Ok(Json(StatusResponse::ok()))
 }
 
 async fn bulk_delete_clips(
@@ -615,12 +652,6 @@ fn validate_list_status(value: String) -> Result<String, ApiError> {
     }
 }
 
-fn normalized_optional(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn patch_optional_string(patch: Option<Option<String>>, current: Option<String>) -> Option<String> {
     match patch {
         Some(Some(value)) => normalized_optional(Some(value)),
@@ -838,6 +869,7 @@ mod tests {
         ready.status = "ready".to_string();
         ready.client_clip_id = Some("local-ready".to_string());
         ready.source_type = Some("replay".to_string());
+        ready.file_size_bytes = Some(200);
         app.state
             .repositories
             .clips
@@ -849,6 +881,7 @@ mod tests {
         processing.status = "processing".to_string();
         processing.client_clip_id = Some("local-processing".to_string());
         processing.source_type = Some("replay".to_string());
+        processing.file_size_bytes = Some(100);
         app.state
             .repositories
             .clips
@@ -899,6 +932,9 @@ mod tests {
 
         assert_eq!(response.page, 1);
         assert_eq!(response.page_size, 100);
+        assert!(!response.has_more);
+        assert_eq!(response.total, 2);
+        assert_eq!(response.total_size_bytes, 300);
         assert_eq!(
             response
                 .clips
@@ -939,6 +975,7 @@ mod tests {
             repositories,
             storage,
             auth,
+            readiness: crate::health::ReadinessCache::default(),
         };
         TestApp {
             state,

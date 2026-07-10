@@ -1,6 +1,5 @@
 import { html } from "../lib/html.js";
-import { useEffect, useState } from "preact/hooks";
-import { api } from "../lib/api.js";
+import { useApiResource } from "../lib/use-api-resource.js";
 
 const DEFAULT_ABOUT_TEXT = "Clipline is a self-hosted clip library for saved gameplay moments.";
 
@@ -9,19 +8,10 @@ function kv(label, value) {
 }
 
 export function AboutPage() {
-  const [aboutText, setAboutText] = useState(DEFAULT_ABOUT_TEXT);
-
-  useEffect(() => {
-    let live = true;
-    api("/api/v1/about")
-      .then((data) => live && setAboutText(data.about_text || DEFAULT_ABOUT_TEXT))
-      // The about text is decorative copy on a public page — fall back to
-      // the default silently rather than surfacing a toast for it.
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, []);
+  // The about text is decorative copy on a public page, so retain the default
+  // silently if the instance-specific copy cannot be loaded.
+  const { data } = useApiResource("/api/v1/about", 0, { about_text: DEFAULT_ABOUT_TEXT });
+  const aboutText = data?.about_text || DEFAULT_ABOUT_TEXT;
 
   return html`<main class="page">
     <h1>About</h1>

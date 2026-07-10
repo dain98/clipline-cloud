@@ -2,6 +2,7 @@ import { html } from "../lib/html.js";
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
+import { useAsyncResource } from "../lib/use-api-resource.js";
 import { session, toast, useStore } from "../lib/store.js";
 import { icon } from "../lib/icons.js";
 import { EmptyState } from "../components/EmptyState.js";
@@ -21,17 +22,16 @@ export function isAdminLike(user) {
   return user?.role === "admin" || user?.role === "owner";
 }
 
-// Legacy fetches all six admin endpoints together regardless of which tab is
-// active (src/app.js renderAdmin :2979-2999) so switching tabs is instant;
-// keep that shape here.
-async function loadAdminData() {
+// Fetch every admin panel together so switching tabs is immediate.
+async function loadAdminData(signal) {
+  const options = { signal };
   const [overview, settings, users, failedUploads, deadJobs, recentErrors] = await Promise.all([
-    api("/api/v1/admin/overview"),
-    api("/api/v1/admin/settings"),
-    api("/api/v1/users"),
-    api("/api/v1/admin/uploads/failed?limit=50"),
-    api("/api/v1/admin/jobs/dead?limit=50"),
-    api("/api/v1/admin/jobs/recent-errors?limit=50"),
+    api("/api/v1/admin/overview", options),
+    api("/api/v1/admin/settings", options),
+    api("/api/v1/users", options),
+    api("/api/v1/admin/uploads/failed?limit=50", options),
+    api("/api/v1/admin/jobs/dead?limit=50", options),
+    api("/api/v1/admin/jobs/recent-errors?limit=50", options),
   ]);
   return { overview, settings, users, failedUploads, deadJobs, recentErrors };
 }
@@ -41,10 +41,12 @@ export function AdminPage({ route }) {
   const canUseAdmin = isAdminLike(currentUser);
   const shouldRedirect = Boolean(currentUser && !canUseAdmin);
   const tab = TABS.some(([key]) => key === route.tab) ? route.tab : "overview";
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
   const [resetLink, setResetLink] = useState(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const { data, error } = useAsyncResource(
+    canUseAdmin ? `admin:${reloadTick}` : null,
+    loadAdminData
+  );
   const reload = () => setReloadTick((t) => t + 1);
 
   useEffect(() => {
@@ -52,18 +54,6 @@ export function AdminPage({ route }) {
     toast("Admin access required.");
     navigate("/library");
   }, [shouldRedirect]);
-
-  useEffect(() => {
-    if (!canUseAdmin) return;
-    let live = true;
-    setError(null);
-    loadAdminData()
-      .then((d) => live && setData(d))
-      .catch((e) => live && setError(e));
-    return () => {
-      live = false;
-    };
-  }, [canUseAdmin, reloadTick]);
 
   if (!canUseAdmin) return null;
 

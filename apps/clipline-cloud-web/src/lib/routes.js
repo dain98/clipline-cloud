@@ -1,4 +1,4 @@
-// Pure port of legacy currentRoute() (../app.js:182-233) plus its helpers
+// Route parsing is deliberately pure so navigation behavior is covered without a browser.
 // (safeDecodeURIComponent at :243, publicRouteQuery at :276), reading from
 // arguments instead of window.location so this module has no DOM dependency.
 

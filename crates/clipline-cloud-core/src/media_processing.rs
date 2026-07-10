@@ -8,6 +8,7 @@ use std::{
 use bytes::Bytes;
 use clipline_cloud_storage::{MediaObjectKeys, ObjectKey, PutObjectMetadata, SharedStorageBackend};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     fs,
@@ -77,10 +78,19 @@ impl Default for VideoOptimizationSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct OptimizedVideoCandidate {
-    pub bytes: Bytes,
+    output_path: PathBuf,
+    _scratch: ScratchDir,
+    pub size_bytes: u64,
+    pub checksum_sha256: String,
     pub metadata: ValidatedMediaMetadata,
+}
+
+impl OptimizedVideoCandidate {
+    pub fn path(&self) -> &Path {
+        &self.output_path
+    }
 }
 
 #[derive(Debug, Error)]
@@ -186,17 +196,21 @@ impl MediaProcessor {
         self.run_media_command(&self.config.ffmpeg_bin, args)
             .await?;
 
-        let bytes = fs::read(&output_path).await?;
-        if bytes.is_empty() {
+        let size_bytes = fs::metadata(&output_path).await?.len();
+        if size_bytes == 0 {
             return Err(MediaProcessingError::Validation(
                 "video optimization produced an empty file".to_string(),
             ));
         }
+        let checksum_sha256 = sha256_file_hex(&output_path).await?;
         let metadata = self.probe_file(&output_path).await?;
         validate_optimized_candidate(&metadata)?;
 
         Ok(OptimizedVideoCandidate {
-            bytes: Bytes::from(bytes),
+            output_path,
+            _scratch: scratch,
+            size_bytes,
+            checksum_sha256,
             metadata,
         })
     }
@@ -313,6 +327,20 @@ impl MediaProcessor {
         let parsed = serde_json::from_slice::<FfprobeOutput>(&output.stdout)?;
         validate_probe_output(parsed)
     }
+}
+
+async fn sha256_file_hex(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn run_media_command(

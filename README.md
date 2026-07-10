@@ -48,6 +48,7 @@ one-time password in the logs.
 
 These are mainly for maintainers and lower-level operators:
 
+- [Development and architecture guide](DEVELOPMENT.md)
 - [Deployment guide](docs/cloud/deployment-guide.md)
 - [Deployment operations](docs/cloud/deployment-operations.md)
 - [Release process](docs/cloud/release-process.md)

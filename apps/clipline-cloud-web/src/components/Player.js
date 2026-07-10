@@ -39,9 +39,8 @@ export function resolvePlayerKeyIntent(code, shiftKey) {
   }
 }
 
-// Ported verbatim from legacy src/app.js:693-699 — shortcuts must not fire
-// while the user is typing/interacting with an actual control anywhere on
-// the page (the listener is global, not scoped to the player root).
+// The keyboard listener is global, so shortcuts must not fire while the user
+// is typing or interacting with another control.
 function isPlayerShortcutBlockedTarget(target) {
   if (!(target instanceof Element)) {
     return false;
@@ -52,10 +51,8 @@ function isPlayerShortcutBlockedTarget(target) {
 export function readStoredVolume() {
   try {
     const raw = window.localStorage.getItem(VOLUME_KEY);
-    // Note: legacy's readPlayerVolume (src/app.js:635-642) fed a missing key
-    // straight into Number(), and Number(null) is 0 (not NaN) — so it
-    // silently defaulted first-time visitors to muted/zero volume instead of
-    // full volume. That's fixed here with an explicit null check.
+    // Number(null) is zero, so check absence before parsing to avoid muting
+    // first-time visitors.
     if (raw == null) return 1;
     const value = Number(raw);
     return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
@@ -130,7 +127,7 @@ export function Player({ src, poster, durationMs, markers }) {
     }
   }, [playing]);
 
-  // Media element event wiring, ported from legacy initClipPlayer (src/app.js:1639-2085).
+  // Keep Preact state synchronized with the native media element.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
@@ -361,8 +358,7 @@ export function Player({ src, poster, durationMs, markers }) {
     setHover(null);
   }
 
-  // Global keyboard shortcuts, active for as long as the player is mounted
-  // (matches legacy's document-level listener + activePlayerCleanup).
+  // Global keyboard shortcuts are active only while this player is mounted.
   useEffect(() => {
     function onKeyDown(event) {
       if (event.defaultPrevented || isPlayerShortcutBlockedTarget(event.target)) return;

@@ -4,6 +4,7 @@ import { api, ApiError, setCsrfToken } from "../lib/api.js";
 import { session, toast, useStore } from "../lib/store.js";
 import { navigate } from "../lib/router.js";
 import { publicThumbPath } from "../lib/media.js";
+import { useApiResource } from "../lib/use-api-resource.js";
 
 // Fixed collage positions for the brand montage (login left panel). Kept as
 // a plain data table (no Math.random) so the layout is deterministic and
@@ -49,17 +50,7 @@ function nullableString(value) {
 }
 
 function BrandMontage() {
-  const [data, setData] = useState(null);
-
-  useEffect(() => {
-    let live = true;
-    api(`/api/v1/public/clips?page_size=${MONTAGE_SLOTS.length}`)
-      .then((d) => live && setData(d))
-      .catch(() => live && setData(null));
-    return () => {
-      live = false;
-    };
-  }, []);
+  const { data } = useApiResource(`/api/v1/public/clips?page_size=${MONTAGE_SLOTS.length}`);
 
   const tiles = montageTiles(data?.clips);
   const label = montageCountLabel(data);
@@ -97,8 +88,7 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Legacy route() bounces an already-signed-in visitor straight to /library
-  // (src/app.js:138-145) instead of rendering the login form.
+  // Signed-in visitors have no use for the login form.
   useEffect(() => {
     if (user) navigate("/library");
   }, [user]);
@@ -144,46 +134,14 @@ export function LoginPage() {
   </${AuthShell}>`;
 }
 
-// Port of legacy renderResetPassword (src/app.js:389-456) + the invite
-// preflight in renderInviteResetPassword (:457-490), onto the same split
-// shell. route.invite === true means the token in the URL is an invite
-// token that must first be redeemed via /api/v1/invites/claim to obtain the
-// actual reset_token before the set-password form can be shown.
+// Invite tokens are redeemed together with account creation. This keeps link
+// previews, refreshes, and abandoned forms from consuming an invitation.
 export function ResetPasswordPage({ route }) {
   const isInviteRoute = Boolean(route.invite);
-  const [phase, setPhase] = useState(() => {
-    if (isInviteRoute) return "preflight";
-    return route.token ? "form" : "missing-token";
-  });
-  const [preflightError, setPreflightError] = useState("");
-  const [resolvedToken, setResolvedToken] = useState(isInviteRoute ? null : route.token);
+  const phase = route.token ? "form" : "missing-token";
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
   const isInvite = isInviteRoute;
-
-  useEffect(() => {
-    if (!isInviteRoute) return;
-    if (!route.token) {
-      setPhase("missing-token");
-      return;
-    }
-    let live = true;
-    setPhase("preflight");
-    api("/api/v1/invites/claim", { method: "POST", body: { invite_token: route.token } })
-      .then((data) => {
-        if (!live) return;
-        setResolvedToken(data.reset_token);
-        setPhase("form");
-      })
-      .catch((err) => {
-        if (!live) return;
-        setPreflightError(err instanceof ApiError ? err.message : "This invite link is invalid, used, or expired.");
-        setPhase("invalid");
-      });
-    return () => {
-      live = false;
-    };
-  }, [isInviteRoute, route.token]);
 
   async function onSubmit(event) {
     event.preventDefault();
@@ -192,7 +150,7 @@ export function ResetPasswordPage({ route }) {
     setFormError("");
     const form = new FormData(event.currentTarget);
     const body = {
-      reset_token: resolvedToken,
+      reset_token: route.token,
       new_password: String(form.get("new_password") || ""),
     };
     if (isInvite) {
@@ -208,25 +166,6 @@ export function ResetPasswordPage({ route }) {
       setFormError(err instanceof ApiError ? err.message : "Request failed");
       setBusy(false);
     }
-  }
-
-  // Invite preflight not yet resolved: mirror legacy renderInviteLinkStatus
-  // (src/app.js:477-489) — a distinct "Create Account" status screen with no
-  // form and no sign-in link.
-  if (isInviteRoute && phase !== "form") {
-    const isError = phase === "missing-token" || phase === "invalid";
-    const message = phase === "missing-token"
-      ? "This invite link is missing a token."
-      : phase === "invalid"
-      ? preflightError
-      : "Opening invite…";
-    return html`<${AuthShell} titleId="invite-title">
-      <h1 id="invite-title">Create account</h1>
-      <p class="login-copy">${isError ? "This invite cannot be used." : "Preparing your account setup."}</p>
-      ${isError
-        ? html`<p class="form-error" role="alert">${message}</p>`
-        : html`<p class="login-status">${message}</p>`}
-    </${AuthShell}>`;
   }
 
   const title = isInvite ? "Create account" : "Set password";
@@ -261,7 +200,7 @@ export function ResetPasswordPage({ route }) {
             <input class="input" name="new_password" type="password" autocomplete="new-password" minlength="8" required />
           </label>
           <button class="btn btn-primary" type="submit" disabled=${busy}>
-            ${isInvite ? "Create account" : "Set password"}
+            ${busy ? (isInvite ? "Creating account…" : "Setting password…") : (isInvite ? "Create account" : "Set password")}
           </button>
         </form>
       `}

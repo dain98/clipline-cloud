@@ -16,9 +16,7 @@ export function resolveAvatarSrc(url) {
   return "";
 }
 
-// Pure port of legacy avatarUrl (src/app.js:2665-2670): appends a
-// cache-busting `v=` param derived from updated_at so the browser refetches
-// the image right after a re-upload even though the URL path never changes.
+// The avatar path is stable, so use updated_at as a cache key after re-upload.
 export function avatarUrl(user) {
   const base = resolveAvatarSrc(user?.avatar_url);
   if (!base) return "";
@@ -28,7 +26,7 @@ export function avatarUrl(user) {
   return `${base}${separator}v=${encodeURIComponent(cacheKey)}`;
 }
 
-// Pure port of legacy authorInitial (src/app.js:2671-2673).
+// Stable fallback for users without an avatar.
 export function initialFor(name) {
   return (name || "C").trim().slice(0, 1).toUpperCase() || "C";
 }

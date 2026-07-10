@@ -433,10 +433,167 @@ mod tests {
         );
     }
 
+    async fn assert_active_job_migration_prefers_running_job(database: &Database) {
+        let reset_sql = "DROP INDEX jobs_active_target_kind_ux;
+                         DROP INDEX jobs_active_global_kind_ux;
+                         DELETE FROM jobs;";
+        match database {
+            Database::Sqlite(pool) => {
+                sqlx::raw_sql(reset_sql)
+                    .execute(pool)
+                    .await
+                    .expect("reset SQLite job indexes");
+            }
+            Database::Postgres(pool) => {
+                sqlx::raw_sql(reset_sql)
+                    .execute(pool)
+                    .await
+                    .expect("reset Postgres job indexes");
+            }
+        }
+
+        let repositories = Repositories::new(database.clone());
+        let now = now_utc();
+        let mut pending = NewJob::new("validate_object", now);
+        pending.target_type = Some("clip".to_string());
+        pending.target_id = Some("migration-target".to_string());
+        pending.created_at = now - ChronoDuration::minutes(1);
+        pending.updated_at = pending.created_at;
+        let pending = repositories
+            .jobs
+            .create(&pending)
+            .await
+            .expect("create pending duplicate");
+
+        let mut running = NewJob::new("validate_object", now);
+        running.status = "running".to_string();
+        running.target_type = Some("clip".to_string());
+        running.target_id = Some("migration-target".to_string());
+        running.locked_by = Some("active-worker".to_string());
+        running.locked_at = Some(now);
+        let running = repositories
+            .jobs
+            .create(&running)
+            .await
+            .expect("create running duplicate");
+
+        let mut null_type = NewJob::new("validate_object", now);
+        null_type.target_id = Some("mixed-null-target-type".to_string());
+        null_type.created_at = now - ChronoDuration::minutes(1);
+        null_type.updated_at = null_type.created_at;
+        let null_type = repositories
+            .jobs
+            .create(&null_type)
+            .await
+            .expect("create NULL target-type duplicate");
+
+        let mut empty_type = NewJob::new("validate_object", now);
+        empty_type.status = "running".to_string();
+        empty_type.target_type = Some(String::new());
+        empty_type.target_id = Some("mixed-null-target-type".to_string());
+        empty_type.locked_by = Some("active-worker".to_string());
+        empty_type.locked_at = Some(now);
+        let empty_type = repositories
+            .jobs
+            .create(&empty_type)
+            .await
+            .expect("create empty target-type duplicate");
+
+        match database {
+            Database::Sqlite(pool) => {
+                sqlx::raw_sql(include_str!(
+                    "../migrations/sqlite/202607100001_active_job_uniqueness.sql"
+                ))
+                .execute(pool)
+                .await
+                .expect("reapply SQLite active-job migration");
+            }
+            Database::Postgres(pool) => {
+                sqlx::raw_sql(include_str!(
+                    "../migrations/postgres/202607100001_active_job_uniqueness.sql"
+                ))
+                .execute(pool)
+                .await
+                .expect("reapply Postgres active-job migration");
+            }
+        }
+
+        let pending = repositories
+            .jobs
+            .get(&pending.id)
+            .await
+            .expect("load pending duplicate")
+            .expect("pending duplicate");
+        let running = repositories
+            .jobs
+            .get(&running.id)
+            .await
+            .expect("load running duplicate")
+            .expect("running duplicate");
+        let null_type = repositories
+            .jobs
+            .get(&null_type.id)
+            .await
+            .expect("load NULL target-type duplicate")
+            .expect("NULL target-type duplicate");
+        let empty_type = repositories
+            .jobs
+            .get(&empty_type.id)
+            .await
+            .expect("load empty target-type duplicate")
+            .expect("empty target-type duplicate");
+        assert_eq!(pending.status, "failed");
+        assert_eq!(running.status, "running");
+        assert_eq!(null_type.status, "failed");
+        assert_eq!(empty_type.status, "running");
+    }
+
+    async fn assert_active_jobs_without_target_type_are_deduplicated(database: &Database) {
+        let repositories = Repositories::new(database.clone());
+        let mut first = NewJob::new("validate_object", now_utc());
+        first.target_id = Some("target-without-type".to_string());
+        let first = repositories
+            .jobs
+            .create_if_absent_active(&first)
+            .await
+            .expect("create first untyped target job");
+
+        let mut duplicate = NewJob::new("validate_object", now_utc());
+        duplicate.target_id = Some("target-without-type".to_string());
+        let duplicate = repositories
+            .jobs
+            .create_if_absent_active(&duplicate)
+            .await
+            .expect("deduplicate untyped target job");
+
+        assert_eq!(duplicate.id, first.id);
+        assert_eq!(
+            repositories
+                .jobs
+                .get_active_by_kind_and_target("validate_object", None, Some("target-without-type"))
+                .await
+                .expect("find untyped target job")
+                .map(|job| job.id),
+            Some(first.id)
+        );
+    }
+
     #[tokio::test]
     async fn sqlite_migration_creates_expected_tables_and_is_idempotent() {
         let (_temp_dir, database) = sqlite_test_database().await;
         assert_migrations_are_idempotent(&database).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_active_job_migration_preserves_running_duplicate() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_active_job_migration_prefers_running_job(&database).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_active_jobs_without_target_type_are_deduplicated() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_active_jobs_without_target_type_are_deduplicated(&database).await;
     }
 
     #[tokio::test]
@@ -445,6 +602,22 @@ mod tests {
             return;
         };
         assert_migrations_are_idempotent(&database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_active_job_migration_preserves_running_duplicate() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_active_job_migration_prefers_running_job(&database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_active_jobs_without_target_type_are_deduplicated() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_active_jobs_without_target_type_are_deduplicated(&database).await;
     }
 
     #[tokio::test]
@@ -1044,6 +1217,194 @@ mod tests {
             return;
         };
         assert_expired_upload_sessions_can_be_listed_and_aborted(database).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_atomic_upload_lifecycle_persists_markers_and_jobs() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_atomic_upload_lifecycle(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_atomic_upload_lifecycle_persists_markers_and_jobs() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_atomic_upload_lifecycle(database).await;
+    }
+
+    async fn assert_atomic_upload_lifecycle(database: Database) {
+        let test_id = new_ulid().to_ascii_lowercase();
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(format!("atomic-{test_id}"), "hash", "user"))
+            .await
+            .expect("user");
+        let mut clip = NewClip::new(&user.id, "Atomic Upload", "local");
+        clip.client_clip_id = Some(format!("client-{test_id}"));
+        let session = NewUploadSession::new(
+            &clip.id,
+            &user.id,
+            1024,
+            format!("objects/media/{test_id}/source.mp4"),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        let mut marker = NewClipMarker::new(&clip.id, "kill", 500);
+        marker.metadata_json = Some(Json(json!({ "weapon": "rail" })));
+        repos
+            .create_upload_bundle(&clip, &session, &[marker])
+            .await
+            .expect("create upload bundle");
+        assert_eq!(
+            repos
+                .clip_markers
+                .list_for_clip(&clip.id)
+                .await
+                .expect("markers")
+                .len(),
+            1
+        );
+
+        let mut conflicting_clip = NewClip::new(&user.id, "Conflicting Upload", "local");
+        conflicting_clip.client_clip_id = clip.client_clip_id.clone();
+        let conflicting_session = NewUploadSession::new(
+            &conflicting_clip.id,
+            &user.id,
+            1024,
+            format!("objects/media/{test_id}/conflict.mp4"),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        let conflicting_marker = NewClipMarker::new(&conflicting_clip.id, "kill", 100);
+        let error = repos
+            .create_upload_bundle(
+                &conflicting_clip,
+                &conflicting_session,
+                &[conflicting_marker],
+            )
+            .await
+            .expect_err("duplicate client clip id");
+        assert!(error.is_unique_violation());
+        assert!(repos
+            .clips
+            .get(&conflicting_clip.id)
+            .await
+            .expect("conflicting clip lookup")
+            .is_none());
+        assert!(repos
+            .upload_sessions
+            .get(&conflicting_session.id)
+            .await
+            .expect("conflicting session lookup")
+            .is_none());
+
+        let mut validation_job = NewJob::new("validate_object", now_utc());
+        validation_job.target_type = Some("clip".to_string());
+        validation_job.target_id = Some(clip.id.clone());
+        assert_eq!(
+            repos
+                .finalize_upload(&session.id, &clip.id, 1024, &validation_job)
+                .await
+                .expect("finalize"),
+            FinalizeUploadOutcome::Finalized
+        );
+        assert_eq!(
+            repos
+                .finalize_upload(&session.id, &clip.id, 1024, &validation_job)
+                .await
+                .expect("idempotent finalize"),
+            FinalizeUploadOutcome::AlreadyCompleted
+        );
+        assert_eq!(
+            repos
+                .upload_sessions
+                .get(&session.id)
+                .await
+                .expect("session")
+                .expect("session")
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            repos
+                .clips
+                .get(&clip.id)
+                .await
+                .expect("clip")
+                .expect("clip")
+                .status,
+            "processing"
+        );
+        assert!(repos
+            .jobs
+            .get_active_by_kind_and_target("validate_object", Some("clip"), Some(&clip.id))
+            .await
+            .expect("active validation job")
+            .is_some());
+        let mut duplicate_job = NewJob::new("validate_object", now_utc());
+        duplicate_job.target_type = Some("clip".to_string());
+        duplicate_job.target_id = Some(clip.id.clone());
+        let deduplicated = repos
+            .jobs
+            .create_if_absent_active(&duplicate_job)
+            .await
+            .expect("deduplicate active validation job");
+        assert_eq!(deduplicated.id, validation_job.id);
+        assert_eq!(
+            repos
+                .abort_upload(&session.id, &clip.id)
+                .await
+                .expect("abort completed"),
+            AbortUploadOutcome::NotMutable
+        );
+
+        let aborted_clip = NewClip::new(&user.id, "Aborted Upload", "local");
+        let aborted_session = NewUploadSession::new(
+            &aborted_clip.id,
+            &user.id,
+            512,
+            format!("objects/media/{test_id}/aborted.mp4"),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        repos
+            .create_upload_bundle(&aborted_clip, &aborted_session, &[])
+            .await
+            .expect("create abort bundle");
+        repos
+            .upload_parts
+            .upsert(&NewUploadPart::new(&aborted_session.id, 1, 512))
+            .await
+            .expect("part");
+        assert_eq!(
+            repos
+                .abort_upload(&aborted_session.id, &aborted_clip.id)
+                .await
+                .expect("abort"),
+            AbortUploadOutcome::Aborted
+        );
+        assert_eq!(
+            repos
+                .abort_upload(&aborted_session.id, &aborted_clip.id)
+                .await
+                .expect("idempotent abort"),
+            AbortUploadOutcome::AlreadyAborted
+        );
+        assert!(repos
+            .upload_parts
+            .list_for_session(&aborted_session.id)
+            .await
+            .expect("parts")
+            .is_empty());
+        assert_eq!(
+            repos
+                .clips
+                .get(&aborted_clip.id)
+                .await
+                .expect("aborted clip")
+                .expect("aborted clip")
+                .status,
+            "deleted"
+        );
     }
 
     async fn assert_expired_upload_sessions_can_be_listed_and_aborted(database: Database) {
@@ -1833,6 +2194,97 @@ mod tests {
             .mark_used_if_valid(&token.id, now_utc())
             .await
             .expect("second use"));
+    }
+
+    #[tokio::test]
+    async fn sqlite_reset_redemption_updates_password_and_token_atomically() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_reset_redemption_updates_password_and_token_atomically(database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_reset_redemption_updates_password_and_token_atomically() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_reset_redemption_updates_password_and_token_atomically(database).await;
+    }
+
+    async fn assert_reset_redemption_updates_password_and_token_atomically(database: Database) {
+        let repos = Repositories::new(database);
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("reset-target-{}", new_ulid()),
+                "old-hash",
+                "user",
+            ))
+            .await
+            .expect("target user");
+        let other = repos
+            .users
+            .create(&NewUser::new(
+                format!("reset-other-{}", new_ulid()),
+                "other-hash",
+                "user",
+            ))
+            .await
+            .expect("other user");
+        let token = repos
+            .reset_password_tokens
+            .create(&NewResetPasswordToken::new(
+                &user.id,
+                format!("atomic-reset-{}", new_ulid()),
+                now_utc() + ChronoDuration::minutes(5),
+            ))
+            .await
+            .expect("reset token");
+
+        assert!(!repos
+            .redeem_reset_password_token(&token.id, &other.id, "new-hash", now_utc())
+            .await
+            .expect("mismatched redemption"));
+        assert!(repos
+            .reset_password_tokens
+            .get(&token.id)
+            .await
+            .expect("token")
+            .expect("token")
+            .used_at
+            .is_none());
+        assert_eq!(
+            repos
+                .users
+                .get(&user.id)
+                .await
+                .expect("user")
+                .expect("user")
+                .password_hash,
+            "old-hash"
+        );
+
+        assert!(repos
+            .redeem_reset_password_token(&token.id, &user.id, "new-hash", now_utc())
+            .await
+            .expect("valid redemption"));
+        assert_eq!(
+            repos
+                .users
+                .get(&user.id)
+                .await
+                .expect("updated user")
+                .expect("updated user")
+                .password_hash,
+            "new-hash"
+        );
+        assert!(repos
+            .reset_password_tokens
+            .get(&token.id)
+            .await
+            .expect("used token")
+            .expect("used token")
+            .used_at
+            .is_some());
     }
 
     #[tokio::test]

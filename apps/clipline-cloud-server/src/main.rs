@@ -2,11 +2,14 @@ mod admin;
 mod auth;
 mod clips;
 mod config;
+mod error;
+mod health;
 mod logging;
 mod mail;
 mod media;
 mod operator;
 mod uploads;
+mod validation;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -18,9 +21,8 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
+    Router,
 };
-use clipline_cloud_api_types::{HealthResponse, ReadinessResponse};
 use clipline_cloud_core::jobs::{
     ensure_cleanup_clip_sweep, ensure_cleanup_session_sweep, JobRunner, JobRunnerConfig,
 };
@@ -43,6 +45,7 @@ pub(crate) struct AppState {
     pub(crate) repositories: Repositories,
     pub(crate) storage: SharedStorageBackend,
     pub(crate) auth: auth::AuthRuntime,
+    readiness: health::ReadinessCache,
 }
 
 #[derive(Debug, Clone)]
@@ -311,8 +314,8 @@ fn router(
     let max_upload_request_body_bytes = upload_request_body_limit(&config);
 
     Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
+        .route("/healthz", get(health::healthz))
+        .route("/readyz", get(health::readyz))
         .route("/", get(spa_index))
         .route("/login", get(spa_index))
         .route("/reset-password", get(spa_index))
@@ -351,52 +354,8 @@ fn router(
             repositories,
             storage,
             auth,
+            readiness: health::ReadinessCache::default(),
         })
-}
-
-async fn healthz() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
-}
-
-async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ReadinessResponse>) {
-    let _storage_backend = state.config.storage_backend_name();
-
-    let database_status = match state.database.ping().await {
-        Ok(()) => "ok",
-        Err(error) => {
-            warn!(event = "database.readyz_failed", error = %error);
-            "error"
-        }
-    };
-    let storage_status = match state.storage.probe().await {
-        Ok(()) => "ok",
-        Err(error) => {
-            warn!(event = "storage.readyz_failed", error = %error);
-            "error"
-        }
-    };
-    let ready = database_status == "ok" && storage_status == "ok";
-
-    readiness_response(database_status, storage_status, ready)
-}
-
-fn readiness_response(
-    database_status: &'static str,
-    storage_status: &'static str,
-    ready: bool,
-) -> (StatusCode, Json<ReadinessResponse>) {
-    (
-        if ready {
-            StatusCode::OK
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        },
-        Json(ReadinessResponse {
-            status: if ready { "ok" } else { "not_ready" },
-            database: database_status,
-            storage: storage_status,
-        }),
-    )
 }
 
 async fn spa_index(State(state): State<AppState>) -> Result<Response, StatusCode> {
@@ -608,7 +567,9 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::health::readiness_response;
     use axum::body::to_bytes;
+    use axum::Json;
     use clipline_cloud_db::NewUser;
     use serde_json::{json, Value};
     use tower::ServiceExt;
@@ -723,6 +684,26 @@ mod tests {
                 .body(Body::from(format!(
                     r#"{{"username":"test","password":"{}"}}"#,
                     "x".repeat(config::DEFAULT_REQUEST_BODY_LIMIT_BYTES)
+                )))
+                .expect("request"),
+        );
+
+        let response = test.app.oneshot(request).await.expect("response");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn upload_metadata_route_rejects_media_sized_json() {
+        let test = test_router().await;
+        let request = request_with_connect_info(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/uploads")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"title":"{}"}}"#,
+                    "x".repeat(uploads::UPLOAD_JSON_BODY_LIMIT)
                 )))
                 .expect("request"),
         );

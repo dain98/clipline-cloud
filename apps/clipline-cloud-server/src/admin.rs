@@ -11,9 +11,8 @@ use clipline_cloud_db::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth::{self, ApiError},
-    config::StorageConfig,
-    mail, AppState, ClientIp,
+    auth, config::StorageConfig, error::ApiError, mail, validation::normalized_optional, AppState,
+    ClientIp,
 };
 
 const DEFAULT_LIMIT: i64 = 50;
@@ -483,19 +482,15 @@ fn normalized_optional_admin_string(
     value: Option<String>,
     label: &str,
 ) -> Result<Option<String>, ApiError> {
-    let Some(value) = value else {
+    let Some(value) = normalized_optional(value) else {
         return Ok(None);
     };
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
     if value.len() > MAX_SMTP_FIELD_LEN {
         return Err(ApiError::bad_request(format!(
             "{label} must be at most {MAX_SMTP_FIELD_LEN} bytes"
         )));
     }
-    Ok(Some(value.to_string()))
+    Ok(Some(value))
 }
 
 fn validate_emailish(value: &str, label: &str) -> Result<(), ApiError> {

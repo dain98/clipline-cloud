@@ -1,4 +1,4 @@
-// Formatters ported verbatim from ../app.js:3640-3706 (output strings must not change).
+// Shared display formatters. Their output is part of the tested UI contract.
 
 export function formatDate(value) {
   if (!value) {

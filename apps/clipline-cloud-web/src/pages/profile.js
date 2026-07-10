@@ -10,9 +10,8 @@ function nullableString(value) {
   return text ? text : null;
 }
 
-// Port of legacy uploadAvatar (src/app.js:2795-2814): the only endpoint that
-// takes a raw binary body instead of JSON, so it bypasses lib/api.js's
-// json-body helper and builds the request by hand.
+// Avatar upload is the only endpoint with a raw binary body, so it builds the
+// request separately from the JSON API helper.
 async function uploadAvatar(file) {
   const headers = new Headers();
   headers.set("Accept", "application/json");

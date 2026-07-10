@@ -11,10 +11,7 @@ function nullableString(value) {
   return text ? text : null;
 }
 
-// Pure port of legacy canDisableUser (src/app.js:3155-3162): governs the
-// per-row Disable button. Must agree with the server's own role checks
-// (apps/clipline-cloud-server/src/auth.rs around :1753-1832) or the button
-// will look enabled but 4xx on click.
+// UI affordance for the server's role rules. The server remains authoritative.
 export function canDisableUser(user, currentUser) {
   if (user.is_disabled || currentUser?.id === user.id || user.role === "owner") {
     return false;
@@ -395,7 +392,7 @@ export function AdminUsers({ users, settings, currentUser, resetLink, setResetLi
   </div>`;
 }
 
-// Pure port of legacy gibibytesToBytes (src/app.js:3714-3720).
+// Admin quota input is displayed in GiB while the API stores bytes.
 export function gibibytesToBytes(value) {
   const amount = Number(String(value || "").trim());
   if (!Number.isFinite(amount) || amount < 0) {

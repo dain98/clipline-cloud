@@ -4,11 +4,11 @@ use bytes::Bytes;
 pub use clipline_cloud_api_types::{
     ClipDetailResponse, ClipListResponse, ClipMarkerResponse, ClipSummaryResponse,
     CreateDeviceTokenRequest, CreateDeviceTokenResponse, CreateUploadRequest, CreateUploadResponse,
-    DiscoveryResponse, HealthResponse, ListClipsRequest, MeResponse, PartUploadResponse,
-    ReadinessResponse, UpdateVisibilityRequest, UploadProgressResponse, UserResponse,
+    DiscoveryResponse, ErrorResponse, HealthResponse, ListClipsRequest, MeResponse,
+    PartUploadResponse, ReadinessResponse, UpdateVisibilityRequest, UploadProgressResponse,
+    UserResponse,
 };
 use reqwest::{header, StatusCode};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::{Host, Url};
@@ -424,11 +424,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 fn serde_json_value_empty() -> serde_json::Value {
     serde_json::json!({})
-}
-
-#[derive(Debug, Deserialize)]
-struct ErrorResponse {
-    error: String,
 }
 
 #[cfg(test)]

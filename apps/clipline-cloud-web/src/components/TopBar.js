@@ -35,9 +35,7 @@ export function TopBar({ active, route }) {
   useEffect(() => {
     setSearchValue(routeSearchValue);
   }, [routeSearchValue]);
-  // Legacy isAdminLike (src/app.js:579-581): both "admin" and "owner" get
-  // the Admin nav entry — role === "admin" alone would hide it from the
-  // bootstrap owner account.
+  // The bootstrap owner has the same navigation access as an admin.
   const isAdmin = user?.role === "admin" || user?.role === "owner";
 
   useEffect(() => {

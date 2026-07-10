@@ -79,3 +79,60 @@ test("setCsrfToken clears mutation headers when reset to null", async () => {
   await api("/api/v1/auth/logout", { method: "POST" });
   assert.equal(captured.init.headers.get("X-CSRF-Token"), null);
 });
+
+test("api maps malformed JSON error bodies to ApiError", async () => {
+  globalThis.fetch = async () => new Response("{", {
+    status: 502,
+    statusText: "Bad Gateway",
+    headers: { "content-type": "application/json" }
+  });
+
+  await assert.rejects(
+    () => api("/x"),
+    (error) => error instanceof ApiError && error.status === 502 && error.message === "Bad Gateway"
+  );
+});
+
+test("api never sends the CSRF token to a cross-origin URL", async () => {
+  let captured;
+  globalThis.fetch = async (path, init) => {
+    captured = { path, init };
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  setCsrfToken("secret-token");
+
+  await api("https://example.invalid/mutation", { method: "POST", body: {} });
+
+  assert.equal(captured.init.headers.get("X-CSRF-Token"), null);
+});
+
+test("api strips a caller-supplied CSRF header from cross-origin requests", async () => {
+  let captured;
+  globalThis.fetch = async (path, init) => {
+    captured = { path, init };
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+
+  await api("https://example.invalid/mutation", {
+    method: "POST",
+    headers: { "X-CSRF-Token": "caller-supplied-secret" },
+    body: {}
+  });
+
+  assert.equal(captured.init.headers.get("X-CSRF-Token"), null);
+});
+
+test("api accepts an empty successful response body", async () => {
+  globalThis.fetch = async () => new Response(null, {
+    status: 204,
+    headers: { "content-type": "application/json" }
+  });
+
+  assert.equal(await api("/empty"), null);
+});

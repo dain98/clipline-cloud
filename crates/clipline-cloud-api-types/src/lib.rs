@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: &'static str,
 }
@@ -10,6 +15,33 @@ pub struct ReadinessResponse {
     pub status: &'static str,
     pub database: &'static str,
     pub storage: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusResponse {
+    pub status: &'static str,
+}
+
+impl StatusResponse {
+    pub const fn ok() -> Self {
+        Self { status: "ok" }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangePasswordResponse {
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csrf_token: Option<String>,
+}
+
+impl ChangePasswordResponse {
+    pub const fn ok(csrf_token: Option<String>) -> Self {
+        Self {
+            status: "ok",
+            csrf_token,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +271,12 @@ pub struct ListClipsRequest {
 pub struct ClipListResponse {
     pub page: i64,
     pub page_size: i64,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub total_size_bytes: i64,
     pub clips: Vec<ClipSummaryResponse>,
 }
 

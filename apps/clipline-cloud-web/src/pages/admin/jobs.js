@@ -1,12 +1,12 @@
 import { html } from "../../lib/html.js";
 import { formatBytes, formatDate } from "../../lib/format.js";
 
-// Pure port of legacy formatProgress (src/app.js:3746-3748).
+// Job progress is represented as basis points by the API.
 export function formatProgress(basisPoints) {
   return `${(basisPoints / 100).toFixed(basisPoints % 100 === 0 ? 0 : 1)}%`;
 }
 
-// Pure port of legacy recoveryActionLabel (src/app.js:3291-3299).
+// Human guidance for the server's recovery-action enum.
 export function recoveryActionLabel(action) {
   switch (action) {
     case "delete_and_retry":
@@ -54,9 +54,8 @@ function JobPanel({ title, items, renderItem, emptyLabel }) {
 }
 
 export function AdminJobs({ failedUploads, deadJobs, recentErrors }) {
-  // Jobs are read-only here — the server has no retry endpoint (only
-  // apps/clipline-cloud-server/src/admin.rs:31-33 GETs), matching legacy
-  // (src/app.js adminJobsView never rendered a retry action either).
+  // Jobs are read-only here because the server exposes diagnostics, not a
+  // retry mutation endpoint.
   return html`<div class="section">
     <${JobPanel} title="Failed uploads" items=${failedUploads} emptyLabel="No failed uploads."
       renderItem=${(upload) => html`<${UploadItem} key=${upload.id} upload=${upload} />`} />

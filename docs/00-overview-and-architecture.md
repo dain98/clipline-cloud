@@ -42,11 +42,10 @@ device token, and uploads → clips appear in the owner's library → owner sort
 private/public, and shares public clips via non-guessable URLs. Storage works identically on local
 disk or S3.
 
-**Explicitly out of scope for v1:** public discovery feed; likes/comments/follows/subscriptions/
-recommendations; a central Clipline account system; federation; server-side video
-optimization/transcoding; mobile apps; real-time chat; end-to-end encrypted media; multi-tenant
-commercial hosting; OAuth/OIDC login (Discord/Google/Steam). Revisitable later; v1 focuses on
-reliable upload, private library management, and shareable links.
+**Still out of scope:** a central Clipline account system; federation; mobile apps; real-time chat;
+end-to-end encrypted media; multi-tenant commercial hosting; and OAuth/OIDC login. The current
+product does include a public discovery feed, comments, recommendations, and optional server-side
+video optimization; the privacy and operator-control principles below still apply to them.
 
 ## 3. Design Principles
 
@@ -131,8 +130,8 @@ for password hashing, opaque tokens. The backend image bundles `ffmpeg`/`ffprobe
 thumbnail/poster generation and metadata backfill — so it is **not** a tiny static binary; this is a
 deliberate, stated dependency.
 
-**Frontend:** any of React / SvelteKit / Solid / plain Vite; Tailwind or similar; HTML5 `<video>`
-for playback. No proprietary cloud dependency.
+**Frontend:** Preact, HTM templates, and esbuild, with HTML5 `<video>` playback. The compiled static
+assets are committed and served by the backend. No proprietary cloud dependency.
 
 **Storage:** local filesystem adapter + S3-compatible adapter behind one trait. Optional MinIO
 Compose profile for local S3 testing.
