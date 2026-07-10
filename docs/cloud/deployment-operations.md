@@ -156,7 +156,7 @@ Useful variants:
 
 ```sh
 CONFIG_ONLY=1 BUILD_IMAGE=0 deploy/compose/smoke.sh
-BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.35 deploy/compose/smoke.sh
+BUILD_IMAGE=0 CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.2.36 deploy/compose/smoke.sh
 RUN_PROFILES="default minio" deploy/compose/smoke.sh
 RUN_DIRECT_S3=0 RUN_PROFILES=minio deploy/compose/smoke.sh
 RUN_VIDEO_OPTIMIZATION=1 RUN_PROFILES="default minio" deploy/compose/smoke.sh

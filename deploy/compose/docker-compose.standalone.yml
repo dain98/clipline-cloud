@@ -2,7 +2,7 @@ name: clipline-cloud
 
 services:
   clipline-cloud:
-    image: ${CLIPLINE_IMAGE:-ghcr.io/dain98/clipline-cloud:1.2.35}
+    image: ${CLIPLINE_IMAGE:-ghcr.io/dain98/clipline-cloud:1.2.36}
     restart: unless-stopped
     ports:
       - "${CLIPLINE_HTTP_PORT:-8080}:8080"
