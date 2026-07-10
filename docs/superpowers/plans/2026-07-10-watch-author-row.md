@@ -4,7 +4,7 @@
 
 **Goal:** Center the signed-in avatar against the top-bar search field and add a linked creator identity row with a presentation-only Follow button beneath every watch-page title.
 
-**Architecture:** Keep the change entirely in the Preact web client. Normalize owned and public author payloads with a pure `watchAuthor()` helper, render them through a focused `WatchAuthorRow` component that reuses `UserAvatar`, and use CSS for top-bar centering, responsive watch layout, and theater-mode positioning.
+**Architecture:** Keep the change entirely in the Preact web client. Normalize owned and public author payloads with a pure `watchAuthor()` helper, render them through a focused `WatchAuthorRow` component that reuses `UserAvatar`, and use CSS for top-bar centering, responsive watch layout, and theater-mode spacing.
 
 **Tech Stack:** Preact, `htm`, JavaScript ES modules, Node's built-in test runner, CSS, esbuild.
 
@@ -25,7 +25,7 @@
 
 - `apps/clipline-cloud-web/src/pages/watch.js`: author normalization, author-row VNode, and watch-page integration.
 - `apps/clipline-cloud-web/tests/watch.test.mjs`: pure author-model and author-row structure coverage.
-- `apps/clipline-cloud-web/src/ui.css`: top-bar alignment, author-row presentation, responsive wrapping, and theater layout.
+- `apps/clipline-cloud-web/src/ui.css`: top-bar alignment, author-row presentation, responsive wrapping, and theater spacing.
 - `apps/clipline-cloud-web/tests/ui-css.test.mjs`: focused regression checks for the required layout declarations.
 - `apps/clipline-cloud-web/dist/main.js`: generated JavaScript bundle.
 - `apps/clipline-cloud-web/dist/ui.css`: generated stylesheet.
@@ -286,9 +286,9 @@ test("watch author row aligns identity and Follow control and can wrap", () => {
   assert.match(css, /\.ui \.watch-author-link \{[^}]*display: inline-flex;[^}]*align-items: center;/s);
 });
 
-test("theater mode positions the complete watch heading as one unit", () => {
-  assert.match(css, /\.clipline-theater \.ui \.watch-heading \{[^}]*position: fixed;/s);
-  assert.doesNotMatch(css, /\.clipline-theater \.ui \.watch-titlerow,\s*\n?\.clipline-theater \.ui \.watch-meta \{ position: fixed;/s);
+test("theater mode spaces the complete watch heading as one unit", () => {
+  assert.match(css, /\.clipline-theater \.ui \.watch-heading \{[^}]*margin-top: 18px;/s);
+  assert.doesNotMatch(css, /\.clipline-theater \.ui \.watch-titlerow \{/s);
 });
 ```
 
@@ -330,19 +330,15 @@ Update the watch heading and add author styles:
 .ui .watch-meta { margin: 0; }
 ```
 
-- [ ] **Step 4: Replace fragile theater child positioning with heading positioning**
+- [ ] **Step 4: Move theater spacing to the complete heading**
 
-Replace the fixed `.watch-titlerow`/`.watch-meta` theater rules with:
+Replace the existing title-only theater margin with:
 
 ```css
-.clipline-theater .ui .watch-heading { position: fixed; left: 28px; top: 50%;
-  transform: translateY(-50%); z-index: 51; width: calc(var(--theater-side-width) - 56px);
-  margin: 0; pointer-events: auto; }
-.clipline-theater .ui .watch-titlerow { margin: 0 0 8px; }
-.clipline-theater .ui .watch-meta { margin: 0; }
+.clipline-theater .ui .watch-heading { margin-top: 18px; }
 ```
 
-Change the existing `max-width: 900px` theater override to position `.watch-heading` at `left: 16px` with `width: calc(var(--theater-side-width) - 32px)`.
+This preserves the current full-width theater stage and keeps title, author row, and metadata together below the player.
 
 - [ ] **Step 5: Run CSS and full web tests**
 
@@ -416,7 +412,7 @@ Confirm from the source and generated CSS that:
 desktop top bar: 28px centered avatar button beside the search input
 normal watch: title -> linked 36px avatar/name + Follow -> game/views/date
 narrow watch: identity remains intact and Follow may wrap after it
-theater watch: title, author row, and metadata move together in the side rail
+theater watch: title, author row, and metadata stay together below the full-width player
 missing avatar: UserAvatar initial fallback remains centered
 ```
 
