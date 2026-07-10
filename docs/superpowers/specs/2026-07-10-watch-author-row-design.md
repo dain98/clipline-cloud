@@ -8,8 +8,7 @@
 The signed-in user's avatar in the desktop top bar does not sit on the same
 visual centerline as the search field. On the watch page, creator identity is
 reduced to a trailing `by <name>` metadata fragment, so the avatar and public
-profile are not discoverable and there is no place for the future follow
-action.
+profile are not discoverable.
 
 ## Decision
 
@@ -40,11 +39,7 @@ clip route can use the signed-in session user.
   display label. When a username is available, the complete identity group is
   a link to `/u/{username}`; otherwise it is rendered as non-linked text with
   the existing initial fallback.
-- Place a `Follow` button directly after the identity group, matching the
-  position of the reference's `Join` button. This iteration is presentation
-  only: it performs no API request or local state change and is exposed as
-  unavailable to assistive technology until follow behavior is implemented.
-- Show the placeholder on both owned and public watch routes so their layouts
+- Show the identity row on both owned and public watch routes so their layouts
   remain consistent.
 - Move the game chip, view count, and recording date into the metadata line
   below the author row. Remove the redundant `by <author>` fragment.
@@ -64,7 +59,7 @@ Add a small pure author-view-model helper in `pages/watch.js`:
 - Missing usernames disable only the profile link; missing avatars continue
   through the existing initial fallback.
 
-No server contract, database, routing, or follow-state changes are required.
+No server contract, database, or routing changes are required.
 
 ## Alternatives considered
 

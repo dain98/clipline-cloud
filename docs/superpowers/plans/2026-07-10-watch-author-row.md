@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Center the signed-in avatar against the top-bar search field and add a linked creator identity row with a presentation-only Follow button beneath every watch-page title.
+**Goal:** Center the signed-in avatar against the top-bar search field and add a linked creator identity row beneath every watch-page title.
 
 **Architecture:** Keep the change entirely in the Preact web client. Normalize owned and public author payloads with a pure `watchAuthor()` helper, render them through a focused `WatchAuthorRow` component that reuses `UserAvatar`, and use CSS for top-bar centering, responsive watch layout, and theater-mode spacing.
 
@@ -13,7 +13,6 @@
 - Reuse `apps/clipline-cloud-web/src/components/UserAvatar.js`; do not add image assets.
 - Author profile links use the existing `/u/{username}` route with `encodeURIComponent`.
 - The visible author label prefers display name, then username, then `Unknown creator`.
-- The Follow control is presentation-only: no request, persisted state, or click behavior.
 - Render the author row on both owned and public watch routes.
 - Keep game, views, and recording date in metadata; remove `by <author>`.
 - Preserve the existing top-bar menu, keyboard behavior, mobile layout, and watch theater mode.
@@ -145,7 +144,7 @@ Expected: the three new model tests pass.
 Add `WatchAuthorRow` to the existing import destructuring, then add:
 
 ```js
-test("WatchAuthorRow links the complete identity and exposes a non-functional Follow control", () => {
+test("WatchAuthorRow links the complete identity without unrelated actions", () => {
   const row = WatchAuthorRow({
     author: {
       label: "Arua",
@@ -154,17 +153,15 @@ test("WatchAuthorRow links the complete identity and exposes a non-functional Fo
       avatarUser: { display_name: "Arua", username: "arua" },
     },
   });
-  const [identity, follow] = row.props.children;
+  const children = [row.props.children].flat();
+  const [identity] = children;
 
   assert.equal(row.type, "div");
   assert.equal(row.props.class, "watch-author-row");
+  assert.equal(children.length, 1);
   assert.equal(identity.type, "a");
   assert.equal(identity.props.href, "/u/arua");
-  assert.equal(follow.type, "button");
-  assert.equal(follow.props.type, "button");
-  assert.equal(follow.props["aria-disabled"], "true");
-  assert.equal(follow.props.onClick, undefined);
-  assert.equal(follow.props.children, "Follow");
+  assert.equal(children.some((child) => child.type === "button"), false);
 });
 
 test("WatchAuthorRow renders static identity text without a username", () => {
@@ -177,8 +174,9 @@ test("WatchAuthorRow renders static identity text without a username", () => {
     },
   });
 
-  assert.equal(row.props.children[0].type, "span");
-  assert.equal(row.props.children[0].props.class, "watch-author-link watch-author-static");
+  const children = [row.props.children].flat();
+  assert.equal(children[0].type, "span");
+  assert.equal(children[0].props.class, "watch-author-link watch-author-static");
 });
 ```
 
@@ -206,10 +204,7 @@ export function WatchAuthorRow({ author }) {
     ? html`<a class="watch-author-link" href=${author.href}>${contents}</a>`
     : html`<span class="watch-author-link watch-author-static">${contents}</span>`;
 
-  return html`<div class="watch-author-row">
-    ${identity}
-    <button type="button" class="btn btn-primary watch-follow" aria-disabled="true">Follow</button>
-  </div>`;
+  return html`<div class="watch-author-row">${identity}</div>`;
 }
 ```
 
@@ -256,7 +251,7 @@ git commit -m "Add watch page author identity row"
 - Modify: `apps/clipline-cloud-web/src/ui.css`
 
 **Interfaces:**
-- Consumes: `.avatar-wrap`, `.avatar-btn`, `.watch-heading`, `.watch-author-row`, `.watch-author-link`, `.watch-author-name`, and `.watch-follow` markup.
+- Consumes: `.avatar-wrap`, `.avatar-btn`, `.watch-heading`, `.watch-author-row`, `.watch-author-link`, and `.watch-author-name` markup.
 - Produces: stable desktop, responsive, and theater-mode layout rules.
 
 - [ ] **Step 1: Write failing CSS contract tests**
@@ -278,7 +273,7 @@ test("top-bar avatar wrapper and button use explicit centered flex boxes", () =>
   );
 });
 
-test("watch author row aligns identity and Follow control and can wrap", () => {
+test("watch author row aligns identity and can wrap", () => {
   assert.match(
     css,
     /\.ui \.watch-author-row \{[^}]*display: flex;[^}]*align-items: center;[^}]*flex-wrap: wrap;/s
@@ -326,7 +321,6 @@ Update the watch heading and add author styles:
 .ui .watch-author-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere;
   transition: color .15s; }
 .ui .watch-author-static { cursor: default; }
-.ui .watch-follow { margin-left: 2px; font-weight: 600; cursor: default; }
 .ui .watch-meta { margin: 0; }
 ```
 
@@ -410,8 +404,8 @@ Confirm from the source and generated CSS that:
 
 ```text
 desktop top bar: 28px centered avatar button beside the search input
-normal watch: title -> linked 36px avatar/name + Follow -> game/views/date
-narrow watch: identity remains intact and Follow may wrap after it
+normal watch: title -> linked 36px avatar/name -> game/views/date
+narrow watch: avatar and identity remain together as the label wraps
 theater watch: title, author row, and metadata stay together below the full-width player
 missing avatar: UserAvatar initial fallback remains centered
 ```

@@ -12,7 +12,7 @@ test("top-bar avatar wrapper and button use explicit centered flex boxes", () =>
   );
 });
 
-test("watch author row aligns identity and Follow control and can wrap", () => {
+test("watch author row aligns identity and can wrap", () => {
   assert.match(
     css,
     /\.ui \.watch-author-row \{[^}]*display: flex;[^}]*align-items: center;[^}]*flex-wrap: wrap;/s

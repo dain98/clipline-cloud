@@ -310,7 +310,6 @@ body { margin: 0; }
 .ui .watch-author-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere;
   transition: color .15s; }
 .ui .watch-author-static { cursor: default; }
-.ui .watch-follow { margin-left: 2px; font-weight: 600; cursor: default; }
 
 .ui .watch-meta { margin: 0; font-size: 11.5px; color: var(--muted); display: flex; align-items: center;
   gap: 4px; flex-wrap: wrap; }

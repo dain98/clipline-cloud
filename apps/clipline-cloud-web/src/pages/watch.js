@@ -97,10 +97,7 @@ export function WatchAuthorRow({ author }) {
     ? html`<a class="watch-author-link" href=${author.href}>${contents}</a>`
     : html`<span class="watch-author-link watch-author-static">${contents}</span>`;
 
-  return html`<div class="watch-author-row">
-    ${identity}
-    <button type="button" class="btn btn-primary watch-follow" aria-disabled="true">Follow</button>
-  </div>`;
+  return html`<div class="watch-author-row">${identity}</div>`;
 }
 
 export function WatchPage({ route }) {

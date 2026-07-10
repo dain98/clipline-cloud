@@ -100,7 +100,7 @@ test("watchAuthor keeps a public author visible when the username is unavailable
   assert.equal(author.href, null);
 });
 
-test("WatchAuthorRow links the complete identity and exposes a non-functional Follow control", () => {
+test("WatchAuthorRow links the complete identity without unrelated actions", () => {
   const row = WatchAuthorRow({
     author: {
       label: "Arua",
@@ -109,17 +109,15 @@ test("WatchAuthorRow links the complete identity and exposes a non-functional Fo
       avatarUser: { display_name: "Arua", username: "arua" },
     },
   });
-  const [identity, follow] = row.props.children;
+  const children = [row.props.children].flat();
+  const [identity] = children;
 
   assert.equal(row.type, "div");
   assert.equal(row.props.class, "watch-author-row");
+  assert.equal(children.length, 1);
   assert.equal(identity.type, "a");
   assert.equal(identity.props.href, "/u/arua");
-  assert.equal(follow.type, "button");
-  assert.equal(follow.props.type, "button");
-  assert.equal(follow.props["aria-disabled"], "true");
-  assert.equal(follow.props.onClick, undefined);
-  assert.equal(follow.props.children, "Follow");
+  assert.equal(children.some((child) => child.type === "button"), false);
 });
 
 test("WatchAuthorRow renders static identity text without a username", () => {
@@ -132,8 +130,9 @@ test("WatchAuthorRow renders static identity text without a username", () => {
     },
   });
 
-  assert.equal(row.props.children[0].type, "span");
-  assert.equal(row.props.children[0].props.class, "watch-author-link watch-author-static");
+  const children = [row.props.children].flat();
+  assert.equal(children[0].type, "span");
+  assert.equal(children[0].props.class, "watch-author-link watch-author-static");
 });
 
 // deriveShareLink resolves just the pathname of the server's absolute
