@@ -1,26 +1,13 @@
 import { html } from "../lib/html.js";
-import { useEffect, useState } from "preact/hooks";
-import { api } from "../lib/api.js";
+import { useApiResource } from "../lib/use-api-resource.js";
 import { EmptyState } from "../components/EmptyState.js";
 
 // Tile grid of every game with public clips. Data: GET /api/v1/public/games
-// → { games: [{ game, clip_count }] } (real field is `game`, not `name` —
-// see legacy publicGameOptions at src/app.js:1145-1164, which reads
-// game.game/game.clip_count). The API doesn't return a thumbnail, so every
-// tile falls back to a gradient block with the game's initial letter.
+// → { games: [{ game, clip_count }] }. The API doesn't return a thumbnail,
+// so every tile falls back to a gradient block with the game's initial.
 export function GamesPage() {
-  const [games, setGames] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    let live = true;
-    api("/api/v1/public/games")
-      .then((d) => live && setGames(d.games || []))
-      .catch((e) => live && setError(e));
-    return () => {
-      live = false;
-    };
-  }, []);
+  const { data, error } = useApiResource("/api/v1/public/games");
+  const games = data?.games ?? null;
 
   if (error) {
     return html`<main class="page">

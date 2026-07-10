@@ -1,13 +1,12 @@
 import { html } from "../lib/html.js";
-import { useEffect, useState } from "preact/hooks";
-import { api } from "../lib/api.js";
 import { navigate } from "../lib/router.js";
+import { useApiResource } from "../lib/use-api-resource.js";
 import { formatDuration, formatViews } from "../lib/format.js";
 import { publicMediaPath, publicPosterPath, publicThumbPath } from "../lib/media.js";
 import { ClipCard, clipAuthor } from "../components/ClipCard.js";
 import { EmptyState } from "../components/EmptyState.js";
 
-// Exact legacy sort key list (src/app.js:1127-1134) — labels/values must not drift.
+// Sort values are API contract keys and must stay synchronized with the server.
 const SORTS = [
   ["uploaded_at_desc", "Uploaded newest"],
   ["uploaded_at_asc", "Uploaded oldest"],
@@ -61,32 +60,10 @@ export function FeedPage({ route }) {
     ...route.query,
     game: route.name === "publicGame" ? route.game : route.query?.game || "",
   };
-  const [data, setData] = useState(null); // { page, page_size, has_more, clips }
-  const [games, setGames] = useState([]);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    let live = true;
-    setData(null);
-    setError(null);
-    const params = publicFeedParams(query);
-    api(`/api/v1/public/clips?${params}`)
-      .then((d) => live && setData(d))
-      .catch((e) => live && setError(e));
-    return () => {
-      live = false;
-    };
-  }, [route.name, query.sort, query.game, query.q, query.page]);
-
-  useEffect(() => {
-    let live = true;
-    api("/api/v1/public/games")
-      .then((d) => live && setGames(d.games || []))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, []);
+  const feedResource = `/api/v1/public/clips?${publicFeedParams(query)}`;
+  const { data, error } = useApiResource(feedResource);
+  const { data: gameData } = useApiResource("/api/v1/public/games", 0, { games: [] });
+  const games = gameData?.games || [];
 
   const setQ = (patch) => navigate(feedPath({ ...query, page: 1, ...patch }));
 
@@ -180,8 +157,7 @@ function shareHref(clip) {
   return `/c/${encodeURIComponent(clip.share_id)}`;
 }
 
-// Port of legacy publicLibraryPath (src/app.js:1063-1089), unchanged behavior:
-// the default sort is omitted from the URL; a `q` filter routes to /search
+// Keep public feed URLs compact: the default sort is omitted; a `q` filter routes to /search
 // (carrying `game` along as a query param if present); a bare `game` filter
 // routes to /game/<name>; otherwise falls back to /search or / when empty.
 export function feedPath({ sort = "uploaded_at_desc", game = "", q = "", page = 1 } = {}) {
@@ -211,8 +187,7 @@ export function feedPath({ sort = "uploaded_at_desc", game = "", q = "", page = 
   return query ? `/search?${query}` : "/";
 }
 
-// Port of legacy publicPager (src/app.js:1108-1121) to Preact buttons wired
-// through setQ/navigate instead of DOM event delegation.
+// Pager navigation is URL-backed so browser history preserves the current page.
 function pager(data, query, setQ) {
   const currentPage = Math.max(1, Number(query.page || 1));
   const hasMore = Boolean(data?.has_more);

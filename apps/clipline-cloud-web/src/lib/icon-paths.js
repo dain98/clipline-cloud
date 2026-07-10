@@ -1,5 +1,4 @@
-// Ported verbatim from ../app.js:53-92 — do not hand-edit without checking the
-// legacy source stays in sync (or is retired once the legacy app is removed).
+// Central icon path registry. Keep keys stable because pages refer to them by name.
 export const icons = {
   alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',

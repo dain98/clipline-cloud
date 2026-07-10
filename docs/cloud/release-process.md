@@ -84,6 +84,12 @@ docker compose -f deploy/compose/docker-compose.yml up -d
 Do not rely on `latest` for production rollouts. Keep the previous release tag available for
 rollback.
 
+Database migrations are forward-only and are not guaranteed to be compatible with an older server
+binary. For releases containing migrations, use a non-rolling deployment: stop every web and worker
+instance, take a database backup, start one instance of the new release and wait for `/readyz`, then
+start any remaining new-release replicas. Do not run an old worker against a database migrated by a
+newer release unless that release's notes explicitly declare mixed-version compatibility.
+
 ## Rollback
 
 Point `CLIPLINE_IMAGE` at the previous known-good tag and recreate the app container:

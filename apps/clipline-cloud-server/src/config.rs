@@ -606,9 +606,19 @@ fn validate_upload_limits(
             "CLIPLINE_MAX_UPLOAD_SIZE_BYTES must be greater than zero".to_string(),
         ));
     }
+    if max_upload_size_bytes > i64::MAX as u64 {
+        return Err(ConfigError::Validation(
+            "CLIPLINE_MAX_UPLOAD_SIZE_BYTES exceeds the supported database range".to_string(),
+        ));
+    }
     if upload_part_size_bytes == 0 {
         return Err(ConfigError::Validation(
             "CLIPLINE_UPLOAD_PART_SIZE_BYTES must be greater than zero".to_string(),
+        ));
+    }
+    if upload_part_size_bytes > i64::MAX as u64 {
+        return Err(ConfigError::Validation(
+            "CLIPLINE_UPLOAD_PART_SIZE_BYTES exceeds the supported database range".to_string(),
         ));
     }
     if single_put_max_bytes == 0 {

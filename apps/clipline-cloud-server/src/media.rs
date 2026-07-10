@@ -23,9 +23,8 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    auth::{self, ApiError},
-    config::PublicMediaMode,
-    AppState, ClientIp,
+    auth, config::PublicMediaMode, error::ApiError, validation::normalized_optional, AppState,
+    ClientIp,
 };
 
 const COPY_NOTICE: &str =
@@ -266,10 +265,14 @@ async fn list_public_clips(
     };
     let clips = state.repositories.clips.list_public(&params).await?;
     let has_more = clips.len() as i64 > page_size;
+    let authors = public_authors_for_clips(&state, &clips).await?;
     let mut public_clips = Vec::with_capacity(clips.len());
     for clip in clips.into_iter().take(page_size as usize) {
         if clip.public_share_id.is_some() {
-            let author = public_clip_author(&state, &clip).await?;
+            let author = authors
+                .get(&clip.owner_user_id)
+                .cloned()
+                .unwrap_or_else(|| public_author_from_user(&state, None));
             if let Some(response) = public_clip_summary_response(&state, clip, author) {
                 public_clips.push(response);
             }
@@ -307,10 +310,14 @@ async fn list_public_recommendations(
     };
     let candidates = state.repositories.clips.list_public(&params).await?;
     let clips = recommend_public_clips(candidates, source.as_ref(), limit as usize);
+    let authors = public_authors_for_clips(&state, &clips).await?;
 
     let mut public_clips = Vec::with_capacity(clips.len());
     for clip in clips {
-        let author = public_clip_author(&state, &clip).await?;
+        let author = authors
+            .get(&clip.owner_user_id)
+            .cloned()
+            .unwrap_or_else(|| public_author_from_user(&state, None));
         if let Some(response) = public_clip_summary_response(&state, clip, author) {
             public_clips.push(response);
         }
@@ -516,9 +523,28 @@ async fn list_public_comments(
         .clip_comments
         .list_for_clip(&clip.id, PUBLIC_COMMENT_LIMIT)
         .await?;
+    let users = public_users_by_id(
+        &state,
+        comments
+            .iter()
+            .map(|comment| comment.user_id.clone())
+            .collect(),
+    )
+    .await?;
+    let viewer_is_owner = match auth.as_ref() {
+        Some(viewer) => auth::user_is_owner(&state, &viewer.user).await?,
+        None => false,
+    };
     let mut responses = Vec::with_capacity(comments.len());
     for comment in comments {
-        responses.push(public_comment_response(&state, &clip, comment, auth.as_ref()).await?);
+        responses.push(public_comment_response_with_context(
+            &state,
+            &clip,
+            comment,
+            auth.as_ref(),
+            viewer_is_owner,
+            &users,
+        ));
     }
     Ok(Json(PublicCommentListResponse {
         comments: responses,
@@ -592,7 +618,7 @@ async fn delete_public_comment(
     if comment.deleted_at.is_some() || comment.clip_id != clip.id {
         return Err(ApiError::not_found("comment not found"));
     }
-    if !viewer_can_delete_comment(&state, &auth.user, &clip).await? {
+    if !viewer_can_delete_comment(&state, &auth.user, &clip, Some(&comment)).await? {
         return Err(ApiError::forbidden("comment delete is not allowed"));
     }
 
@@ -1289,6 +1315,40 @@ async fn public_clip_author(state: &AppState, clip: &Clip) -> Result<PublicAutho
     Ok(public_author_from_user(state, user.as_ref()))
 }
 
+async fn public_authors_for_clips(
+    state: &AppState,
+    clips: &[Clip],
+) -> Result<HashMap<String, PublicAuthor>, ApiError> {
+    let users = public_users_by_id(
+        state,
+        clips
+            .iter()
+            .map(|clip| clip.owner_user_id.clone())
+            .collect(),
+    )
+    .await?;
+    Ok(users
+        .into_iter()
+        .map(|(id, user)| (id, public_author_from_user(state, Some(&user))))
+        .collect())
+}
+
+async fn public_users_by_id(
+    state: &AppState,
+    mut user_ids: Vec<String>,
+) -> Result<HashMap<String, User>, ApiError> {
+    user_ids.sort_unstable();
+    user_ids.dedup();
+    Ok(state
+        .repositories
+        .users
+        .get_many(&user_ids)
+        .await?
+        .into_iter()
+        .map(|user| (user.id.clone(), user))
+        .collect())
+}
+
 async fn public_comment_response(
     state: &AppState,
     clip: &Clip,
@@ -1296,13 +1356,42 @@ async fn public_comment_response(
     viewer: Option<&auth::AuthenticatedUser>,
 ) -> Result<PublicCommentResponse, ApiError> {
     let user = state.repositories.users.get(&comment.user_id).await?;
-    let author = public_author_from_user(state, user.as_ref());
-    let is_uploader = comment.user_id == clip.owner_user_id;
-    let viewer_can_delete = match viewer {
-        Some(viewer) => viewer_can_delete_comment(state, &viewer.user, clip).await?,
+    let viewer_is_owner = match viewer {
+        Some(viewer) => auth::user_is_owner(state, &viewer.user).await?,
         None => false,
     };
-    Ok(PublicCommentResponse {
+    let users = user
+        .map(|user| HashMap::from([(user.id.clone(), user)]))
+        .unwrap_or_default();
+    Ok(public_comment_response_with_context(
+        state,
+        clip,
+        comment,
+        viewer,
+        viewer_is_owner,
+        &users,
+    ))
+}
+
+fn public_comment_response_with_context(
+    state: &AppState,
+    clip: &Clip,
+    comment: ClipComment,
+    viewer: Option<&auth::AuthenticatedUser>,
+    viewer_is_owner: bool,
+    users: &HashMap<String, User>,
+) -> PublicCommentResponse {
+    let author = public_author_from_user(state, users.get(&comment.user_id));
+    let is_uploader = comment.user_id == clip.owner_user_id;
+    let viewer_can_delete = viewer.is_some_and(|viewer| {
+        viewer_can_delete_comment_with_owner_flag(
+            &viewer.user,
+            clip,
+            Some(comment.user_id.as_str()),
+            viewer_is_owner,
+        )
+    });
+    PublicCommentResponse {
         id: comment.id,
         parent_comment_id: comment.parent_comment_id,
         body: comment.body,
@@ -1313,18 +1402,20 @@ async fn public_comment_response(
         viewer_can_delete,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
-    })
+    }
 }
 
 async fn viewer_can_delete_comment(
     state: &AppState,
     viewer: &User,
     clip: &Clip,
+    comment: Option<&ClipComment>,
 ) -> Result<bool, ApiError> {
     let viewer_is_owner = auth::user_is_owner(state, viewer).await?;
     Ok(viewer_can_delete_comment_with_owner_flag(
         viewer,
         clip,
+        comment.map(|comment| comment.user_id.as_str()),
         viewer_is_owner,
     ))
 }
@@ -1332,9 +1423,11 @@ async fn viewer_can_delete_comment(
 fn viewer_can_delete_comment_with_owner_flag(
     viewer: &User,
     clip: &Clip,
+    comment_user_id: Option<&str>,
     viewer_is_owner: bool,
 ) -> bool {
-    viewer.id == clip.owner_user_id
+    comment_user_id == Some(viewer.id.as_str())
+        || viewer.id == clip.owner_user_id
         || viewer_is_owner
         || matches!(viewer.role.as_str(), "admin" | "owner")
 }
@@ -1460,12 +1553,6 @@ fn escape_html(value: &str) -> String {
         }
     }
     escaped
-}
-
-fn normalized_optional(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn recommend_public_clips(
@@ -1783,7 +1870,7 @@ mod tests {
     }
 
     #[test]
-    fn comment_delete_permission_allows_admins_owner_and_clip_uploader() {
+    fn comment_delete_permission_allows_author_admins_owner_and_clip_uploader() {
         let clip = test_clip_with_metadata(Some("Factorio"), Some(30_000));
         let uploader = test_user("owner", "user");
         let admin = test_user("admin", "admin");
@@ -1792,24 +1879,33 @@ mod tests {
         let regular_user = test_user("viewer", "user");
 
         assert!(viewer_can_delete_comment_with_owner_flag(
-            &uploader, &clip, false
+            &uploader, &clip, None, false
         ));
         assert!(viewer_can_delete_comment_with_owner_flag(
-            &admin, &clip, false
+            &admin, &clip, None, false
         ));
         assert!(viewer_can_delete_comment_with_owner_flag(
             &owner_role,
             &clip,
+            None,
             false
         ));
         assert!(viewer_can_delete_comment_with_owner_flag(
             &configured_owner,
             &clip,
+            None,
             true
+        ));
+        assert!(viewer_can_delete_comment_with_owner_flag(
+            &regular_user,
+            &clip,
+            Some(regular_user.id.as_str()),
+            false
         ));
         assert!(!viewer_can_delete_comment_with_owner_flag(
             &regular_user,
             &clip,
+            None,
             false
         ));
     }

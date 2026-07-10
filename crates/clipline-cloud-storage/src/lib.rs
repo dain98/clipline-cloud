@@ -13,7 +13,7 @@ use aws_sdk_s3::{
     config::Region,
     error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
     presigning::PresigningConfig,
-    primitives::ByteStream,
+    primitives::{ByteStream, Length},
     types::{CompletedMultipartUpload, CompletedPart, MetadataDirective},
     Client,
 };
@@ -37,6 +37,16 @@ pub type BoxedAsyncRead = Pin<Box<dyn AsyncRead + Send + 'static>>;
 const S3_SINGLE_COPY_MAX_BYTES: u64 = 5_000_000_000;
 const S3_MULTIPART_COPY_PART_SIZE_BYTES: u64 = 512 * 1024 * 1024;
 const S3_MULTIPART_MAX_PARTS: u64 = 10_000;
+
+fn validate_s3_multipart_size(size_bytes: u64) -> StorageResult<u64> {
+    let part_count = size_bytes.div_ceil(S3_MULTIPART_COPY_PART_SIZE_BYTES);
+    if part_count > S3_MULTIPART_MAX_PARTS {
+        return Err(StorageError::InvalidPart(format!(
+            "S3 multipart operation would require {part_count} parts, maximum is {S3_MULTIPART_MAX_PARTS}"
+        )));
+    }
+    Ok(part_count)
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -251,6 +261,12 @@ pub trait StorageBackend: Send + Sync {
         &self,
         key: &ObjectKey,
         bytes: Bytes,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata>;
+    async fn put_file(
+        &self,
+        key: &ObjectKey,
+        path: &Path,
         metadata: PutObjectMetadata,
     ) -> StorageResult<ObjectMetadata>;
     async fn get_object(
@@ -509,6 +525,30 @@ impl StorageBackend for LocalStorage {
             .await
     }
 
+    async fn put_file(
+        &self,
+        key: &ObjectKey,
+        path: &Path,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata> {
+        self.probe().await?;
+        let final_path = self.path_for_key(key);
+        let tmp_path = unique_tmp_path(&final_path);
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        fs::copy(path, &tmp_path).await?;
+        let file = OpenOptions::new().write(true).open(&tmp_path).await?;
+        file.sync_all().await?;
+        drop(file);
+        fs::rename(&tmp_path, &final_path).await?;
+        sync_parent_dir(&final_path).await;
+
+        self.write_sidecar(key, metadata, Some(local_object_etag(&final_path).await?))
+            .await
+    }
+
     async fn get_object(
         &self,
         key: &ObjectKey,
@@ -744,10 +784,13 @@ impl StorageBackend for LocalStorage {
             };
             validate_upload_id(&upload_id)?;
             let upload_metadata = self.read_upload_metadata(&upload_id).await?;
-            let key = upload_metadata
+            let key = match upload_metadata
                 .as_ref()
                 .and_then(|value| ObjectKey::parse(value.key.clone()).ok())
-                .unwrap_or_else(|| ObjectKey::parse("objects/media/unknown/source.mp4").unwrap());
+            {
+                Some(key) => key,
+                None => ObjectKey::parse("objects/media/unknown/source.mp4")?,
+            };
             if !key.as_str().starts_with(prefix) {
                 continue;
             }
@@ -933,12 +976,7 @@ impl S3Storage {
         source_size_bytes: u64,
         metadata: PutObjectMetadata,
     ) -> StorageResult<ObjectMetadata> {
-        let part_count = source_size_bytes.div_ceil(S3_MULTIPART_COPY_PART_SIZE_BYTES);
-        if part_count > S3_MULTIPART_MAX_PARTS {
-            return Err(StorageError::InvalidPart(format!(
-                "S3 multipart copy would require {part_count} parts, maximum is {S3_MULTIPART_MAX_PARTS}"
-            )));
-        }
+        validate_s3_multipart_size(source_size_bytes)?;
 
         let target_physical_key = self.physical_key(target_key);
         let mut create_request = self
@@ -1073,6 +1111,119 @@ impl StorageBackend for S3Storage {
             request = request.metadata("clipline-checksum-sha256", checksum);
         }
         request.send().await.map_err(s3_error)?;
+        self.head_object(key).await
+    }
+
+    async fn put_file(
+        &self,
+        key: &ObjectKey,
+        path: &Path,
+        metadata: PutObjectMetadata,
+    ) -> StorageResult<ObjectMetadata> {
+        let size_bytes = fs::metadata(path).await?.len();
+        let physical_key = self.physical_key(key);
+        if size_bytes <= S3_SINGLE_COPY_MAX_BYTES {
+            let body = ByteStream::read_from()
+                .path(path)
+                .buffer_size(1024 * 1024)
+                .length(Length::Exact(size_bytes))
+                .build()
+                .await
+                .map_err(|error| StorageError::S3(error.to_string()))?;
+            let mut request = self
+                .client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(&physical_key)
+                .content_type(metadata.content_type.clone())
+                .body(body);
+            if let Some(checksum) = &metadata.checksum_sha256 {
+                request = request.metadata("clipline-checksum-sha256", checksum);
+            }
+            request.send().await.map_err(s3_error)?;
+            return self.head_object(key).await;
+        }
+
+        validate_s3_multipart_size(size_bytes)?;
+
+        let mut create = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(&physical_key)
+            .content_type(metadata.content_type.clone());
+        if let Some(checksum) = &metadata.checksum_sha256 {
+            create = create.metadata("clipline-checksum-sha256", checksum);
+        }
+        let upload_id = create
+            .send()
+            .await
+            .map_err(s3_error)?
+            .upload_id
+            .ok_or_else(|| StorageError::S3("S3 did not return a multipart upload id".into()))?;
+
+        let upload_result = async {
+            let mut completed_parts = Vec::new();
+            let mut offset = 0_u64;
+            let mut part_number = 1_i32;
+            while offset < size_bytes {
+                let part_size = (size_bytes - offset).min(S3_MULTIPART_COPY_PART_SIZE_BYTES);
+                let body = ByteStream::read_from()
+                    .path(path)
+                    .buffer_size(1024 * 1024)
+                    .offset(offset)
+                    .length(Length::Exact(part_size))
+                    .build()
+                    .await
+                    .map_err(|error| StorageError::S3(error.to_string()))?;
+                let output = self
+                    .client
+                    .upload_part()
+                    .bucket(&self.bucket)
+                    .key(&physical_key)
+                    .upload_id(&upload_id)
+                    .part_number(part_number)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(s3_error)?;
+                completed_parts.push(
+                    CompletedPart::builder()
+                        .part_number(part_number)
+                        .set_e_tag(output.e_tag)
+                        .build(),
+                );
+                offset += part_size;
+                part_number += 1;
+            }
+            self.client
+                .complete_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&physical_key)
+                .upload_id(&upload_id)
+                .multipart_upload(
+                    CompletedMultipartUpload::builder()
+                        .set_parts(Some(completed_parts))
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(s3_error)?;
+            Ok::<(), StorageError>(())
+        }
+        .await;
+
+        if let Err(error) = upload_result {
+            let _ = self
+                .client
+                .abort_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&physical_key)
+                .upload_id(&upload_id)
+                .send()
+                .await;
+            return Err(error);
+        }
         self.head_object(key).await
     }
 
@@ -1812,6 +1963,16 @@ fn smithy_datetime_to_chrono(value: &aws_sdk_s3::primitives::DateTime) -> Option
 mod tests {
     use super::*;
 
+    #[test]
+    fn s3_multipart_size_rejects_more_than_maximum_part_count() {
+        let maximum_size = S3_MULTIPART_COPY_PART_SIZE_BYTES * S3_MULTIPART_MAX_PARTS;
+        assert_eq!(
+            validate_s3_multipart_size(maximum_size).expect("maximum multipart size"),
+            S3_MULTIPART_MAX_PARTS
+        );
+        assert!(validate_s3_multipart_size(maximum_size + 1).is_err());
+    }
+
     #[tokio::test]
     async fn media_keys_are_random_and_do_not_contain_entity_ids() {
         let user_id = "01JZ0000000000000000000000";
@@ -1930,6 +2091,29 @@ mod tests {
         storage.delete_object(&key).await.expect("delete");
         storage.delete_object(&copy_key).await.expect("delete copy");
         assert!(!storage.object_exists(&key).await.expect("not exists"));
+    }
+
+    #[tokio::test]
+    async fn local_put_file_streams_from_a_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_path = temp_dir.path().join("optimized.mp4");
+        fs::write(&source_path, b"file-backed-video")
+            .await
+            .expect("write source");
+        let storage = LocalStorage::new(temp_dir.path().join("storage"));
+        let key = MediaObjectKeys::generate().expect("keys").source;
+        let mut metadata = PutObjectMetadata::new("video/mp4");
+        metadata.checksum_sha256 = Some("file-checksum".to_string());
+
+        let stored = storage
+            .put_file(&key, &source_path, metadata)
+            .await
+            .expect("put file");
+        let object = storage.get_object(&key, None).await.expect("get file");
+
+        assert_eq!(stored.size_bytes, 17);
+        assert_eq!(object.bytes, Bytes::from_static(b"file-backed-video"));
+        assert_eq!(stored.checksum_sha256.as_deref(), Some("file-checksum"));
     }
 
     #[tokio::test]
@@ -2134,6 +2318,29 @@ mod tests {
             .expect("presign")
             .is_some());
         storage.delete_object(&key).await.expect("delete object");
+
+        let file_dir = tempfile::tempdir().expect("file temp dir");
+        let file_path = file_dir.path().join("optimized.mp4");
+        fs::write(&file_path, b"file-backed-s3")
+            .await
+            .expect("write file");
+        let file_key = MediaObjectKeys::generate().expect("keys").source;
+        storage
+            .put_file(&file_key, &file_path, PutObjectMetadata::new("video/mp4"))
+            .await
+            .expect("put file");
+        assert_eq!(
+            storage
+                .get_object(&file_key, None)
+                .await
+                .expect("get file")
+                .bytes,
+            Bytes::from_static(b"file-backed-s3")
+        );
+        storage
+            .delete_object(&file_key)
+            .await
+            .expect("delete file object");
 
         let multipart_key = MediaObjectKeys::generate().expect("keys").source;
         let upload_id = storage

@@ -1,17 +1,15 @@
 import { html } from "../lib/html.js";
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { api } from "../lib/api.js";
+import { useApiResource } from "../lib/use-api-resource.js";
 import { session, toast, useStore } from "../lib/store.js";
 import { formatRelativeTime } from "../lib/format.js";
 import { icon } from "../lib/icons.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { resolveAvatarSrc } from "./UserAvatar.js";
 
-// Ported verbatim from legacy publicCommentTree (src/app.js:2450-2469): group
-// flat comments into one level of replies (a reply's own replies collapse
-// into the same parent bucket, matching the server's flat parent_comment_id
-// model) and count only comments that resolve to a real root or a root's
-// direct child.
+// Group the server's flat comment list into its supported one-reply-level tree.
+// Orphaned replies are excluded from the visible count.
 export function commentTree(comments) {
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const repliesByParent = new Map();
@@ -64,28 +62,19 @@ function avatarNode(comment) {
 // component when a share id is available (see pages/watch.js).
 export function Comments({ shareId }) {
   const { user } = useStore(session);
-  const [comments, setComments] = useState(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [draft, setDraft] = useState("");
   const [replyOpenId, setReplyOpenId] = useState(null);
   const [replyDraft, setReplyDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
-  function reload() {
-    api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`)
-      .then((data) => setComments(data.comments || []))
-      .catch(() => setComments([]));
-  }
+  const resource = `/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`;
+  const { data, error } = useApiResource(resource, reloadTick);
+  const comments = error ? [] : data?.comments ?? null;
 
-  useEffect(() => {
-    let live = true;
-    setComments(null);
-    api(`/api/v1/public/clips/${encodeURIComponent(shareId)}/comments`)
-      .then((data) => live && setComments(data.comments || []))
-      .catch(() => live && setComments([]));
-    return () => {
-      live = false;
-    };
-  }, [shareId]);
+  function reload() {
+    setReloadTick((tick) => tick + 1);
+  }
 
   async function post(body, parentCommentId) {
     return postComment({ shareId, body, parentCommentId, onReload: reload, onError: toast });

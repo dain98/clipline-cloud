@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
-use serde_json::json;
-use sqlx::{types::Json, Postgres, QueryBuilder, Sqlite};
+use sqlx::{Postgres, QueryBuilder, Sqlite};
+
+mod transactions;
 
 use crate::{
     db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AppSettings,
@@ -49,6 +50,12 @@ pub struct ClipListParams {
     pub offset: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClipListStats {
+    pub total: i64,
+    pub total_size_bytes: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PublicClipListParams {
     pub owner_user_id: Option<String>,
@@ -69,6 +76,20 @@ pub struct PublicGameSummary {
 pub struct BulkVisibilityUpdate {
     pub clip_id: String,
     pub public_share_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalizeUploadOutcome {
+    Finalized,
+    AlreadyCompleted,
+    NotMutable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortUploadOutcome {
+    Aborted,
+    AlreadyAborted,
+    NotMutable,
 }
 
 #[derive(Clone)]
@@ -106,218 +127,6 @@ impl Repositories {
             invitation_tokens: InvitationTokenRepository::new(database),
         }
     }
-
-    pub async fn bulk_soft_delete_clips_with_audit(
-        &self,
-        owner_user_id: &str,
-        clip_ids: &[String],
-        actor_user_id: Option<&str>,
-        ip_address: Option<&str>,
-    ) -> DbResult<usize> {
-        match &self.clips.database {
-            Database::Sqlite(pool) => {
-                let mut transaction = pool.begin().await?;
-                for clip_id in clip_ids {
-                    let now = now_utc();
-                    let rows = sqlx::query(
-                        "UPDATE clips
-                         SET status = 'deleted', deleted_at = ?, updated_at = ?
-                         WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL",
-                    )
-                    .bind(now)
-                    .bind(now)
-                    .bind(clip_id)
-                    .bind(owner_user_id)
-                    .execute(&mut *transaction)
-                    .await?
-                    .rows_affected();
-                    if rows != 1 {
-                        return Err(sqlx::Error::RowNotFound.into());
-                    }
-
-                    let entry = bulk_audit_entry(
-                        actor_user_id,
-                        ip_address,
-                        "clip.deleted",
-                        clip_id,
-                        Json(json!({ "bulk": true })),
-                    );
-                    insert_audit_sqlite(&mut transaction, &entry).await?;
-                }
-                transaction.commit().await?;
-            }
-            Database::Postgres(pool) => {
-                let mut transaction = pool.begin().await?;
-                let update_sql = crate::postgres_placeholders(
-                    "UPDATE clips
-                     SET status = 'deleted', deleted_at = ?, updated_at = ?
-                     WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL",
-                );
-                for clip_id in clip_ids {
-                    let now = now_utc();
-                    let rows = sqlx::query(&update_sql)
-                        .bind(now)
-                        .bind(now)
-                        .bind(clip_id)
-                        .bind(owner_user_id)
-                        .execute(&mut *transaction)
-                        .await?
-                        .rows_affected();
-                    if rows != 1 {
-                        return Err(sqlx::Error::RowNotFound.into());
-                    }
-
-                    let entry = bulk_audit_entry(
-                        actor_user_id,
-                        ip_address,
-                        "clip.deleted",
-                        clip_id,
-                        Json(json!({ "bulk": true })),
-                    );
-                    insert_audit_postgres(&mut transaction, &entry).await?;
-                }
-                transaction.commit().await?;
-            }
-        }
-
-        Ok(clip_ids.len())
-    }
-
-    pub async fn bulk_set_visibility_with_audit(
-        &self,
-        owner_user_id: &str,
-        updates: &[BulkVisibilityUpdate],
-        visibility: &str,
-        actor_user_id: Option<&str>,
-        ip_address: Option<&str>,
-    ) -> DbResult<usize> {
-        match &self.clips.database {
-            Database::Sqlite(pool) => {
-                let mut transaction = pool.begin().await?;
-                for update in updates {
-                    let rows = sqlx::query(
-                        "UPDATE clips
-                         SET visibility = ?, public_share_id = ?, updated_at = ?
-                         WHERE id = ? AND owner_user_id = ? AND status = 'ready' AND deleted_at IS NULL",
-                    )
-                    .bind(visibility)
-                    .bind(update.public_share_id.as_deref())
-                    .bind(now_utc())
-                    .bind(&update.clip_id)
-                    .bind(owner_user_id)
-                    .execute(&mut *transaction)
-                    .await?
-                    .rows_affected();
-                    if rows != 1 {
-                        return Err(sqlx::Error::RowNotFound.into());
-                    }
-
-                    let entry = bulk_audit_entry(
-                        actor_user_id,
-                        ip_address,
-                        "clip.visibility_changed",
-                        &update.clip_id,
-                        Json(json!({ "visibility": visibility, "bulk": true })),
-                    );
-                    insert_audit_sqlite(&mut transaction, &entry).await?;
-                }
-                transaction.commit().await?;
-            }
-            Database::Postgres(pool) => {
-                let mut transaction = pool.begin().await?;
-                let update_sql = crate::postgres_placeholders(
-                    "UPDATE clips
-                     SET visibility = ?, public_share_id = ?, updated_at = ?
-                     WHERE id = ? AND owner_user_id = ? AND status = 'ready' AND deleted_at IS NULL",
-                );
-                for update in updates {
-                    let rows = sqlx::query(&update_sql)
-                        .bind(visibility)
-                        .bind(update.public_share_id.as_deref())
-                        .bind(now_utc())
-                        .bind(&update.clip_id)
-                        .bind(owner_user_id)
-                        .execute(&mut *transaction)
-                        .await?
-                        .rows_affected();
-                    if rows != 1 {
-                        return Err(sqlx::Error::RowNotFound.into());
-                    }
-
-                    let entry = bulk_audit_entry(
-                        actor_user_id,
-                        ip_address,
-                        "clip.visibility_changed",
-                        &update.clip_id,
-                        Json(json!({ "visibility": visibility, "bulk": true })),
-                    );
-                    insert_audit_postgres(&mut transaction, &entry).await?;
-                }
-                transaction.commit().await?;
-            }
-        }
-
-        Ok(updates.len())
-    }
-}
-
-fn bulk_audit_entry(
-    actor_user_id: Option<&str>,
-    ip_address: Option<&str>,
-    action: &str,
-    target_id: &str,
-    metadata: Json<serde_json::Value>,
-) -> NewAuditLogEntry {
-    let mut entry = NewAuditLogEntry::new(action);
-    entry.actor_user_id = actor_user_id.map(ToOwned::to_owned);
-    entry.target_type = Some("clip".to_string());
-    entry.target_id = Some(target_id.to_string());
-    entry.ip_address = ip_address.map(ToOwned::to_owned);
-    entry.metadata_json = Some(metadata);
-    entry
-}
-
-async fn insert_audit_sqlite(
-    transaction: &mut sqlx::Transaction<'_, Sqlite>,
-    entry: &NewAuditLogEntry,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&entry.id)
-    .bind(entry.actor_user_id.as_deref())
-    .bind(&entry.action)
-    .bind(entry.target_type.as_deref())
-    .bind(entry.target_id.as_deref())
-    .bind(entry.ip_address.as_deref())
-    .bind(entry.metadata_json.as_ref())
-    .bind(entry.created_at)
-    .execute(&mut **transaction)
-    .await
-    .map(|_| ())
-}
-
-async fn insert_audit_postgres(
-    transaction: &mut sqlx::Transaction<'_, Postgres>,
-    entry: &NewAuditLogEntry,
-) -> Result<(), sqlx::Error> {
-    let sql = crate::postgres_placeholders(
-        "INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, ip_address, metadata_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    sqlx::query(&sql)
-        .bind(&entry.id)
-        .bind(entry.actor_user_id.as_deref())
-        .bind(&entry.action)
-        .bind(entry.target_type.as_deref())
-        .bind(entry.target_id.as_deref())
-        .bind(entry.ip_address.as_deref())
-        .bind(entry.metadata_json.as_ref())
-        .bind(entry.created_at)
-        .execute(&mut **transaction)
-        .await
-        .map(|_| ())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -518,6 +327,34 @@ impl UserRepository {
              FROM users ORDER BY username ASC",
             []
         )?)
+    }
+
+    pub async fn get_many(&self, ids: &[String]) -> DbResult<Vec<User>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        const USER_SELECT: &str =
+            "SELECT id, username, display_name, email, bio, avatar_key, password_hash, role, is_disabled, storage_quota_bytes, created_at, updated_at, last_login_at FROM users WHERE id IN (";
+        match &self.database {
+            Database::Sqlite(pool) => {
+                let mut builder = QueryBuilder::<Sqlite>::new(USER_SELECT);
+                let mut separated = builder.separated(", ");
+                for id in ids {
+                    separated.push_bind(id);
+                }
+                separated.push_unseparated(")");
+                Ok(builder.build_query_as::<User>().fetch_all(pool).await?)
+            }
+            Database::Postgres(pool) => {
+                let mut builder = QueryBuilder::<Postgres>::new(USER_SELECT);
+                let mut separated = builder.separated(", ");
+                for id in ids {
+                    separated.push_bind(id);
+                }
+                separated.push_unseparated(")");
+                Ok(builder.build_query_as::<User>().fetch_all(pool).await?)
+            }
+        }
     }
 
     pub async fn count_all(&self) -> DbResult<i64> {
@@ -791,6 +628,79 @@ impl DeviceTokenRepository {
         Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
     }
 
+    pub async fn create_if_under_active_limit(
+        &self,
+        new: &NewDeviceToken,
+        active_limit: i64,
+    ) -> DbResult<Option<DeviceToken>> {
+        let now = now_utc();
+        let inserted = match &self.database {
+            Database::Sqlite(pool) => sqlx::query(
+                "INSERT INTO device_tokens (id, user_id, name, token_hash, created_at, last_used_at, expires_at, revoked_at)
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                 WHERE (
+                   SELECT COUNT(*) FROM device_tokens
+                   WHERE user_id = ? AND revoked_at IS NULL
+                     AND (expires_at IS NULL OR expires_at > ?)
+                 ) < ?",
+            )
+            .bind(&new.id)
+            .bind(&new.user_id)
+            .bind(&new.name)
+            .bind(&new.token_hash)
+            .bind(new.created_at)
+            .bind(new.last_used_at)
+            .bind(new.expires_at)
+            .bind(new.revoked_at)
+            .bind(&new.user_id)
+            .bind(now)
+            .bind(active_limit)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+                    .bind(&new.user_id)
+                    .execute(&mut *transaction)
+                    .await?;
+                let active = sqlx::query_as::<_, (i64,)>(
+                    "SELECT COUNT(*) FROM device_tokens
+                     WHERE user_id = $1 AND revoked_at IS NULL
+                       AND (expires_at IS NULL OR expires_at > $2)",
+                )
+                .bind(&new.user_id)
+                .bind(now)
+                .fetch_one(&mut *transaction)
+                .await?
+                .0;
+                if active >= active_limit {
+                    return Ok(None);
+                }
+                sqlx::query(
+                    "INSERT INTO device_tokens (id, user_id, name, token_hash, created_at, last_used_at, expires_at, revoked_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                )
+                .bind(&new.id)
+                .bind(&new.user_id)
+                .bind(&new.name)
+                .bind(&new.token_hash)
+                .bind(new.created_at)
+                .bind(new.last_used_at)
+                .bind(new.expires_at)
+                .bind(new.revoked_at)
+                .execute(&mut *transaction)
+                .await?;
+                transaction.commit().await?;
+                1
+            }
+        };
+        if inserted == 0 {
+            return Ok(None);
+        }
+        self.get(&new.id).await
+    }
+
     pub async fn get(&self, id: &str) -> DbResult<Option<DeviceToken>> {
         Ok(db_fetch_optional!(
             &self.database,
@@ -819,6 +729,20 @@ impl DeviceTokenRepository {
              FROM device_tokens WHERE user_id = ? ORDER BY created_at DESC",
             [user_id]
         )?)
+    }
+
+    pub async fn count_active_for_user(&self, user_id: &str) -> DbResult<i64> {
+        let now = now_utc();
+        Ok(db_fetch_optional!(
+            &self.database,
+            (i64,),
+            "SELECT COUNT(*) FROM device_tokens
+             WHERE user_id = ? AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)",
+            [user_id, now]
+        )?
+        .map(|row| row.0)
+        .unwrap_or_default())
     }
 
     pub async fn touch(&self, id: &str) -> DbResult<()> {
@@ -1039,6 +963,35 @@ impl ClipRepository {
                 Ok(builder.build_query_as::<Clip>().fetch_all(pool).await?)
             }
         }
+    }
+
+    pub async fn stats_for_owner(&self, params: &ClipListParams) -> DbResult<ClipListStats> {
+        let row = match &self.database {
+            Database::Sqlite(pool) => {
+                let mut builder = QueryBuilder::<Sqlite>::new(
+                    "SELECT COUNT(*), CAST(COALESCE(SUM(file_size_bytes), 0) AS BIGINT) FROM clips",
+                );
+                push_clip_list_filters_sqlite(&mut builder, params);
+                builder
+                    .build_query_as::<(i64, i64)>()
+                    .fetch_one(pool)
+                    .await?
+            }
+            Database::Postgres(pool) => {
+                let mut builder = QueryBuilder::<Postgres>::new(
+                    "SELECT COUNT(*), CAST(COALESCE(SUM(file_size_bytes), 0) AS BIGINT) FROM clips",
+                );
+                push_clip_list_filters_postgres(&mut builder, params);
+                builder
+                    .build_query_as::<(i64, i64)>()
+                    .fetch_one(pool)
+                    .await?
+            }
+        };
+        Ok(ClipListStats {
+            total: row.0,
+            total_size_bytes: row.1,
+        })
     }
 
     pub async fn list_public(&self, params: &PublicClipListParams) -> DbResult<Vec<Clip>> {
@@ -2244,6 +2197,63 @@ impl JobRepository {
         )?;
 
         Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
+    }
+
+    pub async fn create_if_absent_active(&self, new: &NewJob) -> DbResult<Job> {
+        match self.create(new).await {
+            Ok(job) => Ok(job),
+            Err(error) if error.is_unique_violation() => {
+                if let Some(job) = self
+                    .get_active_by_kind_and_target(
+                        &new.kind,
+                        new.target_type.as_deref(),
+                        new.target_id.as_deref(),
+                    )
+                    .await?
+                {
+                    return Ok(job);
+                }
+
+                // The conflicting job may have completed between the unique-index
+                // check and the lookup. In that case a fresh active job is valid.
+                self.create(new).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn get_active_by_kind_and_target(
+        &self,
+        kind: &str,
+        target_type: Option<&str>,
+        target_id: Option<&str>,
+    ) -> DbResult<Option<Job>> {
+        match target_id {
+            Some(target_id) => Ok(db_fetch_optional!(
+                &self.database,
+                Job,
+                "SELECT id, kind, status, target_type, target_id, attempts, max_attempts, next_run_at,
+                        locked_by, locked_at, last_error, created_at, updated_at
+                 FROM jobs
+                 WHERE kind = ?
+                   AND COALESCE(target_type, '') = COALESCE(?, '')
+                   AND target_id = ?
+                   AND status IN ('pending','running')
+                 ORDER BY created_at ASC, id ASC LIMIT 1",
+                [kind, target_type, target_id]
+            )?),
+            None => Ok(db_fetch_optional!(
+                &self.database,
+                Job,
+                "SELECT id, kind, status, target_type, target_id, attempts, max_attempts, next_run_at,
+                        locked_by, locked_at, last_error, created_at, updated_at
+                 FROM jobs
+                 WHERE kind = ? AND target_id IS NULL
+                   AND status = 'pending'
+                 ORDER BY created_at ASC, id ASC LIMIT 1",
+                [kind]
+            )?),
+        }
     }
 
     pub async fn get(&self, id: &str) -> DbResult<Option<Job>> {

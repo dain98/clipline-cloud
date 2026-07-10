@@ -179,7 +179,7 @@ async fn enqueue_clip_job(
     let mut job = NewJob::new(kind, now_utc());
     job.target_type = Some("clip".to_string());
     job.target_id = Some(clip_id);
-    Ok(repositories.jobs.create(&job).await?)
+    Ok(repositories.jobs.create_if_absent_active(&job).await?)
 }
 
 async fn enqueue_global_job(
@@ -188,7 +188,7 @@ async fn enqueue_global_job(
     next_run_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<Job, JobRunnerError> {
     let job = NewJob::new(kind, next_run_at);
-    Ok(repositories.jobs.create(&job).await?)
+    Ok(repositories.jobs.create_if_absent_active(&job).await?)
 }
 
 #[derive(Clone)]
@@ -612,12 +612,12 @@ impl JobRunner {
                 &self.config.video_optimization.settings,
             )
             .await?;
-        let candidate_size = candidate.bytes.len() as u64;
-        let candidate_checksum = sha256_hex(&candidate.bytes);
+        let candidate_size = candidate.size_bytes;
+        let candidate_checksum = candidate.checksum_sha256.clone();
         let mut candidate_metadata = PutObjectMetadata::new("video/mp4");
         candidate_metadata.checksum_sha256 = Some(candidate_checksum.clone());
         self.storage
-            .put_object(&candidate_key, candidate.bytes.clone(), candidate_metadata)
+            .put_file(&candidate_key, candidate.path(), candidate_metadata)
             .await?;
         let activation_result = async {
             let stored_candidate = self.storage.head_object(&candidate_key).await?;
@@ -667,7 +667,7 @@ impl JobRunner {
             let mut source_put_metadata = PutObjectMetadata::new("video/mp4");
             source_put_metadata.checksum_sha256 = Some(candidate_checksum.clone());
             self.storage
-                .put_object(&source_key, candidate.bytes, source_put_metadata)
+                .copy_object(&candidate_key, &source_key, source_put_metadata)
                 .await?;
             let stored_source = self.storage.head_object(&source_key).await?;
             if stored_source.size_bytes != candidate_size {
@@ -1183,11 +1183,6 @@ fn job_heartbeat_interval(lock_timeout: Duration) -> Duration {
 
 fn chrono_duration(duration: Duration) -> ChronoDuration {
     ChronoDuration::from_std(duration).unwrap_or_else(|_| ChronoDuration::seconds(i64::MAX))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    hex_bytes(&digest)
 }
 
 async fn sha256_object_hex(

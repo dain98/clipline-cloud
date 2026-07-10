@@ -46,7 +46,7 @@ export function resolveOwnedClipId(routeName, route, clip) {
   return clip?.viewer_clip_id || null;
 }
 
-// Details-strip resolution label, ported from the brief's summary line
+// Compact resolution label for the clip details strip.
 // (`${clip.height}p${Math.round(clip.fps || 0) || ""}`): "1080p60", or just
 // "1080p" when fps is missing/zero.
 export function resolutionLabel(clip) {
@@ -86,7 +86,7 @@ export function WatchPage({ route }) {
   const recommendationsReady = route.name === "public" || Boolean(clip);
 
   useEffect(() => {
-    let live = true;
+    const controller = new AbortController();
     setClip(null);
     setError(null);
     setEditingTitle(false);
@@ -97,39 +97,38 @@ export function WatchPage({ route }) {
       route.name === "clip"
         ? `/api/v1/clips/${encodeURIComponent(route.clipId)}`
         : `/api/v1/public/clips/${encodeURIComponent(route.shareId)}`;
-    api(path)
+    api(path, { signal: controller.signal })
       .then((data) => {
-        if (!live) return;
         setClip(data);
-        // View-count beacon, ported from legacy recordPublicView (src/app.js:2618-2632) — public route only.
+        // Owned views do not increment public view counts.
         if (route.name === "public") {
-          api(`/api/v1/public/clips/${encodeURIComponent(route.shareId)}/view`, { method: "POST", body: {} })
-            .then((result) => live && setClip((c) => c && { ...c, view_count: result.view_count }))
+          api(`/api/v1/public/clips/${encodeURIComponent(route.shareId)}/view`, {
+            method: "POST",
+            body: {},
+            signal: controller.signal,
+          })
+            .then((result) => setClip((c) => c && { ...c, view_count: result.view_count }))
             .catch(() => {});
         }
       })
-      .catch((e) => live && setError(e));
-    return () => {
-      live = false;
-    };
+      .catch((e) => {
+        if (e?.name !== "AbortError") setError(e);
+      });
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey]);
 
   useEffect(() => {
-    let live = true;
     if (!recommendationsReady) {
       setUpNext([]);
-      return () => {
-        live = false;
-      };
+      return undefined;
     }
+    const controller = new AbortController();
     setUpNext([]);
-    api(recommendationsPath(currentShareId, 8))
-      .then((data) => live && setUpNext(data.clips || []))
+    api(recommendationsPath(currentShareId, 8), { signal: controller.signal })
+      .then((data) => setUpNext(data.clips || []))
       .catch(() => {});
-    return () => {
-      live = false;
-    };
+    return () => controller.abort();
   }, [routeKey, currentShareId, recommendationsReady]);
 
   if (error) {

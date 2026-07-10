@@ -13,7 +13,7 @@ export function storageMeterFraction(overview) {
   return Math.max(0, Math.min(1, used / threshold));
 }
 
-// Pure port of legacy storageWarningLabel (src/app.js:3061-3066).
+// Human-readable state for the optional warning threshold.
 export function storageWarningLabel(overview) {
   if (!overview?.global_storage_warning_threshold_bytes) return "Disabled";
   const threshold = formatBytes(overview.global_storage_warning_threshold_bytes);

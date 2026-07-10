@@ -49,9 +49,7 @@ function App() {
     if (loginRedirect) navigate("/login");
   }, [loginRedirect]);
   if (!ready || loginRedirect) return html`<div class="boot">Loading…</div>`;
-  // parseRoute() (lib/routes.js) always returns one of the names below —
-  // an unmatched pathname falls back to "publicLibrary" itself — so this
-  // default is just a defensive backstop, not a reachable "not ported" path.
+  // parseRoute() always returns a declared page name; retain a defensive fallback.
   const Page = PAGES[route.name] || FeedPage;
   const bare = route.name === "login" || route.name === "resetPassword";
   return html`<div class="ui" onClick=${onLinkClick}>

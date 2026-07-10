@@ -1,6 +1,7 @@
 import { html } from "../lib/html.js";
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { api, setCsrfToken } from "../lib/api.js";
+import { useAsyncResource } from "../lib/use-api-resource.js";
 import { navigate } from "../lib/router.js";
 import { session, toast } from "../lib/store.js";
 import { formatDate } from "../lib/format.js";
@@ -8,10 +9,11 @@ import { icon } from "../lib/icons.js";
 import { EmptyState } from "../components/EmptyState.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
 
-async function loadAccountData() {
+async function loadAccountData(signal) {
+  const options = { signal };
   const [sessions, deviceTokens] = await Promise.all([
-    api("/api/v1/auth/sessions"),
-    api("/api/v1/auth/device-tokens"),
+    api("/api/v1/auth/sessions", options),
+    api("/api/v1/auth/device-tokens", options),
   ]);
   return { sessions, deviceTokens };
 }
@@ -53,21 +55,9 @@ function DeviceTokenItem({ item, onRevoke }) {
 }
 
 export function AccountPage() {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const { data, error } = useAsyncResource(reloadTick, loadAccountData);
   const [confirmTarget, setConfirmTarget] = useState(null); // { kind: "session" | "device", item }
-
-  useEffect(() => {
-    let live = true;
-    setError(null);
-    loadAccountData()
-      .then((d) => live && setData(d))
-      .catch((e) => live && setError(e));
-    return () => {
-      live = false;
-    };
-  }, [reloadTick]);
 
   const reload = () => setReloadTick((t) => t + 1);
 
