@@ -391,12 +391,6 @@ export function Player({ src, poster, durationMs, markers }) {
         case "seek-to-end":
           seekTo(duration);
           break;
-        case "next-marker":
-          jumpMarker(1);
-          break;
-        case "previous-marker":
-          jumpMarker(-1);
-          break;
         case "toggle-mute":
           toggleMute();
           break;
@@ -405,11 +399,6 @@ export function Player({ src, poster, durationMs, markers }) {
           break;
         case "exit-theater":
           setTheaterMode(false);
-          break;
-        case "fullscreen":
-          toggleFullscreen();
-          break;
-        default:
           break;
       }
     }
