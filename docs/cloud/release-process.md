@@ -9,18 +9,18 @@ Use annotated semver tags:
 ```sh
 git checkout main
 git pull --ff-only --prune
-git tag -a v1.3.0 -m "Clipline Cloud v1.3.0"
-git push origin v1.3.0
+git tag -a v1.3.1 -m "Clipline Cloud v1.3.1"
+git push origin v1.3.1
 ```
 
 Pushing a `vMAJOR.MINOR.PATCH` tag starts the `Release` GitHub Actions workflow. The workflow builds
 the Docker image, pushes it to GHCR, and creates a GitHub release with generated notes plus the
 published image tags and manifest digest.
 
-Published image tags for `v1.3.0`:
+Published image tags for `v1.3.1`:
 
 ```text
-ghcr.io/dain98/clipline-cloud:1.3.0
+ghcr.io/dain98/clipline-cloud:1.3.1
 ghcr.io/dain98/clipline-cloud:1.3
 ghcr.io/dain98/clipline-cloud:latest
 ghcr.io/dain98/clipline-cloud:sha-<short-git-sha>
@@ -45,7 +45,7 @@ runs the full multi-profile smoke suite (`default minio postgres`):
 
 ```sh
 BUILD_IMAGE=0 \
-CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.0 \
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.1 \
 CLIPLINE_HTTP_PORT=18080 \
 MINIO_API_PORT=19000 \
 MINIO_CONSOLE_PORT=19001 \
@@ -58,7 +58,7 @@ For Caddy localhost TLS:
 
 ```sh
 BUILD_IMAGE=0 \
-CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.0 \
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.1 \
 CLIPLINE_CADDY_HTTP_PORT=18081 \
 CLIPLINE_CADDY_HTTPS_PORT=18443 \
 CLIPLINE_CADDY_SUBNET=10.251.250.0/24 \
@@ -77,7 +77,7 @@ host.
 Pin production Compose deployments to the release tag:
 
 ```sh
-CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.0 \
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.1 \
 docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 

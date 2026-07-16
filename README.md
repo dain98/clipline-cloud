@@ -23,12 +23,12 @@ Follow the public docs:
 
 ## Current Release
 
-- [v1.3.0](https://github.com/dain98/clipline-cloud/releases/tag/v1.3.0)
-- `ghcr.io/dain98/clipline-cloud:1.3.0`
+- [v1.3.1](https://github.com/dain98/clipline-cloud/releases/tag/v1.3.1)
+- `ghcr.io/dain98/clipline-cloud:1.3.1`
 - `ghcr.io/dain98/clipline-cloud:latest`
 
 `latest` is fine for the easy managed Railway path or intentional auto-updating installs. Pin a
-released tag such as `1.3.0` when you want explicit upgrade and rollback control.
+released tag such as `1.3.1` when you want explicit upgrade and rollback control.
 
 ## Local Test
 
@@ -37,7 +37,7 @@ For a quick local/LAN test:
 ```sh
 git clone https://github.com/dain98/clipline-cloud.git
 cd clipline-cloud/deploy/compose
-CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.0 docker compose up -d
+CLIPLINE_IMAGE=ghcr.io/dain98/clipline-cloud:1.3.1 docker compose up -d
 docker compose logs clipline-cloud
 ```
 
