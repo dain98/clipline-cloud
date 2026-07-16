@@ -45,7 +45,7 @@ test("libraryParams passes through the simple string filter keys", () => {
     status: "ready",
     q: "clutch",
   });
-  assert.equal(params.get("game"), "VALORANT");
+  assert.equal(params.get("game_category_id"), "VALORANT");
   assert.equal(params.get("source_type"), "manual");
   assert.equal(params.get("visibility"), "public");
   assert.equal(params.get("status"), "ready");
@@ -115,9 +115,43 @@ test("deriveGameChips dedupes and counts game_name occurrences", () => {
     { game_name: "VALORANT" }, { game_name: "VALORANT" }, { game_name: "Apex Legends" },
   ];
   assert.deepEqual(deriveGameChips(clips), [
-    { game: "VALORANT", count: 2 },
-    { game: "Apex Legends", count: 1 },
+    { game: "VALORANT", count: 2, label: "VALORANT" },
+    { game: "Apex Legends", count: 1, label: "Apex Legends" },
   ]);
+});
+
+test("deriveGameChips uses the category id and canonical display name", () => {
+  assert.deepEqual(
+    deriveGameChips([{ game_category_id: "cat-gta", game_name: "GTA5_Enhanced", game_display_name: "Grand Theft Auto V" }]),
+    [{ game: "cat-gta", count: 1, label: "Grand Theft Auto V" }]
+  );
+});
+
+test("deriveGameChips carries the category icon into its filter", () => {
+  assert.deepEqual(
+    deriveGameChips([{
+      game_category_id: "cat-minecraft",
+      game_name: "Minecraft.Windows",
+      game_display_name: "Minecraft",
+      game_icon_url: "/api/v1/public/game-categories/cat-minecraft/artwork/icon?v=4",
+    }]),
+    [{
+      game: "cat-minecraft",
+      count: 1,
+      label: "Minecraft",
+      icon_url: "/api/v1/public/game-categories/cat-minecraft/artwork/icon?v=4",
+    }]
+  );
+});
+
+test("deriveGameChips merges different raw names in the same category", () => {
+  assert.deepEqual(
+    deriveGameChips([
+      { game_category_id: "cat-gta", game_name: "GTA5_Enhanced", game_display_name: "Grand Theft Auto V" },
+      { game_category_id: "cat-gta", game_name: "Grand Theft Auto V", game_display_name: "Grand Theft Auto V" },
+    ]),
+    [{ game: "cat-gta", count: 2, label: "Grand Theft Auto V" }]
+  );
 });
 
 test("deriveGameChips ignores clips without a game_name", () => {

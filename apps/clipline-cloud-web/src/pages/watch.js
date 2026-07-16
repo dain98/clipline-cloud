@@ -272,7 +272,7 @@ export function WatchPage({ route }) {
 
   const metaParts = [
     clip.game_name &&
-      html`<a class="chip chip-on" href=${`/game/${encodeURIComponent(clip.game_name)}`}>${clip.game_name}</a>`,
+      html`<a class="chip chip-on" href=${`/game/${encodeURIComponent(clip.game_category_id || clip.game_name)}`}>${clip.game_display_name || clip.game_name}</a>`,
     formatViews(clip.view_count),
     `Recorded ${formatDate(clip.recorded_at)}`,
   ].filter(Boolean);
@@ -282,7 +282,9 @@ export function WatchPage({ route }) {
   return html`<main class="page watch">
     <div>
       <${Player} src=${mediaSrc} poster=${posterSrc} durationMs=${clip.duration_ms} markers=${clip.markers} />
-      <div class="watch-heading">
+      <div class=${`watch-heading ${clip.game_video_art_url ? "has-game-art" : ""}`}>
+        ${clip.game_video_art_url && html`<img class="watch-game-art" src=${clip.game_video_art_url} alt="" />`}
+        <div class="watch-heading-content">
         <div class="watch-titlerow">
           ${editingTitle
             ? html`<input class="input watch-title-input" value=${titleDraft} autofocus
@@ -298,6 +300,7 @@ export function WatchPage({ route }) {
         </div>
         <${WatchAuthorRow} author=${author} />
         <p class="watch-meta">${metaParts.map((part, i) => html`${i > 0 ? " · " : ""}${part}`)}</p>
+        </div>
       </div>
 
       ${isOwner &&
@@ -372,7 +375,7 @@ export function WatchPage({ route }) {
       ${upNextItems.map(
         (c) => html`<a class="upnext-row" key=${c.share_id} href=${`/c/${encodeURIComponent(c.share_id)}`}>
           <img src=${publicThumbPath(c)} alt="" loading="lazy" />
-          <span><b>${c.title}</b><small>${c.author_name} · ${c.game_name || "No game"} · ${formatViews(c.view_count)}</small></span>
+          <span><b>${c.title}</b><small>${c.author_name} · ${c.game_display_name || c.game_name || "No game"} · ${formatViews(c.view_count)}</small></span>
         </a>`
       )}
     </aside>

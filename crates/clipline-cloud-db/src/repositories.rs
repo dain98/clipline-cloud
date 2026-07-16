@@ -5,10 +5,11 @@ mod transactions;
 
 use crate::{
     db_execute, db_execute_rows, db_fetch_all, db_fetch_optional, now_utc, AppSettings,
-    AuditLogEntry, Clip, ClipComment, ClipMarker, Database, DbResult, DeviceToken, InvitationToken,
-    Job, NewAuditLogEntry, NewClip, NewClipComment, NewClipMarker, NewDeviceToken,
-    NewInvitationToken, NewJob, NewResetPasswordToken, NewSession, NewUploadPart, NewUploadSession,
-    NewUser, ResetPasswordToken, Session, UploadPart, UploadSession, User,
+    AuditLogEntry, Clip, ClipComment, ClipMarker, Database, DbResult, DeviceToken, GameCategory,
+    GameCategoryName, InvitationToken, Job, NewAuditLogEntry, NewClip, NewClipComment,
+    NewClipMarker, NewDeviceToken, NewGameCategory, NewGameCategoryName, NewInvitationToken,
+    NewJob, NewResetPasswordToken, NewSession, NewUploadPart, NewUploadSession, NewUser,
+    ResetPasswordToken, Session, UploadPart, UploadSession, User,
 };
 
 pub const DEFAULT_ABOUT_TEXT: &str = "Self-hosted clip sharing for Clipline. Upload clips from the desktop app, manage your own library, and share public links without relying on a hosted service.";
@@ -35,6 +36,7 @@ pub enum ClipSort {
 pub struct ClipListParams {
     pub owner_user_id: String,
     pub game: Option<String>,
+    pub game_category_id: Option<String>,
     pub source_type: Option<String>,
     pub visibility: Option<String>,
     pub status: Option<String>,
@@ -60,6 +62,7 @@ pub struct ClipListStats {
 pub struct PublicClipListParams {
     pub owner_user_id: Option<String>,
     pub game: Option<String>,
+    pub game_category_id: Option<String>,
     pub query: Option<String>,
     pub sort: ClipSort,
     pub limit: i64,
@@ -68,7 +71,14 @@ pub struct PublicClipListParams {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicGameSummary {
-    pub game: String,
+    pub category_id: String,
+    pub display_name: String,
+    pub clip_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameNameSummary {
+    pub game_name: String,
     pub clip_count: i64,
 }
 
@@ -85,11 +95,32 @@ pub enum FinalizeUploadOutcome {
     NotMutable,
 }
 
+#[derive(Debug, Clone)]
+pub struct CreateUploadBundleOutcome {
+    pub created_game_category: Option<NewGameCategory>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbortUploadOutcome {
     Aborted,
     AlreadyAborted,
     NotMutable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeGameCategoryOutcome {
+    Merged,
+    SourceNotFound,
+    DestinationNotFound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeparateGameCategoryNameOutcome {
+    Created(String),
+    CategoryNotFound,
+    NameNotFound,
+    NameNotInCategory,
+    AlreadySeparate,
 }
 
 #[derive(Clone)]
@@ -99,6 +130,7 @@ pub struct Repositories {
     pub sessions: SessionRepository,
     pub device_tokens: DeviceTokenRepository,
     pub clips: ClipRepository,
+    pub game_categories: GameCategoryRepository,
     pub clip_comments: ClipCommentRepository,
     pub clip_markers: ClipMarkerRepository,
     pub upload_sessions: UploadSessionRepository,
@@ -117,6 +149,7 @@ impl Repositories {
             sessions: SessionRepository::new(database.clone()),
             device_tokens: DeviceTokenRepository::new(database.clone()),
             clips: ClipRepository::new(database.clone()),
+            game_categories: GameCategoryRepository::new(database.clone()),
             clip_comments: ClipCommentRepository::new(database.clone()),
             clip_markers: ClipMarkerRepository::new(database.clone()),
             upload_sessions: UploadSessionRepository::new(database.clone()),
@@ -126,6 +159,245 @@ impl Repositories {
             reset_password_tokens: ResetPasswordTokenRepository::new(database.clone()),
             invitation_tokens: InvitationTokenRepository::new(database),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct GameCategoryRepository {
+    pub(crate) database: Database,
+}
+
+impl GameCategoryRepository {
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    pub async fn list(&self) -> DbResult<Vec<GameCategory>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            GameCategory,
+            "SELECT id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+                    artwork_url, artwork_thumb_url,
+                    video_artwork_id, video_artwork_url, video_artwork_thumb_url,
+                    icon_artwork_id, icon_artwork_url, icon_artwork_thumb_url,
+                    created_at, updated_at
+             FROM game_categories
+             ORDER BY LOWER(display_name) ASC, display_name ASC, id ASC",
+            []
+        )?)
+    }
+
+    pub async fn get(&self, id: &str) -> DbResult<Option<GameCategory>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            GameCategory,
+            "SELECT id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+                    artwork_url, artwork_thumb_url,
+                    video_artwork_id, video_artwork_url, video_artwork_thumb_url,
+                    icon_artwork_id, icon_artwork_url, icon_artwork_thumb_url,
+                    created_at, updated_at
+             FROM game_categories WHERE id = ?",
+            [id]
+        )?)
+    }
+
+    pub async fn get_by_reported_name(&self, name: &str) -> DbResult<Option<GameCategory>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            GameCategory,
+            "SELECT c.id, c.display_name, c.steamgriddb_game_id, c.artwork_kind, c.artwork_id,
+                    c.artwork_url, c.artwork_thumb_url,
+                    c.video_artwork_id, c.video_artwork_url, c.video_artwork_thumb_url,
+                    c.icon_artwork_id, c.icon_artwork_url, c.icon_artwork_thumb_url,
+                    c.created_at, c.updated_at
+             FROM game_categories c
+             JOIN game_category_names n ON n.category_id = c.id
+             WHERE LOWER(n.reported_name) = LOWER(?)",
+            [name]
+        )?)
+    }
+
+    pub async fn list_names(&self, category_id: &str) -> DbResult<Vec<GameCategoryName>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            GameCategoryName,
+            "SELECT id, category_id, reported_name, created_at, updated_at
+             FROM game_category_names
+             WHERE category_id = ?
+             ORDER BY LOWER(reported_name) ASC, reported_name ASC, id ASC",
+            [category_id]
+        )?)
+    }
+
+    pub async fn list_all_names(&self) -> DbResult<Vec<GameCategoryName>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            GameCategoryName,
+            "SELECT id, category_id, reported_name, created_at, updated_at
+             FROM game_category_names
+             ORDER BY LOWER(reported_name) ASC, reported_name ASC, id ASC",
+            []
+        )?)
+    }
+
+    pub async fn get_name(&self, id: &str) -> DbResult<Option<GameCategoryName>> {
+        Ok(db_fetch_optional!(
+            &self.database,
+            GameCategoryName,
+            "SELECT id, category_id, reported_name, created_at, updated_at
+             FROM game_category_names WHERE id = ?",
+            [id]
+        )?)
+    }
+
+    pub async fn list_distinct_clip_names(&self) -> DbResult<Vec<String>> {
+        let rows = db_fetch_all!(
+            &self.database,
+            (String,),
+            "SELECT game_name
+             FROM clips
+             WHERE game_name IS NOT NULL AND TRIM(game_name) <> ''
+             GROUP BY game_name
+             ORDER BY MIN(created_at) ASC, game_name ASC",
+            []
+        )?;
+        Ok(rows.into_iter().map(|row| row.0).collect())
+    }
+
+    pub async fn create(&self, new: &NewGameCategory) -> DbResult<GameCategory> {
+        db_execute!(
+            &self.database,
+            "INSERT INTO game_categories
+               (id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+                artwork_url, artwork_thumb_url,
+                video_artwork_id, video_artwork_url, video_artwork_thumb_url,
+                icon_artwork_id, icon_artwork_url, icon_artwork_thumb_url,
+                created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                &new.id,
+                &new.display_name,
+                new.steamgriddb_game_id,
+                new.artwork_kind.as_deref(),
+                new.artwork_id,
+                new.artwork_url.as_deref(),
+                new.artwork_thumb_url.as_deref(),
+                new.video_artwork_id,
+                new.video_artwork_url.as_deref(),
+                new.video_artwork_thumb_url.as_deref(),
+                new.icon_artwork_id,
+                new.icon_artwork_url.as_deref(),
+                new.icon_artwork_thumb_url.as_deref(),
+                new.created_at,
+                new.updated_at
+            ]
+        )?;
+        Ok(self.get(&new.id).await?.ok_or(sqlx::Error::RowNotFound)?)
+    }
+
+    pub async fn create_name(&self, new: &NewGameCategoryName) -> DbResult<GameCategoryName> {
+        db_execute!(
+            &self.database,
+            "INSERT INTO game_category_names
+               (id, category_id, reported_name, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+            [
+                &new.id,
+                &new.category_id,
+                &new.reported_name,
+                new.created_at,
+                new.updated_at
+            ]
+        )?;
+        Ok(self
+            .get_name(&new.id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?)
+    }
+
+    pub async fn update(
+        &self,
+        id: &str,
+        update: &NewGameCategory,
+    ) -> DbResult<Option<GameCategory>> {
+        let affected = db_execute_rows!(
+            &self.database,
+            "UPDATE game_categories
+             SET display_name = ?, steamgriddb_game_id = ?, artwork_kind = ?,
+                 artwork_id = ?, artwork_url = ?, artwork_thumb_url = ?,
+                 video_artwork_id = ?, video_artwork_url = ?, video_artwork_thumb_url = ?,
+                 icon_artwork_id = ?, icon_artwork_url = ?, icon_artwork_thumb_url = ?,
+                 updated_at = ?
+             WHERE id = ?",
+            [
+                &update.display_name,
+                update.steamgriddb_game_id,
+                update.artwork_kind.as_deref(),
+                update.artwork_id,
+                update.artwork_url.as_deref(),
+                update.artwork_thumb_url.as_deref(),
+                update.video_artwork_id,
+                update.video_artwork_url.as_deref(),
+                update.video_artwork_thumb_url.as_deref(),
+                update.icon_artwork_id,
+                update.icon_artwork_url.as_deref(),
+                update.icon_artwork_thumb_url.as_deref(),
+                now_utc(),
+                id
+            ]
+        )?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.get(id).await
+    }
+
+    pub async fn apply_automatic_metadata_if_unchanged(
+        &self,
+        id: &str,
+        expected_updated_at: DateTime<Utc>,
+        update: &NewGameCategory,
+    ) -> DbResult<Option<GameCategory>> {
+        let affected = db_execute_rows!(
+            &self.database,
+            "UPDATE game_categories
+             SET steamgriddb_game_id = ?, artwork_kind = ?, artwork_id = ?,
+                 artwork_url = ?, artwork_thumb_url = ?,
+                 video_artwork_id = ?, video_artwork_url = ?, video_artwork_thumb_url = ?,
+                 icon_artwork_id = ?, icon_artwork_url = ?, icon_artwork_thumb_url = ?,
+                 updated_at = ?
+             WHERE id = ? AND updated_at = ?
+               AND steamgriddb_game_id IS NULL
+               AND artwork_id IS NULL AND video_artwork_id IS NULL AND icon_artwork_id IS NULL",
+            [
+                update.steamgriddb_game_id,
+                update.artwork_kind.as_deref(),
+                update.artwork_id,
+                update.artwork_url.as_deref(),
+                update.artwork_thumb_url.as_deref(),
+                update.video_artwork_id,
+                update.video_artwork_url.as_deref(),
+                update.video_artwork_thumb_url.as_deref(),
+                update.icon_artwork_id,
+                update.icon_artwork_url.as_deref(),
+                update.icon_artwork_thumb_url.as_deref(),
+                now_utc(),
+                id,
+                expected_updated_at
+            ]
+        )?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.get(id).await
+    }
+
+    pub async fn delete(&self, id: &str) -> DbResult<bool> {
+        Ok(db_execute_rows!(
+            &self.database,
+            "DELETE FROM game_categories WHERE id = ?",
+            [id]
+        )? > 0)
     }
 }
 
@@ -1022,24 +1294,50 @@ impl ClipRepository {
     pub async fn list_public_games(&self) -> DbResult<Vec<PublicGameSummary>> {
         let rows = db_fetch_all!(
             &self.database,
-            (String, i64),
-            "SELECT game, CAST(COUNT(*) AS BIGINT) AS clip_count
-             FROM (
-               SELECT COALESCE(NULLIF(TRIM(game_name), ''), NULLIF(TRIM(game_id), '')) AS game
-               FROM clips
-               WHERE visibility = 'public'
-                 AND status = 'ready'
-                 AND deleted_at IS NULL
-                 AND public_share_id IS NOT NULL
-             ) public_games
-             WHERE game IS NOT NULL
-             GROUP BY game
-             ORDER BY LOWER(game) ASC, game ASC",
+            (String, String, i64),
+            "SELECT category.id, category.display_name, CAST(COUNT(*) AS BIGINT) AS clip_count
+             FROM clips clip
+             JOIN game_category_names category_name
+               ON LOWER(category_name.reported_name) = LOWER(clip.game_name)
+             JOIN game_categories category ON category.id = category_name.category_id
+             WHERE clip.visibility = 'public'
+               AND clip.status = 'ready'
+               AND clip.deleted_at IS NULL
+               AND clip.public_share_id IS NOT NULL
+             GROUP BY category.id, category.display_name
+             ORDER BY LOWER(category.display_name) ASC, category.display_name ASC, category.id ASC",
             []
         )?;
         Ok(rows
             .into_iter()
-            .map(|(game, clip_count)| PublicGameSummary { game, clip_count })
+            .map(
+                |(category_id, display_name, clip_count)| PublicGameSummary {
+                    category_id,
+                    display_name,
+                    clip_count,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn list_game_names(&self) -> DbResult<Vec<GameNameSummary>> {
+        let rows = db_fetch_all!(
+            &self.database,
+            (String, i64),
+            "SELECT MIN(game_name), CAST(COUNT(*) AS BIGINT) AS clip_count
+             FROM clips
+             WHERE game_name IS NOT NULL AND TRIM(game_name) <> ''
+               AND deleted_at IS NULL AND status <> 'deleted'
+             GROUP BY LOWER(game_name)
+             ORDER BY LOWER(MIN(game_name)) ASC, MIN(game_name) ASC",
+            []
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|(game_name, clip_count)| GameNameSummary {
+                game_name,
+                clip_count,
+            })
             .collect())
     }
 
@@ -1226,7 +1524,6 @@ impl ClipRepository {
         id: &str,
         title: &str,
         description: Option<&str>,
-        game_name: Option<&str>,
         game_id: Option<&str>,
         game_executable: Option<&str>,
         source_type: Option<&str>,
@@ -1236,13 +1533,12 @@ impl ClipRepository {
         db_execute!(
             &self.database,
             "UPDATE clips
-             SET title = ?, description = ?, game_name = ?, game_id = ?, game_executable = ?,
+             SET title = ?, description = ?, game_id = ?, game_executable = ?,
                  source_type = ?, recorded_at = ?, duration_ms = ?, updated_at = ?
              WHERE id = ? AND deleted_at IS NULL AND status <> 'deleted'",
             [
                 title,
                 description,
-                game_name,
                 game_id,
                 game_executable,
                 source_type,
@@ -1516,6 +1812,11 @@ fn push_clip_optional_filters_sqlite(
         builder.push_bind(game.clone());
         builder.push(")");
     }
+    if let Some(category_id) = &params.game_category_id {
+        builder.push(" AND EXISTS (SELECT 1 FROM game_category_names category_name WHERE category_name.category_id = ");
+        builder.push_bind(category_id.clone());
+        builder.push(" AND LOWER(category_name.reported_name) = LOWER(game_name))");
+    }
     if let Some(source_type) = &params.source_type {
         builder.push(" AND source_type = ");
         builder.push_bind(source_type.clone());
@@ -1555,8 +1856,10 @@ fn push_clip_optional_filters_sqlite(
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR EXISTS (SELECT 1 FROM game_category_names search_name JOIN game_categories search_category ON search_category.id = search_name.category_id WHERE LOWER(search_name.reported_name) = LOWER(game_name) AND LOWER(search_category.display_name) LIKE ");
         builder.push_bind(pattern);
-        builder.push(" ESCAPE '\\')");
+        builder.push(" ESCAPE '\\'))");
     }
 }
 
@@ -1571,6 +1874,11 @@ fn push_clip_optional_filters_postgres(
         builder.push_bind(game.clone());
         builder.push(")");
     }
+    if let Some(category_id) = &params.game_category_id {
+        builder.push(" AND EXISTS (SELECT 1 FROM game_category_names category_name WHERE category_name.category_id = ");
+        builder.push_bind(category_id.clone());
+        builder.push(" AND LOWER(category_name.reported_name) = LOWER(game_name))");
+    }
     if let Some(source_type) = &params.source_type {
         builder.push(" AND source_type = ");
         builder.push_bind(source_type.clone());
@@ -1610,8 +1918,10 @@ fn push_clip_optional_filters_postgres(
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR EXISTS (SELECT 1 FROM game_category_names search_name JOIN game_categories search_category ON search_category.id = search_name.category_id WHERE LOWER(search_name.reported_name) = LOWER(game_name) AND LOWER(search_category.display_name) LIKE ");
         builder.push_bind(pattern);
-        builder.push(" ESCAPE '\\')");
+        builder.push(" ESCAPE '\\'))");
     }
 }
 
@@ -1626,6 +1936,11 @@ fn push_public_clip_optional_filters_sqlite(
         builder.push_bind(game.clone());
         builder.push(")");
     }
+    if let Some(category_id) = &params.game_category_id {
+        builder.push(" AND EXISTS (SELECT 1 FROM game_category_names category_name WHERE category_name.category_id = ");
+        builder.push_bind(category_id.clone());
+        builder.push(" AND LOWER(category_name.reported_name) = LOWER(game_name))");
+    }
     if let Some(query) = &params.query {
         let pattern = escaped_like_pattern(query);
         builder.push(" AND (LOWER(title) LIKE ");
@@ -1633,8 +1948,10 @@ fn push_public_clip_optional_filters_sqlite(
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR EXISTS (SELECT 1 FROM game_category_names search_name JOIN game_categories search_category ON search_category.id = search_name.category_id WHERE LOWER(search_name.reported_name) = LOWER(game_name) AND LOWER(search_category.display_name) LIKE ");
         builder.push_bind(pattern);
-        builder.push(" ESCAPE '\\')");
+        builder.push(" ESCAPE '\\'))");
     }
 }
 
@@ -1649,6 +1966,11 @@ fn push_public_clip_optional_filters_postgres(
         builder.push_bind(game.clone());
         builder.push(")");
     }
+    if let Some(category_id) = &params.game_category_id {
+        builder.push(" AND EXISTS (SELECT 1 FROM game_category_names category_name WHERE category_name.category_id = ");
+        builder.push_bind(category_id.clone());
+        builder.push(" AND LOWER(category_name.reported_name) = LOWER(game_name))");
+    }
     if let Some(query) = &params.query {
         let pattern = escaped_like_pattern(query);
         builder.push(" AND (LOWER(title) LIKE ");
@@ -1656,8 +1978,10 @@ fn push_public_clip_optional_filters_postgres(
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_name, '')) LIKE ");
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '\\' OR LOWER(COALESCE(game_id, '')) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\' OR EXISTS (SELECT 1 FROM game_category_names search_name JOIN game_categories search_category ON search_category.id = search_name.category_id WHERE LOWER(search_name.reported_name) = LOWER(game_name) AND LOWER(search_category.display_name) LIKE ");
         builder.push_bind(pattern);
-        builder.push(" ESCAPE '\\')");
+        builder.push(" ESCAPE '\\'))");
     }
 }
 

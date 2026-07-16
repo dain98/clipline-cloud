@@ -242,6 +242,8 @@ pub struct ListClipsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_category_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
@@ -288,6 +290,14 @@ pub struct ClipSummaryResponse {
     pub title: String,
     pub description: Option<String>,
     pub game_name: Option<String>,
+    #[serde(default)]
+    pub game_category_id: Option<String>,
+    #[serde(default)]
+    pub game_display_name: Option<String>,
+    #[serde(default)]
+    pub game_icon_url: Option<String>,
+    #[serde(default)]
+    pub game_video_art_url: Option<String>,
     pub game_id: Option<String>,
     #[serde(default)]
     pub source_type: Option<String>,
@@ -314,6 +324,14 @@ pub struct ClipDetailResponse {
     pub title: String,
     pub description: Option<String>,
     pub game_name: Option<String>,
+    #[serde(default)]
+    pub game_category_id: Option<String>,
+    #[serde(default)]
+    pub game_display_name: Option<String>,
+    #[serde(default)]
+    pub game_icon_url: Option<String>,
+    #[serde(default)]
+    pub game_video_art_url: Option<String>,
     pub game_id: Option<String>,
     pub game_executable: Option<String>,
     pub source_type: Option<String>,

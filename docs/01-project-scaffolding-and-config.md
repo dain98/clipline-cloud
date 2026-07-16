@@ -60,6 +60,7 @@ CLIPLINE_DATABASE_URL[_FILE]        # sqlite:///data/clipline.db (default) | pos
 CLIPLINE_BOOTSTRAP_ADMIN_USERNAME
 CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD
 CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD_FILE
+CLIPLINE_STEAMGRIDDB_API_KEY[_FILE] # optional; admin game search and category artwork
 
 CLIPLINE_STORAGE_BACKEND            # local | s3
 CLIPLINE_DATA_DIR                   # required for local

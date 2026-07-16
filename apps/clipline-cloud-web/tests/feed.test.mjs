@@ -64,12 +64,13 @@ test("publicFeedParams keeps filters while preserving the fixed page size", () =
   const params = publicFeedParams({ sort: "title_asc", game: "VALORANT", q: "ace", page: 2 });
   assert.equal(params.get("page_size"), "60");
   assert.equal(params.get("sort"), "title_asc");
-  assert.equal(params.get("game"), "VALORANT");
+  assert.equal(params.get("game_category_id"), "VALORANT");
   assert.equal(params.get("q"), "ace");
   assert.equal(params.get("page"), "2");
 });
 
 test("gameLabel falls back when public clip summaries omit game_name", () => {
+  assert.equal(gameLabel({ game_name: "GTA5_Enhanced", game_display_name: "Grand Theft Auto V" }), "Grand Theft Auto V");
   assert.equal(gameLabel({ game_name: "VALORANT" }), "VALORANT");
   assert.equal(gameLabel({ game_name: null }), "No game");
   assert.equal(gameLabel({}), "No game");
@@ -77,22 +78,22 @@ test("gameLabel falls back when public clip summaries omit game_name", () => {
 
 test("feedGameChips includes the active off-list game as selected chip data", () => {
   const games = [
-    { game: "A", clip_count: 10 },
-    { game: "B", clip_count: 9 },
-    { game: "C", clip_count: 8 },
-    { game: "D", clip_count: 7 },
-    { game: "E", clip_count: 6 },
-    { game: "F", clip_count: 5 },
-    { game: "G", clip_count: 4 },
-    { game: "H", clip_count: 3 },
+    { category_id: "A", clip_count: 10 },
+    { category_id: "B", clip_count: 9 },
+    { category_id: "C", clip_count: 8 },
+    { category_id: "D", clip_count: 7 },
+    { category_id: "E", clip_count: 6 },
+    { category_id: "F", clip_count: 5 },
+    { category_id: "G", clip_count: 4 },
+    { category_id: "H", clip_count: 3 },
   ];
   const { chips, extraGameCount } = feedGameChips(games, "G", 6);
-  assert.deepEqual(chips.map((chip) => chip.game), ["G", "A", "B", "C", "D", "E", "F"]);
+  assert.deepEqual(chips.map((chip) => chip.category_id), ["G", "A", "B", "C", "D", "E", "F"]);
   assert.equal(extraGameCount, 1);
 });
 
 test("feedGameChips shows an active game even before the games API returns it", () => {
-  const { chips, extraGameCount } = feedGameChips([{ game: "A", clip_count: 1 }], "Missing", 6);
-  assert.deepEqual(chips.map((chip) => chip.game), ["Missing", "A"]);
+  const { chips, extraGameCount } = feedGameChips([{ category_id: "A", clip_count: 1 }], "Missing", 6);
+  assert.deepEqual(chips.map((chip) => chip.category_id), ["Missing", "A"]);
   assert.equal(extraGameCount, 0);
 });

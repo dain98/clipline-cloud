@@ -339,7 +339,7 @@ pub(crate) use db_fetch_optional;
 mod tests {
     use super::*;
     use chrono::Duration as ChronoDuration;
-    use repositories::{ClipListParams, ClipSort};
+    use repositories::{ClipListParams, ClipSort, PublicClipListParams};
     use serde_json::json;
     use sqlx::types::Json;
     use std::env;
@@ -422,6 +422,8 @@ mod tests {
                 "clip_markers",
                 "clips",
                 "device_tokens",
+                "game_categories",
+                "game_category_names",
                 "invitation_tokens",
                 "jobs",
                 "reset_password_tokens",
@@ -578,6 +580,243 @@ mod tests {
         );
     }
 
+    async fn assert_game_category_lifecycle(database: Database) {
+        let raw_database = database.clone();
+        let repos = Repositories::new(database);
+        let suffix = new_ulid().to_ascii_lowercase();
+        let user = repos
+            .users
+            .create(&NewUser::new(
+                format!("categories-{suffix}"),
+                "hash",
+                "user",
+            ))
+            .await
+            .expect("category test user");
+
+        let mut first = NewClip::new(&user.id, "Enhanced", "local");
+        first.game_name = Some("GTA5_Enhanced".to_string());
+        first.status = "ready".to_string();
+        first.visibility = "public".to_string();
+        first.public_share_id = Some(format!("category-first-{suffix}"));
+        let first_session = NewUploadSession::new(
+            &first.id,
+            &user.id,
+            1,
+            format!("objects/{suffix}/first.mp4"),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        let first_bundle = repos
+            .create_upload_bundle(&first, &first_session, &[])
+            .await
+            .expect("first category upload");
+        assert_eq!(
+            first_bundle
+                .created_game_category
+                .as_ref()
+                .map(|category| category.display_name.as_str()),
+            Some("GTA5_Enhanced")
+        );
+
+        let mut second = NewClip::new(&user.id, "Canonical", "local");
+        second.game_name = Some("Grand Theft Auto V".to_string());
+        second.status = "ready".to_string();
+        second.visibility = "public".to_string();
+        second.public_share_id = Some(format!("category-second-{suffix}"));
+        let second_session = NewUploadSession::new(
+            &second.id,
+            &user.id,
+            1,
+            format!("objects/{suffix}/second.mp4"),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        let second_bundle = repos
+            .create_upload_bundle(&second, &second_session, &[])
+            .await
+            .expect("second category upload");
+        let created_destination = second_bundle
+            .created_game_category
+            .expect("new upload creates a managed category");
+        let mut automatic_metadata = NewGameCategory::new("ignored display name");
+        automatic_metadata.steamgriddb_game_id = Some(5258);
+        automatic_metadata.artwork_kind = Some("grid".to_string());
+        automatic_metadata.artwork_id = Some(101);
+        automatic_metadata.artwork_url = Some("https://cdn2.steamgriddb.com/grid.png".to_string());
+        automatic_metadata.artwork_thumb_url =
+            Some("https://cdn2.steamgriddb.com/grid-thumb.png".to_string());
+        automatic_metadata.video_artwork_id = Some(102);
+        automatic_metadata.video_artwork_url =
+            Some("https://cdn2.steamgriddb.com/hero.png".to_string());
+        automatic_metadata.video_artwork_thumb_url =
+            Some("https://cdn2.steamgriddb.com/hero-thumb.png".to_string());
+        automatic_metadata.icon_artwork_id = Some(103);
+        automatic_metadata.icon_artwork_url =
+            Some("https://cdn2.steamgriddb.com/icon.png".to_string());
+        automatic_metadata.icon_artwork_thumb_url =
+            Some("https://cdn2.steamgriddb.com/icon-thumb.png".to_string());
+        let automatically_enriched = repos
+            .game_categories
+            .apply_automatic_metadata_if_unchanged(
+                &created_destination.id,
+                created_destination.updated_at,
+                &automatic_metadata,
+            )
+            .await
+            .expect("apply automatic category metadata")
+            .expect("unchanged category accepts automatic metadata");
+        assert_eq!(automatically_enriched.artwork_id, Some(101));
+        assert_eq!(automatically_enriched.video_artwork_id, Some(102));
+        assert_eq!(automatically_enriched.icon_artwork_id, Some(103));
+        assert!(repos
+            .game_categories
+            .apply_automatic_metadata_if_unchanged(
+                &created_destination.id,
+                created_destination.updated_at,
+                &automatic_metadata,
+            )
+            .await
+            .expect("reject stale automatic category metadata")
+            .is_none());
+
+        let source = repos
+            .game_categories
+            .get_by_reported_name("gta5_enhanced")
+            .await
+            .expect("source lookup")
+            .expect("source category");
+        let destination = repos
+            .game_categories
+            .get_by_reported_name("Grand Theft Auto V")
+            .await
+            .expect("destination lookup")
+            .expect("destination category");
+        assert_ne!(source.id, destination.id);
+        assert_eq!(
+            repos
+                .merge_game_categories(&source.id, &destination.id, None)
+                .await
+                .expect("merge categories"),
+            MergeGameCategoryOutcome::Merged
+        );
+
+        let mut params = ClipListParams {
+            owner_user_id: user.id.clone(),
+            game: None,
+            game_category_id: Some(destination.id.clone()),
+            source_type: None,
+            visibility: None,
+            status: None,
+            from: None,
+            to: None,
+            min_duration_ms: None,
+            max_duration_ms: None,
+            min_size_bytes: None,
+            max_size_bytes: None,
+            query: None,
+            sort: ClipSort::CreatedAtAsc,
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(
+            repos
+                .clips
+                .list_for_owner(&params)
+                .await
+                .expect("merged category filter")
+                .len(),
+            2
+        );
+        let mut public_params = PublicClipListParams {
+            owner_user_id: None,
+            game: None,
+            game_category_id: Some(destination.id.clone()),
+            query: None,
+            sort: ClipSort::CreatedAtAsc,
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(
+            repos
+                .clips
+                .list_public(&public_params)
+                .await
+                .expect("merged public category filter")
+                .len(),
+            2
+        );
+        assert!(repos
+            .clips
+            .list_public_games()
+            .await
+            .expect("merged public category summaries")
+            .iter()
+            .any(|game| game.category_id == destination.id && game.clip_count == 2));
+
+        let name = repos
+            .game_categories
+            .list_names(&destination.id)
+            .await
+            .expect("merged names")
+            .into_iter()
+            .find(|name| name.reported_name == "GTA5_Enhanced")
+            .expect("enhanced name");
+        let separated_id = match repos
+            .separate_game_category_name(&destination.id, &name.id, None)
+            .await
+            .expect("separate name")
+        {
+            SeparateGameCategoryNameOutcome::Created(id) => id,
+            outcome => panic!("unexpected separate outcome: {outcome:?}"),
+        };
+        params.game_category_id = Some(separated_id);
+        public_params.game_category_id = params.game_category_id.clone();
+        let separated = repos
+            .clips
+            .list_for_owner(&params)
+            .await
+            .expect("separated category filter");
+        assert_eq!(separated.len(), 1);
+        assert_eq!(separated[0].game_name.as_deref(), Some("GTA5_Enhanced"));
+        assert_eq!(
+            repos
+                .clips
+                .list_public(&public_params)
+                .await
+                .expect("separated public category filter")
+                .len(),
+            1
+        );
+
+        let immutable_update_rejected = match raw_database {
+            Database::Sqlite(pool) => sqlx::query("UPDATE clips SET game_name = ? WHERE id = ?")
+                .bind("Changed")
+                .bind(&first.id)
+                .execute(&pool)
+                .await
+                .is_err(),
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE clips SET game_name = $1 WHERE id = $2")
+                    .bind("Changed")
+                    .bind(&first.id)
+                    .execute(&pool)
+                    .await
+                    .is_err()
+            }
+        };
+        assert!(immutable_update_rejected);
+        assert_eq!(
+            repos
+                .clips
+                .get(&first.id)
+                .await
+                .expect("immutable clip lookup")
+                .expect("immutable clip")
+                .game_name
+                .as_deref(),
+            Some("GTA5_Enhanced")
+        );
+    }
+
     #[tokio::test]
     async fn sqlite_migration_creates_expected_tables_and_is_idempotent() {
         let (_temp_dir, database) = sqlite_test_database().await;
@@ -594,6 +833,12 @@ mod tests {
     async fn sqlite_active_jobs_without_target_type_are_deduplicated() {
         let (_temp_dir, database) = sqlite_test_database().await;
         assert_active_jobs_without_target_type_are_deduplicated(&database).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_game_categories_merge_filter_separate_without_rewriting_clips() {
+        let (_temp_dir, database) = sqlite_test_database().await;
+        assert_game_category_lifecycle(database).await;
     }
 
     #[tokio::test]
@@ -618,6 +863,14 @@ mod tests {
             return;
         };
         assert_active_jobs_without_target_type_are_deduplicated(&database).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_game_categories_merge_filter_separate_without_rewriting_clips() {
+        let Some(database) = postgres_test_database().await else {
+            return;
+        };
+        assert_game_category_lifecycle(database).await;
     }
 
     #[tokio::test]
@@ -809,6 +1062,69 @@ mod tests {
             .await
             .expect("get device token")
             .is_some());
+
+        let category = repos
+            .game_categories
+            .create(&NewGameCategory::new("Grand Theft Auto V"))
+            .await
+            .expect("create game category");
+        let category_name = repos
+            .game_categories
+            .create_name(&NewGameCategoryName::new(&category.id, "GTA5_Enhanced"))
+            .await
+            .expect("create game category name");
+        assert_eq!(
+            repos
+                .game_categories
+                .list()
+                .await
+                .expect("list game categories"),
+            vec![category.clone()]
+        );
+        assert_eq!(
+            repos
+                .game_categories
+                .list_names(&category.id)
+                .await
+                .expect("list game category names"),
+            vec![category_name]
+        );
+        let mut updated_category = NewGameCategory::new("GTA V");
+        updated_category.steamgriddb_game_id = Some(5258);
+        updated_category.artwork_kind = Some("grid".to_string());
+        updated_category.artwork_id = Some(8842);
+        updated_category.artwork_url =
+            Some("https://cdn2.steamgriddb.com/grid/full.png".to_string());
+        updated_category.artwork_thumb_url =
+            Some("https://cdn2.steamgriddb.com/grid/thumb.png".to_string());
+        updated_category.video_artwork_id = Some(8843);
+        updated_category.video_artwork_url =
+            Some("https://cdn2.steamgriddb.com/hero/full.png".to_string());
+        updated_category.video_artwork_thumb_url =
+            Some("https://cdn2.steamgriddb.com/hero/thumb.png".to_string());
+        updated_category.icon_artwork_id = Some(8844);
+        updated_category.icon_artwork_url =
+            Some("https://cdn2.steamgriddb.com/icon/full.png".to_string());
+        updated_category.icon_artwork_thumb_url =
+            Some("https://cdn2.steamgriddb.com/icon/thumb.png".to_string());
+        let category = repos
+            .game_categories
+            .update(&category.id, &updated_category)
+            .await
+            .expect("update game category")
+            .expect("game category");
+        assert_eq!(category.display_name, "GTA V");
+        assert_eq!(category.steamgriddb_game_id, Some(5258));
+        assert_eq!(category.artwork_kind.as_deref(), Some("grid"));
+        assert_eq!(category.artwork_id, Some(8842));
+        assert_eq!(category.video_artwork_id, Some(8843));
+        assert_eq!(category.icon_artwork_id, Some(8844));
+        assert!(!repos
+            .game_categories
+            .list()
+            .await
+            .expect("list retained game categories")
+            .is_empty());
 
         let mut new_clip = NewClip::new(&user.id, "First Clip", "local");
         new_clip.client_clip_id = Some(client_clip_id);
@@ -1564,6 +1880,7 @@ mod tests {
         let mut params = ClipListParams {
             owner_user_id: user.id.clone(),
             game: None,
+            game_category_id: None,
             source_type: None,
             visibility: None,
             status: None,
@@ -1706,6 +2023,7 @@ mod tests {
         let params = ClipListParams {
             owner_user_id: user.id.clone(),
             game: None,
+            game_category_id: None,
             source_type: Some("replay".to_string()),
             visibility: None,
             status: None,
@@ -1790,6 +2108,7 @@ mod tests {
         let mut params = PublicClipListParams {
             owner_user_id: None,
             game: None,
+            game_category_id: None,
             query: None,
             sort: ClipSort::UploadedAtDesc,
             limit: 10,
@@ -1841,6 +2160,10 @@ mod tests {
             .create(&other_public)
             .await
             .expect("other public clip");
+        repos
+            .reconcile_game_categories()
+            .await
+            .expect("reconcile game categories");
 
         params.game = None;
         params.owner_user_id = Some(user.id.clone());
@@ -1869,16 +2192,17 @@ mod tests {
                 .list_public_games()
                 .await
                 .expect("list public games"),
-            vec![
-                PublicGameSummary {
-                    game: "Factorio".to_string(),
-                    clip_count: 1,
-                },
-                PublicGameSummary {
-                    game: "Renata Glasc".to_string(),
-                    clip_count: 1,
-                },
-            ]
+            vec![PublicGameSummary {
+                category_id: repos
+                    .game_categories
+                    .get_by_reported_name("Renata Glasc")
+                    .await
+                    .expect("find Renata category")
+                    .expect("Renata category")
+                    .id,
+                display_name: "Renata Glasc".to_string(),
+                clip_count: 1,
+            }]
         );
         assert_eq!(
             repos

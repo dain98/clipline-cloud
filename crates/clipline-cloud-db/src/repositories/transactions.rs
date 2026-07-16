@@ -2,13 +2,200 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{types::Json, Postgres, Sqlite};
 
-use super::{AbortUploadOutcome, BulkVisibilityUpdate, FinalizeUploadOutcome, Repositories};
+use super::{
+    AbortUploadOutcome, BulkVisibilityUpdate, CreateUploadBundleOutcome, FinalizeUploadOutcome,
+    MergeGameCategoryOutcome, Repositories, SeparateGameCategoryNameOutcome,
+};
 use crate::{
-    now_utc, Database, DbResult, NewAuditLogEntry, NewClip, NewClipMarker, NewJob,
-    NewUploadSession, NewUser,
+    now_utc, Database, DbResult, NewAuditLogEntry, NewClip, NewClipMarker, NewGameCategory,
+    NewGameCategoryName, NewJob, NewUploadSession, NewUser,
 };
 
 impl Repositories {
+    pub async fn reconcile_game_categories(&self) -> DbResult<()> {
+        for name in self.game_categories.list_distinct_clip_names().await? {
+            self.ensure_game_category(&name).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_game_category(&self, reported_name: &str) -> DbResult<()> {
+        match &self.game_categories.database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                let _ = ensure_game_category_sqlite(&mut transaction, reported_name).await?;
+                transaction.commit().await?;
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                let _ = ensure_game_category_postgres(&mut transaction, reported_name).await?;
+                transaction.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn update_game_category_with_audit(
+        &self,
+        id: &str,
+        update: &NewGameCategory,
+        audit: &NewAuditLogEntry,
+    ) -> DbResult<bool> {
+        match &self.game_categories.database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                let rows = sqlx::query(
+                    "UPDATE game_categories
+                     SET display_name = ?, steamgriddb_game_id = ?, artwork_kind = ?,
+                         artwork_id = ?, artwork_url = ?, artwork_thumb_url = ?,
+                         video_artwork_id = ?, video_artwork_url = ?, video_artwork_thumb_url = ?,
+                         icon_artwork_id = ?, icon_artwork_url = ?, icon_artwork_thumb_url = ?,
+                         updated_at = ?
+                     WHERE id = ?",
+                )
+                .bind(&update.display_name)
+                .bind(update.steamgriddb_game_id)
+                .bind(update.artwork_kind.as_deref())
+                .bind(update.artwork_id)
+                .bind(update.artwork_url.as_deref())
+                .bind(update.artwork_thumb_url.as_deref())
+                .bind(update.video_artwork_id)
+                .bind(update.video_artwork_url.as_deref())
+                .bind(update.video_artwork_thumb_url.as_deref())
+                .bind(update.icon_artwork_id)
+                .bind(update.icon_artwork_url.as_deref())
+                .bind(update.icon_artwork_thumb_url.as_deref())
+                .bind(now_utc())
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+                if rows == 0 {
+                    transaction.rollback().await?;
+                    return Ok(false);
+                }
+                insert_audit_sqlite(&mut transaction, audit).await?;
+                transaction.commit().await?;
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                let rows = sqlx::query(
+                    "UPDATE game_categories
+                     SET display_name = $1, steamgriddb_game_id = $2, artwork_kind = $3,
+                         artwork_id = $4, artwork_url = $5, artwork_thumb_url = $6,
+                         video_artwork_id = $7, video_artwork_url = $8, video_artwork_thumb_url = $9,
+                         icon_artwork_id = $10, icon_artwork_url = $11, icon_artwork_thumb_url = $12,
+                         updated_at = $13
+                     WHERE id = $14",
+                )
+                .bind(&update.display_name)
+                .bind(update.steamgriddb_game_id)
+                .bind(update.artwork_kind.as_deref())
+                .bind(update.artwork_id)
+                .bind(update.artwork_url.as_deref())
+                .bind(update.artwork_thumb_url.as_deref())
+                .bind(update.video_artwork_id)
+                .bind(update.video_artwork_url.as_deref())
+                .bind(update.video_artwork_thumb_url.as_deref())
+                .bind(update.icon_artwork_id)
+                .bind(update.icon_artwork_url.as_deref())
+                .bind(update.icon_artwork_thumb_url.as_deref())
+                .bind(now_utc())
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+                if rows == 0 {
+                    transaction.rollback().await?;
+                    return Ok(false);
+                }
+                insert_audit_postgres(&mut transaction, audit).await?;
+                transaction.commit().await?;
+            }
+        }
+        Ok(true)
+    }
+
+    pub async fn merge_game_categories(
+        &self,
+        source_id: &str,
+        destination_id: &str,
+        audit: Option<&NewAuditLogEntry>,
+    ) -> DbResult<MergeGameCategoryOutcome> {
+        match &self.game_categories.database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                let outcome =
+                    merge_game_categories_sqlite(&mut transaction, source_id, destination_id)
+                        .await?;
+                if outcome == MergeGameCategoryOutcome::Merged {
+                    if let Some(audit) = audit {
+                        insert_audit_sqlite(&mut transaction, audit).await?;
+                    }
+                    transaction.commit().await?;
+                } else {
+                    transaction.rollback().await?;
+                }
+                Ok(outcome)
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                let outcome =
+                    merge_game_categories_postgres(&mut transaction, source_id, destination_id)
+                        .await?;
+                if outcome == MergeGameCategoryOutcome::Merged {
+                    if let Some(audit) = audit {
+                        insert_audit_postgres(&mut transaction, audit).await?;
+                    }
+                    transaction.commit().await?;
+                } else {
+                    transaction.rollback().await?;
+                }
+                Ok(outcome)
+            }
+        }
+    }
+
+    pub async fn separate_game_category_name(
+        &self,
+        category_id: &str,
+        name_id: &str,
+        audit: Option<&NewAuditLogEntry>,
+    ) -> DbResult<SeparateGameCategoryNameOutcome> {
+        match &self.game_categories.database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                let outcome =
+                    separate_game_category_name_sqlite(&mut transaction, category_id, name_id)
+                        .await?;
+                if matches!(outcome, SeparateGameCategoryNameOutcome::Created(_)) {
+                    if let Some(audit) = audit {
+                        insert_audit_sqlite(&mut transaction, audit).await?;
+                    }
+                    transaction.commit().await?;
+                } else {
+                    transaction.rollback().await?;
+                }
+                Ok(outcome)
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                let outcome =
+                    separate_game_category_name_postgres(&mut transaction, category_id, name_id)
+                        .await?;
+                if matches!(outcome, SeparateGameCategoryNameOutcome::Created(_)) {
+                    if let Some(audit) = audit {
+                        insert_audit_postgres(&mut transaction, audit).await?;
+                    }
+                    transaction.commit().await?;
+                } else {
+                    transaction.rollback().await?;
+                }
+                Ok(outcome)
+            }
+        }
+    }
+
     pub async fn bulk_soft_delete_clips_with_audit(
         &self,
         owner_user_id: &str,
@@ -308,28 +495,42 @@ impl Repositories {
         clip: &NewClip,
         session: &NewUploadSession,
         markers: &[NewClipMarker],
-    ) -> DbResult<()> {
-        match &self.clips.database {
+    ) -> DbResult<CreateUploadBundleOutcome> {
+        let created_game_category = match &self.clips.database {
             Database::Sqlite(pool) => {
                 let mut transaction = pool.begin().await?;
+                let created = if let Some(game_name) = clip.game_name.as_deref() {
+                    ensure_game_category_sqlite(&mut transaction, game_name).await?
+                } else {
+                    None
+                };
                 insert_clip_sqlite(&mut transaction, clip).await?;
                 insert_upload_session_sqlite(&mut transaction, session).await?;
                 for marker in markers {
                     insert_clip_marker_sqlite(&mut transaction, marker).await?;
                 }
                 transaction.commit().await?;
+                created
             }
             Database::Postgres(pool) => {
                 let mut transaction = pool.begin().await?;
+                let created = if let Some(game_name) = clip.game_name.as_deref() {
+                    ensure_game_category_postgres(&mut transaction, game_name).await?
+                } else {
+                    None
+                };
                 insert_clip_postgres(&mut transaction, clip).await?;
                 insert_upload_session_postgres(&mut transaction, session).await?;
                 for marker in markers {
                     insert_clip_marker_postgres(&mut transaction, marker).await?;
                 }
                 transaction.commit().await?;
+                created
             }
-        }
-        Ok(())
+        };
+        Ok(CreateUploadBundleOutcome {
+            created_game_category,
+        })
     }
 
     pub async fn finalize_upload(
@@ -437,6 +638,332 @@ impl Repositories {
         }
         Ok(())
     }
+}
+
+async fn ensure_game_category_sqlite(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    reported_name: &str,
+) -> Result<Option<NewGameCategory>, sqlx::Error> {
+    if sqlx::query_scalar::<_, String>(
+        "SELECT category_id FROM game_category_names WHERE LOWER(reported_name) = LOWER(?)",
+    )
+    .bind(reported_name)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .is_some()
+    {
+        return Ok(None);
+    }
+
+    let category = NewGameCategory::new(reported_name);
+    let name = NewGameCategoryName::new(&category.id, reported_name);
+    sqlx::query(
+        "INSERT INTO game_categories
+           (id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+            artwork_url, artwork_thumb_url, created_at, updated_at)
+         VALUES (?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(&category.id)
+    .bind(&category.display_name)
+    .bind(category.created_at)
+    .bind(category.updated_at)
+    .execute(&mut **transaction)
+    .await?;
+    let inserted = sqlx::query(
+        "INSERT INTO game_category_names
+           (id, category_id, reported_name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&name.id)
+    .bind(&name.category_id)
+    .bind(&name.reported_name)
+    .bind(name.created_at)
+    .bind(name.updated_at)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    if inserted == 0 {
+        sqlx::query("DELETE FROM game_categories WHERE id = ?")
+            .bind(&category.id)
+            .execute(&mut **transaction)
+            .await?;
+        return Ok(None);
+    }
+    Ok(Some(category))
+}
+
+async fn ensure_game_category_postgres(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    reported_name: &str,
+) -> Result<Option<NewGameCategory>, sqlx::Error> {
+    if sqlx::query_scalar::<_, String>(
+        "SELECT category_id FROM game_category_names WHERE LOWER(reported_name) = LOWER($1)",
+    )
+    .bind(reported_name)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .is_some()
+    {
+        return Ok(None);
+    }
+
+    let category = NewGameCategory::new(reported_name);
+    let name = NewGameCategoryName::new(&category.id, reported_name);
+    sqlx::query(
+        "INSERT INTO game_categories
+           (id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+            artwork_url, artwork_thumb_url, created_at, updated_at)
+         VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, $3, $4)",
+    )
+    .bind(&category.id)
+    .bind(&category.display_name)
+    .bind(category.created_at)
+    .bind(category.updated_at)
+    .execute(&mut **transaction)
+    .await?;
+    let inserted = sqlx::query(
+        "INSERT INTO game_category_names
+           (id, category_id, reported_name, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&name.id)
+    .bind(&name.category_id)
+    .bind(&name.reported_name)
+    .bind(name.created_at)
+    .bind(name.updated_at)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    if inserted == 0 {
+        sqlx::query("DELETE FROM game_categories WHERE id = $1")
+            .bind(&category.id)
+            .execute(&mut **transaction)
+            .await?;
+        return Ok(None);
+    }
+    Ok(Some(category))
+}
+
+async fn merge_game_categories_sqlite(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    source_id: &str,
+    destination_id: &str,
+) -> Result<MergeGameCategoryOutcome, sqlx::Error> {
+    if !category_exists_sqlite(transaction, source_id).await? {
+        return Ok(MergeGameCategoryOutcome::SourceNotFound);
+    }
+    if !category_exists_sqlite(transaction, destination_id).await? {
+        return Ok(MergeGameCategoryOutcome::DestinationNotFound);
+    }
+    let now = now_utc();
+    sqlx::query(
+        "UPDATE game_category_names SET category_id = ?, updated_at = ? WHERE category_id = ?",
+    )
+    .bind(destination_id)
+    .bind(now)
+    .bind(source_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query("UPDATE game_categories SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(destination_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("DELETE FROM game_categories WHERE id = ?")
+        .bind(source_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(MergeGameCategoryOutcome::Merged)
+}
+
+async fn merge_game_categories_postgres(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    source_id: &str,
+    destination_id: &str,
+) -> Result<MergeGameCategoryOutcome, sqlx::Error> {
+    if !category_exists_postgres(transaction, source_id).await? {
+        return Ok(MergeGameCategoryOutcome::SourceNotFound);
+    }
+    if !category_exists_postgres(transaction, destination_id).await? {
+        return Ok(MergeGameCategoryOutcome::DestinationNotFound);
+    }
+    let now = now_utc();
+    sqlx::query(
+        "UPDATE game_category_names SET category_id = $1, updated_at = $2 WHERE category_id = $3",
+    )
+    .bind(destination_id)
+    .bind(now)
+    .bind(source_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query("UPDATE game_categories SET updated_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(destination_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("DELETE FROM game_categories WHERE id = $1")
+        .bind(source_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(MergeGameCategoryOutcome::Merged)
+}
+
+async fn separate_game_category_name_sqlite(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    category_id: &str,
+    name_id: &str,
+) -> Result<SeparateGameCategoryNameOutcome, sqlx::Error> {
+    if !category_exists_sqlite(transaction, category_id).await? {
+        return Ok(SeparateGameCategoryNameOutcome::CategoryNotFound);
+    }
+    let name = sqlx::query_as::<_, (String, String)>(
+        "SELECT category_id, reported_name FROM game_category_names WHERE id = ?",
+    )
+    .bind(name_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some((actual_category_id, reported_name)) = name else {
+        return Ok(SeparateGameCategoryNameOutcome::NameNotFound);
+    };
+    if actual_category_id != category_id {
+        return Ok(SeparateGameCategoryNameOutcome::NameNotInCategory);
+    }
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM game_category_names WHERE category_id = ?",
+    )
+    .bind(category_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if count < 2 {
+        return Ok(SeparateGameCategoryNameOutcome::AlreadySeparate);
+    }
+    let category = NewGameCategory::new(&reported_name);
+    insert_default_category_sqlite(transaction, &category).await?;
+    let now = now_utc();
+    sqlx::query("UPDATE game_category_names SET category_id = ?, updated_at = ? WHERE id = ?")
+        .bind(&category.id)
+        .bind(now)
+        .bind(name_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("UPDATE game_categories SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(category_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(SeparateGameCategoryNameOutcome::Created(category.id))
+}
+
+async fn separate_game_category_name_postgres(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    category_id: &str,
+    name_id: &str,
+) -> Result<SeparateGameCategoryNameOutcome, sqlx::Error> {
+    if !category_exists_postgres(transaction, category_id).await? {
+        return Ok(SeparateGameCategoryNameOutcome::CategoryNotFound);
+    }
+    let name = sqlx::query_as::<_, (String, String)>(
+        "SELECT category_id, reported_name FROM game_category_names WHERE id = $1 FOR UPDATE",
+    )
+    .bind(name_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some((actual_category_id, reported_name)) = name else {
+        return Ok(SeparateGameCategoryNameOutcome::NameNotFound);
+    };
+    if actual_category_id != category_id {
+        return Ok(SeparateGameCategoryNameOutcome::NameNotInCategory);
+    }
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM game_category_names WHERE category_id = $1",
+    )
+    .bind(category_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if count < 2 {
+        return Ok(SeparateGameCategoryNameOutcome::AlreadySeparate);
+    }
+    let category = NewGameCategory::new(&reported_name);
+    insert_default_category_postgres(transaction, &category).await?;
+    let now = now_utc();
+    sqlx::query("UPDATE game_category_names SET category_id = $1, updated_at = $2 WHERE id = $3")
+        .bind(&category.id)
+        .bind(now)
+        .bind(name_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("UPDATE game_categories SET updated_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(category_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(SeparateGameCategoryNameOutcome::Created(category.id))
+}
+
+async fn category_exists_sqlite(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM game_categories WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut **transaction)
+            .await?
+            > 0,
+    )
+}
+
+async fn category_exists_postgres(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM game_categories WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut **transaction)
+            .await?
+            > 0,
+    )
+}
+
+async fn insert_default_category_sqlite(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    category: &NewGameCategory,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO game_categories
+           (id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+            artwork_url, artwork_thumb_url, created_at, updated_at)
+         VALUES (?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(&category.id)
+    .bind(&category.display_name)
+    .bind(category.created_at)
+    .bind(category.updated_at)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn insert_default_category_postgres(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    category: &NewGameCategory,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO game_categories
+           (id, display_name, steamgriddb_game_id, artwork_kind, artwork_id,
+            artwork_url, artwork_thumb_url, created_at, updated_at)
+         VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, $3, $4)",
+    )
+    .bind(&category.id)
+    .bind(&category.display_name)
+    .bind(category.created_at)
+    .bind(category.updated_at)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 async fn update_password_and_revoke_sqlite(

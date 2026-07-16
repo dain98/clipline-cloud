@@ -8,10 +8,11 @@ mod logging;
 mod mail;
 mod media;
 mod operator;
+mod steamgriddb;
 mod uploads;
 mod validation;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -57,6 +58,109 @@ impl ClientIp {
     }
 }
 
+async fn game_display_name_map(
+    state: &AppState,
+) -> Result<HashMap<String, ResolvedGameCategory>, error::ApiError> {
+    let categories = state
+        .repositories
+        .game_categories
+        .list()
+        .await?
+        .into_iter()
+        .map(|category| (category.id.clone(), category))
+        .collect::<HashMap<_, _>>();
+    Ok(state
+        .repositories
+        .game_categories
+        .list_all_names()
+        .await?
+        .into_iter()
+        .filter_map(|name| {
+            categories.get(&name.category_id).map(|category| {
+                (
+                    name.reported_name.to_lowercase(),
+                    ResolvedGameCategory {
+                        id: category.id.clone(),
+                        display_name: category.display_name.clone(),
+                        video_art_url: category
+                            .video_artwork_thumb_url
+                            .as_ref()
+                            .zip(category.video_artwork_id)
+                            .map(|(_, artwork_id)| {
+                                format!(
+                                    "/api/v1/public/game-categories/{}/artwork/video?v={artwork_id}",
+                                    category.id
+                                )
+                            }),
+                        icon_url: category
+                            .icon_artwork_thumb_url
+                            .as_ref()
+                            .zip(category.icon_artwork_id)
+                            .map(|(_, artwork_id)| {
+                                format!(
+                                    "/api/v1/public/game-categories/{}/artwork/icon?v={artwork_id}",
+                                    category.id
+                                )
+                            }),
+                    },
+                )
+            })
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedGameCategory {
+    pub(crate) id: String,
+    pub(crate) display_name: String,
+    pub(crate) video_art_url: Option<String>,
+    pub(crate) icon_url: Option<String>,
+}
+
+fn game_display_name(
+    game_name: Option<&str>,
+    display_names: &HashMap<String, ResolvedGameCategory>,
+) -> Option<String> {
+    game_name.and_then(|name| {
+        display_names
+            .get(&name.to_lowercase())
+            .map(|category| category.display_name.clone())
+    })
+}
+
+fn game_category_id(
+    game_name: Option<&str>,
+    display_names: &HashMap<String, ResolvedGameCategory>,
+) -> Option<String> {
+    game_name.and_then(|name| {
+        display_names
+            .get(&name.to_lowercase())
+            .map(|category| category.id.clone())
+    })
+}
+
+fn game_video_art_url(
+    game_name: Option<&str>,
+    display_names: &HashMap<String, ResolvedGameCategory>,
+) -> Option<String> {
+    game_name.and_then(|name| {
+        display_names
+            .get(&name.to_lowercase())
+            .and_then(|category| category.video_art_url.clone())
+    })
+}
+
+fn game_icon_url(
+    game_name: Option<&str>,
+    display_names: &HashMap<String, ResolvedGameCategory>,
+) -> Option<String> {
+    game_name.and_then(|name| {
+        display_names
+            .get(&name.to_lowercase())
+            .and_then(|category| category.icon_url.clone())
+    })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match operator::parse_invocation(std::env::args().skip(1))? {
@@ -96,6 +200,10 @@ async fn run(config: Config) -> anyhow::Result<()> {
         backend = ?database.kind(),
     );
     let repositories = Repositories::new(database.clone());
+    repositories
+        .reconcile_game_categories()
+        .await
+        .context("failed to reconcile game categories")?;
     if process_role.runs_http() {
         auth::ensure_first_admin(&config, &repositories)
             .await
@@ -326,6 +434,8 @@ fn router(
         .route("/game/{*path}", get(spa_index))
         .route("/library", get(spa_index))
         .route("/admin", get(spa_index))
+        .route("/admin/game-categories", get(spa_index))
+        .route("/admin/game-categories/{*path}", get(spa_index))
         .route("/account", get(spa_index))
         .route("/profile", get(spa_index))
         .route("/u/{*path}", get(spa_index))
@@ -691,6 +801,30 @@ mod tests {
         let response = test.app.oneshot(request).await.expect("response");
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn game_category_admin_routes_serve_the_spa_for_direct_navigation() {
+        let test = test_router().await;
+        for uri in [
+            "/admin/game-categories",
+            "/admin/game-categories/category-1",
+        ] {
+            let request = request_with_connect_info(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            );
+            let response = test.app.clone().oneshot(request).await.expect("response");
+
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE),
+                Some(&HeaderValue::from_static("text/html; charset=utf-8")),
+                "{uri}"
+            );
+        }
     }
 
     #[tokio::test]

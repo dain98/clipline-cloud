@@ -41,7 +41,9 @@ ticks), visibility control, public URL when public, metadata, delete.
 
 **Admin** — create/disable user, reset password, list users, per-user storage usage, active
 sessions/device tokens, server version + config summary, failed uploads, dead jobs, optional
-per-user quotas.
+per-user quotas, and game category management. The category editor controls the canonical display
+name and artwork, searches SteamGridDB from an administrator-editable query, shows attached raw
+reported names, merges one category into another, and can separate individual merged names.
 
 > Admins manage accounts and infrastructure but get **no casual "view everyone's private clips" UI**
 > (§22 / Appendix A). Honor that boundary in the UI — there is no "browse all clips" admin screen.
@@ -66,6 +68,7 @@ per-user quotas.
 - [x] Clip detail: markers rendered as timeline ticks; visibility control; public URL shown when public
 - [x] **Admin (Phase-1 scope)**: create/disable user, reset password (with re-auth, doc 04), list users
 - [x] Admin: server version + config summary, failed uploads, dead jobs (doc 06)
+- [x] Admin: managed game categories with SteamGridDB matching, artwork, merge, and separate actions
 - [x] No "view all users' private clips" screen anywhere (privacy boundary)
 - [x] CSRF token sent on every state-changing request; `Origin`/`Referer` consistent with doc 04
 
@@ -92,3 +95,5 @@ per-user quotas.
   `cargo test --workspace`, `cargo build --workspace`, and a local HTTP smoke covering static
   frontend routes, cookie-session + CSRF auth, admin user create/reset/disable, upload-to-library,
   clip detail media range, public share route, diagnostics endpoints, and revoke-to-404.
+- 2026-07-15 — Added the Game categories admin area and category-aware public/owned game links and
+  filters. Merged raw names render and filter as one canonical category.

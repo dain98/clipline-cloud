@@ -23,7 +23,8 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    auth, config::PublicMediaMode, error::ApiError, validation::normalized_optional, AppState,
+    auth, config::PublicMediaMode, error::ApiError, game_display_name, game_display_name_map,
+    game_icon_url, game_video_art_url, steamgriddb, validation::normalized_optional, AppState,
     ClientIp,
 };
 
@@ -54,6 +55,14 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/clips/{id}/poster", get(get_owned_poster))
         .route("/api/v1/public/clips", get(list_public_clips))
         .route("/api/v1/public/games", get(list_public_games))
+        .route(
+            "/api/v1/public/game-categories/{id}/artwork",
+            get(get_public_game_category_grid_artwork),
+        )
+        .route(
+            "/api/v1/public/game-categories/{id}/artwork/{slot}",
+            get(get_public_game_category_artwork),
+        )
         .route("/api/v1/public/users/{username}", get(get_public_user))
         .route(
             "/api/v1/public/users/{username}/avatar",
@@ -94,6 +103,7 @@ pub fn routes() -> Router<AppState> {
 struct PublicClipListQuery {
     sort: Option<String>,
     game: Option<String>,
+    game_category_id: Option<String>,
     q: Option<String>,
     page: Option<i64>,
     page_size: Option<i64>,
@@ -125,7 +135,9 @@ struct PublicGameListResponse {
 
 #[derive(Debug, Serialize)]
 struct PublicGameResponse {
-    game: String,
+    category_id: String,
+    display_name: String,
+    thumbnail_url: Option<String>,
     clip_count: i64,
 }
 
@@ -138,6 +150,10 @@ struct PublicClipSummaryResponse {
     author_username: Option<String>,
     author_avatar_url: Option<String>,
     game_name: Option<String>,
+    game_category_id: Option<String>,
+    game_display_name: Option<String>,
+    game_icon_url: Option<String>,
+    game_video_art_url: Option<String>,
     game_id: Option<String>,
     recorded_at: Option<DateTime<Utc>>,
     uploaded_at: Option<DateTime<Utc>>,
@@ -158,6 +174,10 @@ struct PublicClipResponse {
     viewer_can_edit: bool,
     viewer_clip_id: Option<String>,
     game_name: Option<String>,
+    game_category_id: Option<String>,
+    game_display_name: Option<String>,
+    game_icon_url: Option<String>,
+    game_video_art_url: Option<String>,
     game_id: Option<String>,
     recorded_at: Option<DateTime<Utc>>,
     uploaded_at: Option<DateTime<Utc>>,
@@ -255,9 +275,17 @@ async fn list_public_clips(
         .unwrap_or(DEFAULT_PUBLIC_PAGE_SIZE)
         .clamp(1, MAX_PUBLIC_PAGE_SIZE);
     let offset = public_page_offset(page, page_size)?;
+    let game = normalized_optional(query.game);
+    let game_category_id = normalized_optional(query.game_category_id);
+    if game.is_some() && game_category_id.is_some() {
+        return Err(ApiError::bad_request(
+            "game and game_category_id cannot be combined",
+        ));
+    }
     let params = PublicClipListParams {
         owner_user_id: None,
-        game: normalized_optional(query.game),
+        game,
+        game_category_id,
         query: normalized_optional(query.q),
         sort: parse_public_sort(query.sort.as_deref())?,
         limit: page_size + 1,
@@ -266,6 +294,7 @@ async fn list_public_clips(
     let clips = state.repositories.clips.list_public(&params).await?;
     let has_more = clips.len() as i64 > page_size;
     let authors = public_authors_for_clips(&state, &clips).await?;
+    let display_names = game_display_name_map(&state).await?;
     let mut public_clips = Vec::with_capacity(clips.len());
     for clip in clips.into_iter().take(page_size as usize) {
         if clip.public_share_id.is_some() {
@@ -273,7 +302,9 @@ async fn list_public_clips(
                 .get(&clip.owner_user_id)
                 .cloned()
                 .unwrap_or_else(|| public_author_from_user(&state, None));
-            if let Some(response) = public_clip_summary_response(&state, clip, author) {
+            if let Some(response) =
+                public_clip_summary_response(&state, clip, author, &display_names)
+            {
                 public_clips.push(response);
             }
         }
@@ -303,6 +334,7 @@ async fn list_public_recommendations(
     let params = PublicClipListParams {
         owner_user_id: None,
         game: None,
+        game_category_id: None,
         query: None,
         sort: ClipSort::UploadedAtDesc,
         limit: RECOMMENDATION_CANDIDATE_LIMIT.max(limit),
@@ -311,6 +343,7 @@ async fn list_public_recommendations(
     let candidates = state.repositories.clips.list_public(&params).await?;
     let clips = recommend_public_clips(candidates, source.as_ref(), limit as usize);
     let authors = public_authors_for_clips(&state, &clips).await?;
+    let display_names = game_display_name_map(&state).await?;
 
     let mut public_clips = Vec::with_capacity(clips.len());
     for clip in clips {
@@ -318,7 +351,7 @@ async fn list_public_recommendations(
             .get(&clip.owner_user_id)
             .cloned()
             .unwrap_or_else(|| public_author_from_user(&state, None));
-        if let Some(response) = public_clip_summary_response(&state, clip, author) {
+        if let Some(response) = public_clip_summary_response(&state, clip, author, &display_names) {
             public_clips.push(response);
         }
     }
@@ -331,18 +364,84 @@ async fn list_public_recommendations(
 async fn list_public_games(
     State(state): State<AppState>,
 ) -> Result<Json<PublicGameListResponse>, ApiError> {
+    let categories = state
+        .repositories
+        .game_categories
+        .list()
+        .await?
+        .into_iter()
+        .map(|category| (category.id.clone(), category))
+        .collect::<HashMap<_, _>>();
     let games = state
         .repositories
         .clips
         .list_public_games()
         .await?
         .into_iter()
-        .map(|game| PublicGameResponse {
-            game: game.game,
-            clip_count: game.clip_count,
+        .map(|game| {
+            let category = categories.get(&game.category_id);
+            PublicGameResponse {
+                display_name: game.display_name,
+                thumbnail_url: category.and_then(|category| {
+                    category
+                        .artwork_thumb_url
+                        .as_ref()
+                        .zip(category.artwork_id)
+                        .map(|(_, artwork_id)| {
+                            format!(
+                                "/api/v1/public/game-categories/{}/artwork/grid?v={artwork_id}",
+                                category.id
+                            )
+                        })
+                }),
+                category_id: game.category_id,
+                clip_count: game.clip_count,
+            }
         })
         .collect();
     Ok(Json(PublicGameListResponse { games }))
+}
+
+async fn get_public_game_category_grid_artwork(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    serve_public_game_category_artwork(&state, &id, "grid").await
+}
+
+async fn get_public_game_category_artwork(
+    State(state): State<AppState>,
+    Path((id, slot)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    serve_public_game_category_artwork(&state, &id, &slot).await
+}
+
+async fn serve_public_game_category_artwork(
+    state: &AppState,
+    id: &str,
+    slot: &str,
+) -> Result<Response, ApiError> {
+    let category = state
+        .repositories
+        .game_categories
+        .get(id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("game category artwork not found"))?;
+    let url = match slot {
+        "grid" => category.artwork_url.as_deref(),
+        "video" => category.video_artwork_url.as_deref(),
+        "icon" => category.icon_artwork_url.as_deref(),
+        _ => return Err(ApiError::not_found("game category artwork not found")),
+    }
+    .ok_or_else(|| ApiError::not_found("game category artwork not found"))?;
+    let image = steamgriddb::fetch_image(url).await?;
+    let content_type = HeaderValue::from_str(&image.content_type)
+        .map_err(|_| ApiError::bad_gateway("SteamGridDB returned an invalid content type"))?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .body(Body::from(image.bytes))
+        .map_err(|_| ApiError::internal("game category artwork response could not be created"))
 }
 
 async fn get_public_user(
@@ -358,6 +457,7 @@ async fn get_public_user(
     let params = PublicClipListParams {
         owner_user_id: Some(user.id.clone()),
         game: None,
+        game_category_id: None,
         query: None,
         sort: ClipSort::UploadedAtDesc,
         limit: PUBLIC_PROFILE_CLIP_LIMIT,
@@ -370,9 +470,12 @@ async fn get_public_user(
         .count_public_for_owner(&user.id)
         .await?;
     let author = public_author_from_user(&state, Some(&user));
+    let display_names = game_display_name_map(&state).await?;
     let public_clips = clips
         .into_iter()
-        .filter_map(|clip| public_clip_summary_response(&state, clip, author.clone()))
+        .filter_map(|clip| {
+            public_clip_summary_response(&state, clip, author.clone(), &display_names)
+        })
         .collect::<Vec<_>>();
 
     Ok(Json(PublicUserProfileResponse {
@@ -488,6 +591,11 @@ async fn get_public_clip(
         .is_some_and(|auth| auth.user.id == clip.owner_user_id);
     let viewer_clip_id = viewer_can_edit.then(|| clip.id.clone());
     let author = public_clip_author(&state, &clip).await?;
+    let display_names = game_display_name_map(&state).await?;
+    let game_display_name = game_display_name(clip.game_name.as_deref(), &display_names);
+    let game_category_id = crate::game_category_id(clip.game_name.as_deref(), &display_names);
+    let game_icon_url = game_icon_url(clip.game_name.as_deref(), &display_names);
+    let game_video_art_url = game_video_art_url(clip.game_name.as_deref(), &display_names);
     Ok(Json(PublicClipResponse {
         share_id: share_id.clone(),
         title: clip.title,
@@ -498,6 +606,10 @@ async fn get_public_clip(
         viewer_can_edit,
         viewer_clip_id,
         game_name: clip.game_name,
+        game_category_id,
+        game_display_name,
+        game_icon_url,
+        game_video_art_url,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
         uploaded_at: clip.uploaded_at,
@@ -688,8 +800,13 @@ fn public_clip_summary_response(
     state: &AppState,
     clip: Clip,
     author: PublicAuthor,
+    display_names: &HashMap<String, crate::ResolvedGameCategory>,
 ) -> Option<PublicClipSummaryResponse> {
     let share_id = clip.public_share_id?;
+    let game_display_name = game_display_name(clip.game_name.as_deref(), display_names);
+    let game_category_id = crate::game_category_id(clip.game_name.as_deref(), display_names);
+    let game_icon_url = game_icon_url(clip.game_name.as_deref(), display_names);
+    let game_video_art_url = game_video_art_url(clip.game_name.as_deref(), display_names);
     Some(PublicClipSummaryResponse {
         thumbnail_url: absolute_url(state, &format!("api/v1/public/clips/{share_id}/thumbnail")),
         share_url: absolute_url(state, &format!("c/{share_id}")),
@@ -700,6 +817,10 @@ fn public_clip_summary_response(
         author_username: author.username,
         author_avatar_url: author.avatar_url,
         game_name: clip.game_name,
+        game_category_id,
+        game_display_name,
+        game_icon_url,
+        game_video_art_url,
         game_id: clip.game_id,
         recorded_at: clip.recorded_at,
         uploaded_at: clip.uploaded_at,

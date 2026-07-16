@@ -234,7 +234,8 @@ CREATE INDEX jobs_status_next_run_idx     ON jobs(status, next_run_at);
 - [x] Migration set authored for **both** SQLite and Postgres dialects (the type-mapping table is the guide)
 - [x] Embedded migrations run at startup and **abort boot on failure**
 - [x] Postgres migration runs take a session-level advisory lock
-- [x] All tables created: `users`, `sessions`, `device_tokens`, `clips`, `clip_markers`, `upload_sessions`, `upload_parts`, `jobs`, `audit_log`
+- [x] All core tables created, including `game_categories` and case-insensitively unique
+  `game_category_names` mappings
 - [x] All indexes created, including the partial `clips_owner_client_clip_id_ux`
 - [x] Repository layer for each table (typed CRUD used by later docs); transactions kept short
 - [x] `/readyz` DB-reachability probe implemented (replaces doc 01 stub)
@@ -264,3 +265,7 @@ CREATE INDEX jobs_status_next_run_idx     ON jobs(status, next_run_at);
   partial indexes, repository round-trips, expired uploads, and atomic job claiming, and fixed the
   dialect issues it exposed (`INET` insert casts and Postgres integer widths matching Rust `i64`
   models).
+- 2026-07-15 — Added a forward-only migration from the historical per-name category schema to
+  first-class `game_categories` and `game_category_names`. Existing presentation and artwork are
+  preserved, startup reconciles clip names missing mappings, and database triggers enforce
+  immutable `clips.game_name` values on SQLite and Postgres.

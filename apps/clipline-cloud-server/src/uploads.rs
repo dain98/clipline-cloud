@@ -13,8 +13,8 @@ use clipline_cloud_api_types::{
 };
 use clipline_cloud_core::jobs::VALIDATE_OBJECT_KIND;
 use clipline_cloud_db::{
-    now_utc, AbortUploadOutcome, Clip, FinalizeUploadOutcome, NewClip, NewClipMarker, NewJob,
-    NewUploadPart, NewUploadSession, UploadPart, UploadSession,
+    now_utc, AbortUploadOutcome, Clip, FinalizeUploadOutcome, NewClip, NewClipMarker,
+    NewGameCategory, NewJob, NewUploadPart, NewUploadSession, UploadPart, UploadSession,
 };
 use clipline_cloud_storage::{
     CompletedUploadPart, MediaObjectKeys, ObjectKey, PutObjectMetadata, SharedStorageBackend,
@@ -22,13 +22,14 @@ use clipline_cloud_storage::{
 };
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     auth::{self, AuthenticatedUser},
     clips::generate_public_share_id,
     config::{Config, StorageConfig},
     error::ApiError,
+    steamgriddb,
     validation::{normalized_optional_ref, validate_optional_char_count},
     AppState,
 };
@@ -43,6 +44,111 @@ pub(crate) const UPLOAD_JSON_BODY_LIMIT: usize = 256 * 1024;
 const MAX_TITLE_LEN: usize = 300;
 const MAX_DESCRIPTION_LEN: usize = 10_000;
 const MAX_CLIENT_CLIP_ID_LEN: usize = 255;
+
+fn schedule_automatic_game_category_enrichment(state: AppState, category: NewGameCategory) {
+    if !steamgriddb::configured(&state.config) {
+        return;
+    }
+    tokio::spawn(async move {
+        enrich_new_game_category(&state, category).await;
+    });
+}
+
+async fn enrich_new_game_category(state: &AppState, category: NewGameCategory) {
+    let search_results =
+        match steamgriddb::search_games(&state.config, &category.display_name).await {
+            Ok(results) => results,
+            Err(error) => {
+                warn!(
+                    event = "game_category.auto_enrichment_search_failed",
+                    category_id = %category.id,
+                    status = %error.status(),
+                    error = error.message()
+                );
+                return;
+            }
+        };
+    let Some(game) = steamgriddb::best_game_match(&category.display_name, search_results) else {
+        info!(
+            event = "game_category.auto_enrichment_no_match",
+            category_id = %category.id
+        );
+        return;
+    };
+
+    let (grid_result, video_result, icon_result) = tokio::join!(
+        steamgriddb::list_artwork(&state.config, game.id, steamgriddb::ArtworkKind::Grid),
+        steamgriddb::list_artwork(&state.config, game.id, steamgriddb::ArtworkKind::Hero),
+        steamgriddb::list_artwork(&state.config, game.id, steamgriddb::ArtworkKind::Icon),
+    );
+    let grid = automatic_artwork_result(&category.id, "grid", grid_result);
+    let video = automatic_artwork_result(&category.id, "video", video_result);
+    let icon = automatic_artwork_result(&category.id, "icon", icon_result);
+
+    let mut update = NewGameCategory::new(&category.display_name);
+    update.steamgriddb_game_id = Some(game.id);
+    if let Some(asset) = grid {
+        update.artwork_kind = Some("grid".to_string());
+        update.artwork_id = Some(asset.id);
+        update.artwork_url = Some(asset.url);
+        update.artwork_thumb_url = Some(asset.thumb);
+    }
+    if let Some(asset) = video {
+        update.video_artwork_id = Some(asset.id);
+        update.video_artwork_url = Some(asset.url);
+        update.video_artwork_thumb_url = Some(asset.thumb);
+    }
+    if let Some(asset) = icon {
+        update.icon_artwork_id = Some(asset.id);
+        update.icon_artwork_url = Some(asset.url);
+        update.icon_artwork_thumb_url = Some(asset.thumb);
+    }
+
+    match state
+        .repositories
+        .game_categories
+        .apply_automatic_metadata_if_unchanged(&category.id, category.updated_at, &update)
+        .await
+    {
+        Ok(Some(_)) => info!(
+            event = "game_category.auto_enrichment_completed",
+            category_id = %category.id,
+            steamgriddb_game_id = game.id,
+            grid_artwork_id = update.artwork_id,
+            video_artwork_id = update.video_artwork_id,
+            icon_artwork_id = update.icon_artwork_id
+        ),
+        Ok(None) => info!(
+            event = "game_category.auto_enrichment_skipped_changed_category",
+            category_id = %category.id
+        ),
+        Err(error) => warn!(
+            event = "game_category.auto_enrichment_update_failed",
+            category_id = %category.id,
+            error = %error
+        ),
+    }
+}
+
+fn automatic_artwork_result(
+    category_id: &str,
+    slot: &str,
+    result: Result<Vec<steamgriddb::ArtworkResult>, ApiError>,
+) -> Option<steamgriddb::ArtworkResult> {
+    match result {
+        Ok(results) => steamgriddb::highest_scoring_artwork(results),
+        Err(error) => {
+            warn!(
+                event = "game_category.auto_enrichment_artwork_failed",
+                category_id,
+                slot,
+                status = %error.status(),
+                error = error.message()
+            );
+            None
+        }
+    }
+}
 const MAX_METADATA_FIELD_LEN: usize = 1_024;
 const MAX_CODEC_LEN: usize = 120;
 const MAX_MARKERS: usize = 1_000;
@@ -172,12 +278,12 @@ async fn create_upload(
     new_session.checksum_sha256 = Some(request.checksum_sha256.to_ascii_lowercase());
     let storage_upload_id = new_session.storage_upload_id.clone();
 
-    match state
+    let bundle = match state
         .repositories
         .create_upload_bundle(&new_clip, &new_session, &markers)
         .await
     {
-        Ok(()) => {}
+        Ok(bundle) => bundle,
         Err(error) => {
             cleanup_created_storage_upload(&state, storage_upload_id.as_deref(), &keys.source)
                 .await;
@@ -196,6 +302,9 @@ async fn create_upload(
             }
             return Err(error.into());
         }
+    };
+    if let Some(category) = bundle.created_game_category {
+        schedule_automatic_game_category_enrichment(state.clone(), category);
     }
     let session = state
         .repositories
@@ -1908,5 +2017,15 @@ mod tests {
         let error = storage_error(StorageError::S3("ServiceUnavailable: 503".to_string()));
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn automatic_artwork_failure_leaves_that_slot_empty() {
+        assert!(automatic_artwork_result(
+            "category",
+            "icon",
+            Err(ApiError::bad_gateway("upstream unavailable")),
+        )
+        .is_none());
     }
 }

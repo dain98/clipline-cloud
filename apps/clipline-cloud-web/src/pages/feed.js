@@ -27,28 +27,28 @@ export function publicFeedParams(query) {
   const params = new URLSearchParams();
   params.set("page_size", String(PUBLIC_PAGE_SIZE));
   if (query.sort !== "uploaded_at_desc") params.set("sort", query.sort);
-  if (query.game) params.set("game", query.game);
+  if (query.game) params.set("game_category_id", query.game);
   if (query.q) params.set("q", query.q);
   if (Number(query.page) > 1) params.set("page", String(query.page));
   return params;
 }
 
 export function gameLabel(clip) {
-  return clip?.game_name || "No game";
+  return clip?.game_display_name || clip?.game_name || "No game";
 }
 
 export function feedGameChips(games, activeGame, max = MAX_GAME_CHIPS) {
   const sortedGames = [...(games || [])].sort((a, b) => (b.clip_count || 0) - (a.clip_count || 0));
   const topGames = sortedGames.slice(0, max);
   const normalizedActiveGame = String(activeGame || "").trim();
-  const activeInTop = normalizedActiveGame && topGames.some((game) => game.game === normalizedActiveGame);
+  const activeInTop = normalizedActiveGame && topGames.some((game) => game.category_id === normalizedActiveGame);
   const activeGameChip =
     normalizedActiveGame && !activeInTop
-      ? sortedGames.find((game) => game.game === normalizedActiveGame) || { game: normalizedActiveGame, clip_count: 0 }
+      ? sortedGames.find((game) => game.category_id === normalizedActiveGame) || { category_id: normalizedActiveGame, clip_count: 0 }
       : null;
   const chips = activeGameChip ? [activeGameChip, ...topGames] : topGames;
-  const visibleGames = new Set(chips.map((game) => game.game));
-  const extraGameCount = sortedGames.filter((game) => !visibleGames.has(game.game)).length;
+  const visibleGames = new Set(chips.map((game) => game.category_id));
+  const extraGameCount = sortedGames.filter((game) => !visibleGames.has(game.category_id)).length;
   return { chips, extraGameCount };
 }
 
@@ -99,8 +99,8 @@ export function FeedPage({ route }) {
           <div class="chips">
             <button class=${`chip ${!query.game ? "chip-on" : ""}`} onClick=${() => setQ({ game: "" })}>All</button>
             ${gameChips.map((g) => html`<button
-              class=${`chip ${query.game === g.game ? "chip-on" : ""}`}
-              onClick=${() => setQ({ game: g.game })}>${g.game}</button>`)}
+              class=${`chip ${query.game === g.category_id ? "chip-on" : ""}`}
+              onClick=${() => setQ({ game: g.category_id })}>${g.display_name}</button>`)}
             ${extraGameCount > 0 && html`<a class="chip" href="/games">+${extraGameCount}</a>`}
           </div>
         </div>

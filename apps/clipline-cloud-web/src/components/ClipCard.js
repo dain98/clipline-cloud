@@ -22,7 +22,7 @@ export function ClipCard({ clip, href, selectable = false, selected = false,
   onToggleSelect, showVisibility = false, showAuthor = false }) {
   const author = clipAuthor(clip);
   const meta = [
-    clip.game_name && html`<em>${clip.game_name}</em>`,
+    clip.game_name && html`<em>${clip.game_display_name || clip.game_name}</em>`,
     showAuthor && author,
     clip.view_count != null && formatViews(clip.view_count),
     clip.uploaded_at && formatRelativeTime(clip.uploaded_at),

@@ -8,6 +8,7 @@ services:
       - "8080"
     environment:
       CLIPLINE_PUBLIC_URL: https://${CLIPLINE_DOMAIN:-clips.example.com}
+      CLIPLINE_STEAMGRIDDB_API_KEY: ${CLIPLINE_STEAMGRIDDB_API_KEY:-}
       CLIPLINE_PROCESS_ROLE: ${CLIPLINE_WEB_PROCESS_ROLE:-all}
       CLIPLINE_DATABASE_URL: sqlite:///data/clipline.db
       CLIPLINE_STORAGE_BACKEND: local
