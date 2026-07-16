@@ -8,12 +8,6 @@ import {
   bulkShareLinks,
 } from "../src/pages/library.js";
 
-// libraryParams is a pure port of legacy libraryParams (src/app.js:765-786):
-// sort + page + page_size are always set; game/source_type/visibility/status/q are
-// only set when truthy; from/to get midnight/end-of-day UTC suffixes;
-// duration seconds -> ms and size MiB -> bytes conversions are passthrough
-// (only present when the input parses to a finite number).
-
 test("libraryParams sets sort, page, and a page_size of 100 by default", () => {
   const params = libraryParams(DEFAULT_LIBRARY_QUERY);
   assert.equal(params.get("sort"), "uploaded_at_desc");

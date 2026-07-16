@@ -27,7 +27,7 @@ export function avatarUrl(user) {
 }
 
 // Stable fallback for users without an avatar.
-export function initialFor(name) {
+function initialFor(name) {
   return (name || "C").trim().slice(0, 1).toUpperCase() || "C";
 }
 

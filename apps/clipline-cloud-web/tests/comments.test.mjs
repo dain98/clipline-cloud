@@ -2,8 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { commentTree, postComment } from "../src/components/Comments.js";
 
-// Pure port of legacy publicCommentTree (src/app.js:2450-2469).
-
 test("commentTree collects parentless comments as roots", () => {
   const comments = [
     { id: "a", parent_comment_id: null },

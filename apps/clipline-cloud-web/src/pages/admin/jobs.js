@@ -2,12 +2,12 @@ import { html } from "../../lib/html.js";
 import { formatBytes, formatDate } from "../../lib/format.js";
 
 // Job progress is represented as basis points by the API.
-export function formatProgress(basisPoints) {
+function formatProgress(basisPoints) {
   return `${(basisPoints / 100).toFixed(basisPoints % 100 === 0 ? 0 : 1)}%`;
 }
 
 // Human guidance for the server's recovery-action enum.
-export function recoveryActionLabel(action) {
+function recoveryActionLabel(action) {
   switch (action) {
     case "delete_and_retry":
       return "delete the failed upload and retry from a new session";

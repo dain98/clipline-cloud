@@ -1,8 +1,6 @@
-// Route parsing is deliberately pure so navigation behavior is covered without a browser.
-// (safeDecodeURIComponent at :243, publicRouteQuery at :276), reading from
-// arguments instead of window.location so this module has no DOM dependency.
+// Route parsing is pure so navigation behavior is covered without a browser.
 
-export function safeDecodeURIComponent(value) {
+function safeDecodeURIComponent(value) {
   try {
     return decodeURIComponent(value);
   } catch (_) {
@@ -10,7 +8,7 @@ export function safeDecodeURIComponent(value) {
   }
 }
 
-export function publicRouteQuery(params) {
+function publicRouteQuery(params) {
   const page = Number(params.get("page") || 1);
   return {
     sort: params.get("sort") || "uploaded_at_desc",

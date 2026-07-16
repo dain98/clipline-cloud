@@ -1,14 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { parseRoute } from "./routes.js";
 
-// Pure: resolve a { pathname, search } location down to just the route name.
-// Extracted so main.js can seed its module-level currentRouteName from the
-// real initial location (before the session-bootstrap fetch resolves) and so
-// that seeding logic is unit-testable without a DOM/window.
-export function initialRouteName(loc) {
-  return parseRoute(loc.pathname, loc.search).name;
-}
-
 const listeners = new Set();
 export function navigate(path) {
   window.history.pushState({}, "", path);

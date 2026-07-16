@@ -165,7 +165,7 @@ function statusBadge(user) {
     : html`<span class="badge badge-public">Active</span>`;
 }
 
-export function effectiveDefaultQuotaBytes(settings) {
+function effectiveDefaultQuotaBytes(settings) {
   if (!settings) return null;
   if (settings.user_storage_quota_bytes != null && settings.user_storage_quota_bytes > 0) {
     return settings.user_storage_quota_bytes;

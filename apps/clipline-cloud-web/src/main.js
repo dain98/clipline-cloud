@@ -3,8 +3,14 @@ import { useEffect } from "preact/hooks";
 import { html } from "./lib/html.js";
 import { api, setCsrfToken } from "./lib/api.js";
 import { session, useStore } from "./lib/store.js";
-import { useRoute, onLinkClick, navigate, initialRouteName } from "./lib/router.js";
-import { isPublicRouteName, shouldRedirectToLogin, tabNavKeyForRoute, topNavKeyForRoute } from "./lib/routes.js";
+import { useRoute, onLinkClick, navigate } from "./lib/router.js";
+import {
+  isPublicRouteName,
+  parseRoute,
+  shouldRedirectToLogin,
+  tabNavKeyForRoute,
+  topNavKeyForRoute,
+} from "./lib/routes.js";
 import { TopBar } from "./components/TopBar.js";
 import { TabBar } from "./components/TabBar.js";
 import { ToastHost } from "./components/ToastHost.js";
@@ -38,7 +44,7 @@ const PAGES = {
 // Seeded from the *actual* initial location so the unauthorized-listener
 // below knows whether the very first paint is on a public route, before the
 // session-bootstrap fetch below has resolved (and possibly 401'd).
-let currentRouteName = initialRouteName({ pathname: window.location.pathname, search: window.location.search });
+let currentRouteName = parseRoute(window.location.pathname, window.location.search).name;
 
 function App() {
   const route = useRoute();
@@ -49,8 +55,7 @@ function App() {
     if (loginRedirect) navigate("/login");
   }, [loginRedirect]);
   if (!ready || loginRedirect) return html`<div class="boot">Loading…</div>`;
-  // parseRoute() always returns a declared page name; retain a defensive fallback.
-  const Page = PAGES[route.name] || FeedPage;
+  const Page = PAGES[route.name];
   const bare = route.name === "login" || route.name === "resetPassword";
   return html`<div class="ui" onClick=${onLinkClick}>
     ${!bare && html`<${TopBar} active=${topNavKeyForRoute(route)} route=${route} />`}
