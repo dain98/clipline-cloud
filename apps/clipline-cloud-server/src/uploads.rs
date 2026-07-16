@@ -29,7 +29,7 @@ use crate::{
     clips::generate_public_share_id,
     config::{Config, StorageConfig},
     error::ApiError,
-    steamgriddb,
+    media, steamgriddb,
     validation::{normalized_optional_ref, validate_optional_char_count},
     AppState,
 };
@@ -110,14 +110,18 @@ async fn enrich_new_game_category(state: &AppState, category: NewGameCategory) {
         .apply_automatic_metadata_if_unchanged(&category.id, category.updated_at, &update)
         .await
     {
-        Ok(Some(_)) => info!(
-            event = "game_category.auto_enrichment_completed",
-            category_id = %category.id,
-            steamgriddb_game_id = game.id,
-            grid_artwork_id = update.artwork_id,
-            video_artwork_id = update.video_artwork_id,
-            icon_artwork_id = update.icon_artwork_id
-        ),
+        Ok(Some(updated)) => {
+            state.invalidate_game_category_map().await;
+            media::cache_game_category_artwork(state, &updated).await;
+            info!(
+                event = "game_category.auto_enrichment_completed",
+                category_id = %category.id,
+                steamgriddb_game_id = game.id,
+                grid_artwork_id = update.artwork_id,
+                video_artwork_id = update.video_artwork_id,
+                icon_artwork_id = update.icon_artwork_id
+            );
+        }
         Ok(None) => info!(
             event = "game_category.auto_enrichment_skipped_changed_category",
             category_id = %category.id
@@ -304,6 +308,7 @@ async fn create_upload(
         }
     };
     if let Some(category) = bundle.created_game_category {
+        state.invalidate_game_category_map().await;
         schedule_automatic_game_category_enrichment(state.clone(), category);
     }
     let session = state

@@ -594,6 +594,34 @@ mod tests {
             .await
             .expect("category test user");
 
+        let long_reported_name = "LongGame".repeat(128);
+        let mut long_name_clip = NewClip::new(&user.id, "Long category name", "local");
+        long_name_clip.game_name = Some(long_reported_name.clone());
+        let long_name_session = NewUploadSession::new(
+            &long_name_clip.id,
+            &user.id,
+            1,
+            format!("objects/{suffix}/long-name.mp4"),
+            now_utc() + ChronoDuration::hours(1),
+        );
+        let long_name_bundle = repos
+            .create_upload_bundle(&long_name_clip, &long_name_session, &[])
+            .await
+            .expect("long reported name upload");
+        let long_name_category = long_name_bundle
+            .created_game_category
+            .expect("long reported name creates category");
+        assert_eq!(long_name_category.display_name.chars().count(), 200);
+        assert_eq!(
+            repos
+                .game_categories
+                .list_names(&long_name_category.id)
+                .await
+                .expect("long reported name mapping")[0]
+                .reported_name,
+            long_reported_name
+        );
+
         let mut first = NewClip::new(&user.id, "Enhanced", "local");
         first.game_name = Some("GTA5_Enhanced".to_string());
         first.status = "ready".to_string();
@@ -751,6 +779,17 @@ mod tests {
             .expect("merged public category summaries")
             .iter()
             .any(|game| game.category_id == destination.id && game.clip_count == 2));
+        assert_eq!(
+            repos
+                .game_categories
+                .list_name_clip_counts(&destination.id)
+                .await
+                .expect("targeted merged name clip counts")
+                .into_iter()
+                .map(|(_, count)| count)
+                .sum::<i64>(),
+            2
+        );
 
         let name = repos
             .game_categories

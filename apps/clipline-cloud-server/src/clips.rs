@@ -1013,6 +1013,7 @@ mod tests {
             repositories,
             storage,
             auth,
+            game_category_map_cache: Arc::default(),
             readiness: crate::health::ReadinessCache::default(),
         };
         TestApp {

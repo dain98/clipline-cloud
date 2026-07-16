@@ -13,9 +13,12 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use clipline_cloud_db::{Clip, ClipComment, ClipSort, NewClipComment, PublicClipListParams, User};
+use clipline_cloud_db::{
+    Clip, ClipComment, ClipSort, GameCategory, NewClipComment, PublicClipListParams, User,
+};
 use clipline_cloud_storage::{
-    ByteRange, ContentRange, ObjectKey, ObjectMetadata, StorageError, StoredObjectStream,
+    ByteRange, ContentRange, ObjectKey, ObjectMetadata, PutObjectMetadata, StorageError,
+    StoredObjectStream,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
@@ -427,14 +430,18 @@ async fn serve_public_game_category_artwork(
         .get(id)
         .await?
         .ok_or_else(|| ApiError::not_found("game category artwork not found"))?;
-    let url = match slot {
-        "grid" => category.artwork_url.as_deref(),
-        "video" => category.video_artwork_url.as_deref(),
-        "icon" => category.icon_artwork_url.as_deref(),
+    let (artwork_id, url) = match slot {
+        "grid" => category.artwork_id.zip(category.artwork_url.as_deref()),
+        "video" => category
+            .video_artwork_id
+            .zip(category.video_artwork_url.as_deref()),
+        "icon" => category
+            .icon_artwork_id
+            .zip(category.icon_artwork_url.as_deref()),
         _ => return Err(ApiError::not_found("game category artwork not found")),
     }
     .ok_or_else(|| ApiError::not_found("game category artwork not found"))?;
-    let image = steamgriddb::fetch_image(url).await?;
+    let image = load_cached_game_category_artwork(state, id, slot, artwork_id, url).await?;
     let content_type = HeaderValue::from_str(&image.content_type)
         .map_err(|_| ApiError::bad_gateway("SteamGridDB returned an invalid content type"))?;
     Response::builder()
@@ -442,6 +449,126 @@ async fn serve_public_game_category_artwork(
         .header(header::CACHE_CONTROL, "public, max-age=86400")
         .body(Body::from(image.bytes))
         .map_err(|_| ApiError::internal("game category artwork response could not be created"))
+}
+
+pub(crate) async fn cache_game_category_artwork(state: &AppState, category: &GameCategory) {
+    let (grid, video, icon) = tokio::join!(
+        cache_game_category_artwork_slot(
+            state,
+            &category.id,
+            "grid",
+            category.artwork_id,
+            category.artwork_url.as_deref(),
+        ),
+        cache_game_category_artwork_slot(
+            state,
+            &category.id,
+            "video",
+            category.video_artwork_id,
+            category.video_artwork_url.as_deref(),
+        ),
+        cache_game_category_artwork_slot(
+            state,
+            &category.id,
+            "icon",
+            category.icon_artwork_id,
+            category.icon_artwork_url.as_deref(),
+        ),
+    );
+    for (slot, result) in [("grid", grid), ("video", video), ("icon", icon)] {
+        if let Err(error) = result {
+            warn!(
+                event = "game_category.artwork_cache_failed",
+                category_id = %category.id,
+                slot,
+                status = %error.status(),
+                error = error.message()
+            );
+        }
+    }
+}
+
+pub(crate) async fn warm_game_category_artwork_cache(state: &AppState) {
+    let categories = match state.repositories.game_categories.list().await {
+        Ok(categories) => categories,
+        Err(error) => {
+            warn!(event = "game_category.artwork_cache_warm_failed", error = %error);
+            return;
+        }
+    };
+    for category in categories {
+        cache_game_category_artwork(state, &category).await;
+    }
+}
+
+async fn cache_game_category_artwork_slot(
+    state: &AppState,
+    category_id: &str,
+    slot: &str,
+    artwork_id: Option<i64>,
+    url: Option<&str>,
+) -> Result<(), ApiError> {
+    let Some((artwork_id, url)) = artwork_id.zip(url) else {
+        return Ok(());
+    };
+    load_cached_game_category_artwork(state, category_id, slot, artwork_id, url)
+        .await
+        .map(|_| ())
+}
+
+async fn load_cached_game_category_artwork(
+    state: &AppState,
+    category_id: &str,
+    slot: &str,
+    artwork_id: i64,
+    url: &str,
+) -> Result<steamgriddb::ImageAsset, ApiError> {
+    let key = game_category_artwork_key(category_id, slot, artwork_id)?;
+    match state.storage.get_object(&key, None).await {
+        Ok(object) => {
+            return Ok(steamgriddb::ImageAsset {
+                bytes: object.bytes,
+                content_type: object.metadata.content_type,
+            });
+        }
+        Err(StorageError::NotFound(_)) => {}
+        Err(error) => warn!(
+            event = "game_category.artwork_cache_read_failed",
+            category_id,
+            slot,
+            error = %error
+        ),
+    }
+
+    let image = steamgriddb::fetch_image(url).await?;
+    if let Err(error) = state
+        .storage
+        .put_object(
+            &key,
+            image.bytes.clone(),
+            PutObjectMetadata::new(&image.content_type),
+        )
+        .await
+    {
+        warn!(
+            event = "game_category.artwork_cache_write_failed",
+            category_id,
+            slot,
+            error = %error
+        );
+    }
+    Ok(image)
+}
+
+fn game_category_artwork_key(
+    category_id: &str,
+    slot: &str,
+    artwork_id: i64,
+) -> Result<ObjectKey, ApiError> {
+    ObjectKey::parse(format!(
+        "objects/game-categories/{category_id}/{slot}/{artwork_id}"
+    ))
+    .map_err(|_| ApiError::internal("game category artwork cache key is invalid"))
 }
 
 async fn get_public_user(
@@ -1838,6 +1965,16 @@ fn storage_error(error: StorageError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn category_artwork_cache_keys_are_versioned_by_artwork_id() {
+        assert_eq!(
+            game_category_artwork_key("01K0ABCDEF1234567890GHJKMN", "grid", 42)
+                .expect("artwork cache key")
+                .as_str(),
+            "objects/game-categories/01K0ABCDEF1234567890GHJKMN/grid/42"
+        );
+    }
 
     #[test]
     fn parses_common_byte_ranges() {

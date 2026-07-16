@@ -15,7 +15,7 @@ use clipline_cloud_db::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth, config::StorageConfig, error::ApiError, mail, steamgriddb,
+    auth, config::StorageConfig, error::ApiError, mail, media, steamgriddb,
     validation::normalized_optional, AppState, ClientIp,
 };
 
@@ -165,6 +165,11 @@ struct SteamGridDbArtworkQuery {
     kind: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SteamGridDbArtworkPreviewQuery {
+    url: String,
+}
+
 #[derive(Debug, Serialize)]
 struct SteamGridDbArtworkResponse {
     id: i64,
@@ -311,11 +316,30 @@ async fn load_admin_game_category(
     state: &AppState,
     category_id: &str,
 ) -> Result<AdminGameCategoryResponse, ApiError> {
-    load_admin_game_categories(state)
+    let category = state
+        .repositories
+        .game_categories
+        .get(category_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("game category not found"))?;
+    let names = state
+        .repositories
+        .game_categories
+        .list_names(category_id)
+        .await?;
+    let clip_counts = state
+        .repositories
+        .game_categories
+        .list_name_clip_counts(category_id)
         .await?
         .into_iter()
-        .find(|category| category.id == category_id)
-        .ok_or_else(|| ApiError::not_found("game category not found"))
+        .map(|(name, count)| (name.to_lowercase(), count))
+        .collect();
+    Ok(AdminGameCategoryResponse::from_category(
+        category,
+        names,
+        &clip_counts,
+    ))
 }
 
 async fn search_steamgriddb_games(
@@ -342,10 +366,7 @@ async fn steamgriddb_artwork(
             .await?
             .into_iter()
             .map(|artwork| SteamGridDbArtworkResponse {
-                preview_url: format!(
-                    "/api/v1/admin/game-categories/steamgriddb/games/{game_id}/artwork/{}/{}/preview",
-                    artwork.kind, artwork.id
-                ),
+                preview_url: steamgriddb_artwork_preview_url(game_id, &artwork),
                 id: artwork.id,
                 kind: artwork.kind,
                 score: artwork.score,
@@ -355,20 +376,32 @@ async fn steamgriddb_artwork(
     ))
 }
 
+fn steamgriddb_artwork_preview_url(game_id: i64, artwork: &steamgriddb::ArtworkResult) -> String {
+    format!(
+        "/api/v1/admin/game-categories/steamgriddb/games/{game_id}/artwork/{}/{}/preview?{}",
+        artwork.kind,
+        artwork.id,
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("url", &artwork.thumb)
+            .finish()
+    )
+}
+
 async fn steamgriddb_artwork_preview(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((game_id, kind, artwork_id)): Path<(i64, String, i64)>,
+    Query(query): Query<SteamGridDbArtworkPreviewQuery>,
 ) -> Result<Response, ApiError> {
     let _auth = auth::require_admin(&state, &headers).await?;
-    let kind = kind.parse()?;
-    let artwork = steamgriddb::list_artwork(&state.config, game_id, kind)
-        .await?
-        .into_iter()
-        .find(|asset| asset.id == artwork_id)
-        .ok_or_else(|| ApiError::not_found("SteamGridDB artwork not found"))?;
+    let _: steamgriddb::ArtworkKind = kind.parse()?;
+    if game_id <= 0 || artwork_id <= 0 {
+        return Err(ApiError::bad_request(
+            "SteamGridDB game and artwork ids must be positive",
+        ));
+    }
     steamgriddb_image_response(
-        steamgriddb::fetch_image(&artwork.thumb).await?,
+        steamgriddb::fetch_image(&query.url).await?,
         "private, max-age=3600",
     )
 }
@@ -407,6 +440,10 @@ async fn update_game_category(
         .await?
     {
         return Err(ApiError::not_found("game category not found"));
+    }
+    state.invalidate_game_category_map().await;
+    if let Some(category) = state.repositories.game_categories.get(&id).await? {
+        media::cache_game_category_artwork(&state, &category).await;
     }
     Ok(Json(load_admin_game_category(&state, &id).await?))
 }
@@ -479,6 +516,7 @@ async fn merge_game_category(
             return Err(ApiError::not_found("destination game category not found"));
         }
     }
+    state.invalidate_game_category_map().await;
     Ok(Json(
         load_admin_game_category(&state, destination_id).await?,
     ))
@@ -520,6 +558,7 @@ async fn separate_game_category_name(
             ));
         }
     };
+    state.invalidate_game_category_map().await;
     Ok((
         StatusCode::CREATED,
         Json(load_admin_game_category(&state, &new_category_id).await?),
@@ -1287,6 +1326,28 @@ mod tests {
             Some("/api/v1/public/game-categories/category-1/artwork/video?v=98".to_string())
         );
         assert_eq!(category_artwork_url("category-1", "icon", None, None), None);
+    }
+
+    #[test]
+    fn steamgriddb_preview_uses_the_listed_thumbnail_without_another_lookup() {
+        let artwork = steamgriddb::ArtworkResult {
+            id: 42,
+            kind: "grid".to_string(),
+            score: 10,
+            style: "alternate".to_string(),
+            url: "https://cdn2.steamgriddb.com/grid.png".to_string(),
+            thumb: "https://cdn2.steamgriddb.com/thumb/grid.png?size=small".to_string(),
+        };
+        let preview_url = steamgriddb_artwork_preview_url(7, &artwork);
+        let parsed =
+            url::Url::parse(&format!("https://clipline.test{preview_url}")).expect("preview URL");
+        assert_eq!(
+            parsed
+                .query_pairs()
+                .find(|(name, _)| name == "url")
+                .map(|(_, value)| value.into_owned()),
+            Some(artwork.thumb)
+        );
     }
 
     #[test]

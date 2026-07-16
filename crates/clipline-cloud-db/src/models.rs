@@ -327,9 +327,10 @@ pub struct NewGameCategory {
 impl NewGameCategory {
     pub fn new(display_name: impl Into<String>) -> Self {
         let now = now_utc();
+        let display_name = display_name.into().chars().take(200).collect();
         Self {
             id: new_ulid(),
-            display_name: display_name.into(),
+            display_name,
             steamgriddb_game_id: None,
             artwork_kind: None,
             artwork_id: None,

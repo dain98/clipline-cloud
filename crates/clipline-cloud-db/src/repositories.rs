@@ -240,6 +240,20 @@ impl GameCategoryRepository {
         )?)
     }
 
+    pub async fn list_name_clip_counts(&self, category_id: &str) -> DbResult<Vec<(String, i64)>> {
+        Ok(db_fetch_all!(
+            &self.database,
+            (String, i64),
+            "SELECT names.reported_name, CAST(COUNT(clips.id) AS BIGINT)
+             FROM game_category_names names
+             LEFT JOIN clips ON LOWER(clips.game_name) = LOWER(names.reported_name)
+             WHERE names.category_id = ?
+             GROUP BY names.id, names.reported_name
+             ORDER BY LOWER(names.reported_name) ASC, names.reported_name ASC, names.id ASC",
+            [category_id]
+        )?)
+    }
+
     pub async fn get_name(&self, id: &str) -> DbResult<Option<GameCategoryName>> {
         Ok(db_fetch_optional!(
             &self.database,

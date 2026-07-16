@@ -22,12 +22,19 @@ const SORTS = [
 
 const MAX_GAME_CHIPS = 6;
 const PUBLIC_PAGE_SIZE = 60;
+const GAME_CATEGORY_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+
+export function isGameCategoryId(value) {
+  return GAME_CATEGORY_ID_PATTERN.test(String(value || "").trim());
+}
 
 export function publicFeedParams(query) {
   const params = new URLSearchParams();
   params.set("page_size", String(PUBLIC_PAGE_SIZE));
   if (query.sort !== "uploaded_at_desc") params.set("sort", query.sort);
-  if (query.game) params.set("game_category_id", query.game);
+  if (query.game) {
+    params.set(isGameCategoryId(query.game) ? "game_category_id" : "game", query.game);
+  }
   if (query.q) params.set("q", query.q);
   if (Number(query.page) > 1) params.set("page", String(query.page));
   return params;

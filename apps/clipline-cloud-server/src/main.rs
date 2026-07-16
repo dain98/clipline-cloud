@@ -12,7 +12,12 @@ mod steamgriddb;
 mod uploads;
 mod validation;
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use axum::{
@@ -31,12 +36,16 @@ use clipline_cloud_db::{Database, Repositories};
 use clipline_cloud_storage::{LocalStorage, S3Storage, S3StorageConfig, SharedStorageBackend};
 use config::{Config, ProcessRole, PublicMediaMode, StorageConfig};
 use tokio::task::JoinHandle;
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{
+    net::TcpListener,
+    sync::{watch, RwLock},
+};
 use tower_http::{catch_panic::CatchPanicLayer, services::ServeDir};
 use tracing::{info, warn};
 use url::Url;
 
 const MIB: u64 = 1024 * 1024;
+const GAME_CATEGORY_MAP_TTL: Duration = Duration::from_secs(60);
 const DEFAULT_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'";
 
 #[derive(Clone)]
@@ -46,7 +55,20 @@ pub(crate) struct AppState {
     pub(crate) repositories: Repositories,
     pub(crate) storage: SharedStorageBackend,
     pub(crate) auth: auth::AuthRuntime,
+    game_category_map_cache: Arc<RwLock<Option<CachedGameCategoryMap>>>,
     readiness: health::ReadinessCache,
+}
+
+#[derive(Clone)]
+struct CachedGameCategoryMap {
+    loaded_at: Instant,
+    entries: Arc<HashMap<String, ResolvedGameCategory>>,
+}
+
+impl AppState {
+    pub(crate) async fn invalidate_game_category_map(&self) {
+        *self.game_category_map_cache.write().await = None;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +82,18 @@ impl ClientIp {
 
 async fn game_display_name_map(
     state: &AppState,
-) -> Result<HashMap<String, ResolvedGameCategory>, error::ApiError> {
+) -> Result<Arc<HashMap<String, ResolvedGameCategory>>, error::ApiError> {
+    if let Some(cached) = state.game_category_map_cache.read().await.as_ref() {
+        if cached.loaded_at.elapsed() < GAME_CATEGORY_MAP_TTL {
+            return Ok(cached.entries.clone());
+        }
+    }
+    let mut cache = state.game_category_map_cache.write().await;
+    if let Some(cached) = cache.as_ref() {
+        if cached.loaded_at.elapsed() < GAME_CATEGORY_MAP_TTL {
+            return Ok(cached.entries.clone());
+        }
+    }
     let categories = state
         .repositories
         .game_categories
@@ -69,44 +102,51 @@ async fn game_display_name_map(
         .into_iter()
         .map(|category| (category.id.clone(), category))
         .collect::<HashMap<_, _>>();
-    Ok(state
-        .repositories
-        .game_categories
-        .list_all_names()
-        .await?
-        .into_iter()
-        .filter_map(|name| {
-            categories.get(&name.category_id).map(|category| {
-                (
-                    name.reported_name.to_lowercase(),
-                    ResolvedGameCategory {
-                        id: category.id.clone(),
-                        display_name: category.display_name.clone(),
-                        video_art_url: category
-                            .video_artwork_thumb_url
-                            .as_ref()
-                            .zip(category.video_artwork_id)
-                            .map(|(_, artwork_id)| {
-                                format!(
-                                    "/api/v1/public/game-categories/{}/artwork/video?v={artwork_id}",
-                                    category.id
-                                )
-                            }),
-                        icon_url: category
-                            .icon_artwork_thumb_url
-                            .as_ref()
-                            .zip(category.icon_artwork_id)
-                            .map(|(_, artwork_id)| {
-                                format!(
-                                    "/api/v1/public/game-categories/{}/artwork/icon?v={artwork_id}",
-                                    category.id
-                                )
-                            }),
-                    },
-                )
+    let entries: Arc<HashMap<String, ResolvedGameCategory>> = Arc::new(
+        state
+            .repositories
+            .game_categories
+            .list_all_names()
+            .await?
+            .into_iter()
+            .filter_map(|name| {
+                categories.get(&name.category_id).map(|category| {
+                    (
+                        name.reported_name.to_lowercase(),
+                        ResolvedGameCategory {
+                            id: category.id.clone(),
+                            display_name: category.display_name.clone(),
+                            video_art_url: category
+                                .video_artwork_thumb_url
+                                .as_ref()
+                                .zip(category.video_artwork_id)
+                                .map(|(_, artwork_id)| {
+                                    format!(
+                                        "/api/v1/public/game-categories/{}/artwork/video?v={artwork_id}",
+                                        category.id
+                                    )
+                                }),
+                            icon_url: category
+                                .icon_artwork_thumb_url
+                                .as_ref()
+                                .zip(category.icon_artwork_id)
+                                .map(|(_, artwork_id)| {
+                                    format!(
+                                        "/api/v1/public/game-categories/{}/artwork/icon?v={artwork_id}",
+                                        category.id
+                                    )
+                                }),
+                        },
+                    )
+                })
             })
-        })
-        .collect())
+            .collect(),
+    );
+    *cache = Some(CachedGameCategoryMap {
+        loaded_at: Instant::now(),
+        entries: entries.clone(),
+    });
+    Ok(entries)
 }
 
 #[derive(Debug, Clone)]
@@ -420,6 +460,19 @@ fn router(
 ) -> Router {
     let static_files = ServeDir::new(&config.static_dir);
     let max_upload_request_body_bytes = upload_request_body_limit(&config);
+    let state = AppState {
+        config: config.clone(),
+        database,
+        repositories,
+        storage,
+        auth,
+        game_category_map_cache: Arc::default(),
+        readiness: health::ReadinessCache::default(),
+    };
+    let cache_warm_state = state.clone();
+    tokio::spawn(async move {
+        media::warm_game_category_artwork_cache(&cache_warm_state).await;
+    });
 
     Router::new()
         .route("/healthz", get(health::healthz))
@@ -458,14 +511,7 @@ fn router(
             attach_client_ip,
         ))
         .layer(CatchPanicLayer::new())
-        .with_state(AppState {
-            config,
-            database,
-            repositories,
-            storage,
-            auth,
-            readiness: health::ReadinessCache::default(),
-        })
+        .with_state(state)
 }
 
 async fn spa_index(State(state): State<AppState>) -> Result<Response, StatusCode> {
