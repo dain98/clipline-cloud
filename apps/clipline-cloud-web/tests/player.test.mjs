@@ -16,26 +16,20 @@ globalThis.window = { localStorage: makeMemoryStorage() };
 
 const { resolvePlayerKeyIntent, readStoredVolume } = await import("../src/components/Player.js");
 
-// The watch-page redesign spec (docs/superpowers/specs/2026-07-03-web-ui-redesign-design.md
-// §4.3) reassigns M to mute and F to theater; player-core.js's playerKeyIntent
-// still maps KeyM to marker-jump and KeyF to fullscreen (unrelated legacy
-// bindings retained for other call sites), so the new chrome overrides those
-// two codes and adds Escape, then delegates everything else unchanged.
-
-test("KeyM resolves to toggle-mute, overriding player-core's marker-jump binding", () => {
+test("KeyM resolves to toggle-mute", () => {
   assert.deepEqual(resolvePlayerKeyIntent("KeyM", false), { kind: "toggle-mute" });
   assert.deepEqual(resolvePlayerKeyIntent("KeyM", true), { kind: "toggle-mute" });
 });
 
-test("KeyF resolves to theater, overriding player-core's fullscreen binding", () => {
+test("KeyF resolves to theater", () => {
   assert.deepEqual(resolvePlayerKeyIntent("KeyF", false), { kind: "theater" });
 });
 
-test("Escape resolves to exit-theater (unhandled by player-core)", () => {
+test("Escape resolves to exit-theater", () => {
   assert.deepEqual(resolvePlayerKeyIntent("Escape", false), { kind: "exit-theater" });
 });
 
-test("delegates untouched codes to player-core's playerKeyIntent", () => {
+test("maps playback and seeking shortcuts", () => {
   assert.deepEqual(resolvePlayerKeyIntent("Space", false), { kind: "toggle-play" });
   assert.deepEqual(resolvePlayerKeyIntent("KeyK", false), { kind: "toggle-play" });
   assert.deepEqual(resolvePlayerKeyIntent("ArrowLeft", false), { kind: "seek-by", seconds: -5 });
@@ -48,12 +42,6 @@ test("delegates untouched codes to player-core's playerKeyIntent", () => {
 test("unknown codes resolve to null", () => {
   assert.equal(resolvePlayerKeyIntent("KeyQ", false), null);
 });
-
-// readStoredVolume: a missing localStorage key must default to full volume.
-// (Number(null) is 0, not NaN — a naive Number.isFinite check would silently
-// mute every first-time visitor; legacy's readPlayerVolume at src/app.js:635-642
-// has exactly this bug. Caught live in the browser: a fresh clip loaded
-// muted at volume 0 with no stored value. Verify the fix here.)
 
 test("readStoredVolume defaults to 1 (full volume) when nothing is stored", () => {
   window.localStorage.removeItem("clipline.playerVolume");

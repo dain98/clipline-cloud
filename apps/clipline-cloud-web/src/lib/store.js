@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 
-export function createStore(initial) {
+function createStore(initial) {
   let value = initial;
   const listeners = new Set();
   return {

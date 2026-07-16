@@ -10,11 +10,6 @@ window.history = { pushState() {} };
 
 const { feedGameChips, feedPath, gameLabel, isGameCategoryId, publicFeedParams } = await import("../src/pages/feed.js");
 
-// Port of legacy publicLibraryPath (src/app.js:1063-1089): the default sort
-// is omitted from the URL, game/q/page are only appended when non-default,
-// and a `q` filter routes to /search while a bare `game` filter routes to
-// /game/<name>.
-
 test("feedPath omits every param on the default view", () => {
   assert.equal(feedPath({}), "/");
   assert.equal(feedPath({ sort: "uploaded_at_desc", page: 1 }), "/");

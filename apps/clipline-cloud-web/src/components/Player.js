@@ -8,7 +8,6 @@ import {
   nextMarker,
   normalizeMarkers,
   percentFor,
-  playerKeyIntent,
   previousMarker,
   secondsFromMilliseconds,
 } from "../player-core.js";
@@ -18,24 +17,36 @@ const THEATER_KEY = "clipline.clipTheaterMode";
 const IDLE_HIDE_MS = 2000;
 const RATE_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
-// Keyboard shortcuts layered on top of player-core's playerKeyIntent per the
-// approved watch-page spec (docs/superpowers/specs/2026-07-03-web-ui-redesign-design.md
-// §4.3): M now mutes (player-core reserves M for marker-jump, which the new
-// chrome exposes as dedicated prev/next buttons instead), F now toggles
-// theater (player-core maps F to fullscreen, which stays button-only), and
-// Escape exits theater (unhandled by player-core). Everything else — space/K
-// play, arrow/J/L seek, Home/End, comma/period, T theater — still delegates
-// to player-core unchanged.
 export function resolvePlayerKeyIntent(code, shiftKey) {
   switch (code) {
+    case "Space":
+    case "KeyK":
+      return { kind: "toggle-play" };
+    case "ArrowLeft":
+      return { kind: "seek-by", seconds: shiftKey ? -1 : -5 };
+    case "ArrowRight":
+      return { kind: "seek-by", seconds: shiftKey ? 1 : 5 };
+    case "KeyJ":
+      return { kind: "seek-by", seconds: -10 };
+    case "KeyL":
+      return { kind: "seek-by", seconds: 10 };
+    case "Comma":
+      return { kind: "seek-by", seconds: -0.1 };
+    case "Period":
+      return { kind: "seek-by", seconds: 0.1 };
     case "KeyM":
       return { kind: "toggle-mute" };
+    case "Home":
+      return { kind: "seek-to", seconds: 0 };
+    case "End":
+      return { kind: "seek-to-end" };
     case "KeyF":
+    case "KeyT":
       return { kind: "theater" };
     case "Escape":
       return { kind: "exit-theater" };
     default:
-      return playerKeyIntent(code, shiftKey);
+      return null;
   }
 }
 

@@ -8,10 +8,6 @@ import {
   perUserQuotaLabel,
 } from "../src/pages/admin/users.js";
 
-// canDisableUser: pure port of legacy canDisableUser (src/app.js:3155-3162) —
-// governs both the disabled state of the row's Disable button and (once
-// wired) must agree with the server's own admin.rs role checks.
-
 const owner = { id: "owner-1", role: "owner" };
 const admin = { id: "admin-1", role: "admin" };
 
