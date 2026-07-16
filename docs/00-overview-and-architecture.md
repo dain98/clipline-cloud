@@ -91,6 +91,11 @@ Each is a deliberate v1 commitment. Later milestones must honor these.
 8. **`private` means application-level access control, not cryptography.** The operator runs the
    infrastructure and can technically read files and rows. E2E encryption is out of scope.
 9. **No social features, no self-registration, manual upload only, public links stable-until-revoked.**
+10. **Reported game names are immutable source metadata, organized through managed categories.**
+    Every nonblank name reported by a clip maps case-insensitively to one canonical game category.
+    Administrators may edit category presentation, merge categories, and separate a reported name
+    again without rewriting any clip. Optional SteamGridDB matches and artwork belong to the
+    category, not to the raw reported name.
 
 ## 5. Architecture
 
@@ -175,6 +180,7 @@ CLIPLINE_DATABASE_URL[_FILE]        # sqlite:///data/clipline.db (default) | pos
 CLIPLINE_BOOTSTRAP_ADMIN_USERNAME
 CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD
 CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD_FILE
+CLIPLINE_STEAMGRIDDB_API_KEY[_FILE] # optional; admin game search and category artwork
 
 CLIPLINE_STORAGE_BACKEND            # local | s3
 CLIPLINE_DATA_DIR                   # required for local

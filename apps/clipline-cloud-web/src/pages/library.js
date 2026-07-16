@@ -78,7 +78,8 @@ export function libraryParams(query) {
   params.set("sort", query.sort || DEFAULT_LIBRARY_QUERY.sort);
   params.set("page_size", "100");
   params.set("page", String(Math.max(1, Number(query.page || 1))));
-  for (const key of ["game", "source_type", "visibility", "status", "q"]) {
+  if (query.game) params.set("game_category_id", query.game);
+  for (const key of ["source_type", "visibility", "status", "q"]) {
     if (query[key]) params.set(key, query[key]);
   }
   if (query.from) params.set("from", `${query.from}T00:00:00Z`);
@@ -98,17 +99,29 @@ export function countActiveFilters(query) {
   return POPOVER_FIELDS.reduce((count, key) => count + (query[key] ? 1 : 0), 0);
 }
 
-// Dedupe clips' game_name, count occurrences, return the top `max` sorted by
-// count desc then name asc for stable ties.
+// Group clips by canonical category, with raw names as a compatibility fallback,
+// then return the top `max` sorted by count desc and display name for stable ties.
 export function deriveGameChips(clips, max = 6) {
   const counts = new Map();
   for (const clip of clips) {
-    const game = clip.game_name;
+    const game = clip.game_category_id || clip.game_name;
     if (!game) continue;
-    counts.set(game, (counts.get(game) || 0) + 1);
+    const current = counts.get(game) || {
+      count: 0,
+      label: clip.game_display_name || game,
+      iconUrl: clip.game_icon_url || null,
+    };
+    current.count += 1;
+    if (!current.iconUrl && clip.game_icon_url) current.iconUrl = clip.game_icon_url;
+    counts.set(game, current);
   }
-  return Array.from(counts, ([game, count]) => ({ game, count }))
-    .sort((a, b) => b.count - a.count || a.game.localeCompare(b.game))
+  return Array.from(counts, ([game, value]) => ({
+    game,
+    count: value.count,
+    label: value.label,
+    ...(value.iconUrl ? { icon_url: value.iconUrl } : {}),
+  }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
     .slice(0, max);
 }
 
@@ -480,8 +493,11 @@ export function LibraryPage() {
     ${chips.length > 0 && html`<div class="lib-chips">
       <button type="button" class=${`chip ${!query.game ? "chip-on" : ""}`} aria-pressed=${!query.game}
         onClick=${() => setGame("")}>All</button>
-      ${chips.map((c) => html`<button type="button" class=${`chip ${query.game === c.game ? "chip-on" : ""}`}
-        aria-pressed=${query.game === c.game} onClick=${() => setGame(c.game)}>${c.game}</button>`)}
+      ${chips.map((c) => html`<button type="button" class=${`chip game-filter-chip ${c.icon_url ? "has-icon" : ""} ${query.game === c.game ? "chip-on" : ""}`}
+        aria-label=${`Filter by ${c.label}`} title=${c.label}
+        aria-pressed=${query.game === c.game} onClick=${() => setGame(c.game)}>
+        ${c.icon_url ? html`<img src=${c.icon_url} alt="" loading="lazy" />` : c.label}
+      </button>`)}
     </div>`}
 
     ${clips == null
@@ -560,7 +576,7 @@ function RowsTable({ clips, query, onSort, selected, onToggleSelect }) {
         </td>
         <td><img class="row-thumb" src=${ownedThumbPath(clip)} alt="" width="64" height="36" loading="lazy" /></td>
         <td><a href=${`/clip/${encodeURIComponent(clip.id)}`}>${clip.title}</a></td>
-        <td>${clip.game_name || "—"}</td>
+        <td>${clip.game_display_name || clip.game_name || "—"}</td>
         <td><span class=${`badge badge-${clip.visibility}`}>${clip.visibility}</span></td>
         <td>${formatBytes(clip.file_size_bytes)}</td>
         <td>${formatDuration(clip.duration_ms)}</td>

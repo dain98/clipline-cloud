@@ -10,10 +10,12 @@ import { AdminOverview } from "./admin/overview.js";
 import { AdminUsers } from "./admin/users.js";
 import { AdminSettings } from "./admin/settings.js";
 import { AdminJobs } from "./admin/jobs.js";
+import { AdminCategories } from "./admin/categories.js";
 
 const TABS = [
   ["overview", "server", "Overview"],
   ["users", "users", "Users"],
+  ["categories", "film", "Game categories"],
   ["settings", "sliders", "Settings"],
   ["jobs", "alert", "Jobs"],
 ];
@@ -25,15 +27,16 @@ export function isAdminLike(user) {
 // Fetch every admin panel together so switching tabs is immediate.
 async function loadAdminData(signal) {
   const options = { signal };
-  const [overview, settings, users, failedUploads, deadJobs, recentErrors] = await Promise.all([
+  const [overview, settings, users, categories, failedUploads, deadJobs, recentErrors] = await Promise.all([
     api("/api/v1/admin/overview", options),
     api("/api/v1/admin/settings", options),
     api("/api/v1/users", options),
+    api("/api/v1/admin/game-categories", options),
     api("/api/v1/admin/uploads/failed?limit=50", options),
     api("/api/v1/admin/jobs/dead?limit=50", options),
     api("/api/v1/admin/jobs/recent-errors?limit=50", options),
   ]);
-  return { overview, settings, users, failedUploads, deadJobs, recentErrors };
+  return { overview, settings, users, categories, failedUploads, deadJobs, recentErrors };
 }
 
 export function AdminPage({ route }) {
@@ -62,7 +65,8 @@ export function AdminPage({ route }) {
     <p class="page-subtitle">Accounts, instance summary, and processing diagnostics.</p>
     <nav class="ad-tabs" aria-label="Admin views">
       ${TABS.map(([key, ic, label]) => html`<a key=${key} class=${`ad-tab ${key === tab ? "ad-tab-on" : ""}`}
-        href=${`/admin?tab=${key}`} aria-current=${key === tab ? "page" : undefined}>${icon(ic, { size: 14 })} ${label}</a>`)}
+        href=${key === "categories" ? "/admin/game-categories" : `/admin?tab=${key}`}
+        aria-current=${key === tab ? "page" : undefined}>${icon(ic, { size: 14 })} ${label}</a>`)}
     </nav>
     ${error
       ? html`<${EmptyState} name="alert" title="Couldn't load admin data" body=${error.message} />`
@@ -73,6 +77,8 @@ export function AdminPage({ route }) {
           resetLink=${resetLink} setResetLink=${setResetLink} reload=${reload} />`
       : tab === "settings"
       ? html`<${AdminSettings} settings=${data.settings} isOwner=${currentUser?.role === "owner"} reload=${reload} />`
+      : tab === "categories"
+      ? html`<${AdminCategories} data=${data.categories} reload=${reload} categoryId=${route.categoryId} />`
       : tab === "jobs"
       ? html`<${AdminJobs} failedUploads=${data.failedUploads} deadJobs=${data.deadJobs} recentErrors=${data.recentErrors} />`
       : html`<${AdminOverview} overview=${data.overview} deadJobs=${data.deadJobs} failedUploads=${data.failedUploads} />`}

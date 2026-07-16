@@ -126,6 +126,9 @@ S3 mode adds the `CLIPLINE_S3_*` block and sets `CLIPLINE_STORAGE_BACKEND: s3`. 
   binds MinIO to `127.0.0.1`, and is not the production object-storage path.
 
 `_FILE` secret variants are supported everywhere and preferred over inline passwords.
+SteamGridDB-backed category matching is optional; configure it with
+`CLIPLINE_STEAMGRIDDB_API_KEY_FILE` and mount the key as a read-only Docker secret. The key is used
+only for administrator-initiated game/artwork lookups and is never returned to the browser.
 
 The Caddy profile defaults Caddy to `172.30.0.2` and sets `CLIPLINE_TRUSTED_PROXY_HOPS` from the
 same `CLIPLINE_CADDY_IP` value. If the default `172.30.0.0/24` subnet overlaps an existing Docker
@@ -145,6 +148,9 @@ useless (the DB holds metadata and object keys; storage holds the bytes).
 
 Docs cover dump/restore for each DB, copying `/data`, and the (explicit, non-automatic) local→S3
 migration. Tell users to **back up before upgrading** (migrations, doc 02/§26).
+The game-category migration preserves existing category IDs and artwork, then reconciles reported
+clip names at startup; the server deliberately refuses to bind if that migration or reconciliation
+fails.
 
 ### Failure modes — handle cleanly, surface a clear retryable state (§27)
 
@@ -264,3 +270,7 @@ Self-hosting diagnostics without a full observability stack.
 - 2026-06-18 — Added `docker-compose.standalone.yml` for no-clone single-host deployments. It uses
   relative `./data` and `./secrets` paths, reads an operator-created session secret file instead of
   running the local-test `clipline-secrets` helper, and is covered by smoke config validation.
+- 2026-07-15 — Added optional SteamGridDB key-file wiring to every Compose topology and validated
+  the six current Compose files. Exercised the forward game-category migration against a stopped,
+  backed-up SQLite deployment and verified historical metadata and immutable raw clip names were
+  preserved.

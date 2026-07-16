@@ -19,7 +19,9 @@ function emit() {
   const route = parseRoute(pathname, search);
   listeners.forEach((l) => l(route));
 }
-window.addEventListener("popstate", emit);
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", emit);
+}
 
 export function useRoute() {
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));

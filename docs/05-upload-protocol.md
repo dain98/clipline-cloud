@@ -290,3 +290,6 @@ replacement if resumability requirements outgrow this first-party flow.
   disabled, `duration_ms` is required and uploads at or above the configured threshold minutes are
   rejected before a new session is allocated. Per-user storage quotas now override the instance
   default quota when set.
+- 2026-07-15: Upload creation now ensures every nonblank reported `game_name` has a managed game
+  category in the same transaction as the clip, upload session, and markers. A failed or duplicate
+  upload cannot leave an empty category behind, and the reported clip name remains immutable.

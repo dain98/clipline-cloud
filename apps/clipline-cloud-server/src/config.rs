@@ -49,6 +49,7 @@ pub struct Config {
     pub database_url: String,
     pub bootstrap_admin_username: Option<String>,
     pub bootstrap_admin_password: Option<String>,
+    pub steamgriddb_api_key: Option<String>,
     pub storage: StorageConfig,
     pub max_upload_size_bytes: u64,
     pub upload_part_size_bytes: u64,
@@ -228,6 +229,7 @@ impl Config {
 
         let bootstrap_admin_username = optional(source, "CLIPLINE_BOOTSTRAP_ADMIN_USERNAME");
         let bootstrap_admin_password = secret(source, "CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD")?;
+        let steamgriddb_api_key = secret(source, "CLIPLINE_STEAMGRIDDB_API_KEY")?;
         let storage_backend = optional(source, "CLIPLINE_STORAGE_BACKEND")
             .unwrap_or_else(|| DEFAULT_STORAGE_BACKEND.to_string());
 
@@ -372,6 +374,7 @@ impl Config {
             database_url,
             bootstrap_admin_username,
             bootstrap_admin_password,
+            steamgriddb_api_key,
             storage,
             max_upload_size_bytes,
             upload_part_size_bytes,
@@ -477,6 +480,7 @@ fn is_loopback_public_url(public_url: &Url) -> bool {
 fn secret(source: &impl EnvSource, name: &'static str) -> Result<Option<String>, ConfigError> {
     let file_name = match name {
         "CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD" => "CLIPLINE_BOOTSTRAP_ADMIN_PASSWORD_FILE",
+        "CLIPLINE_STEAMGRIDDB_API_KEY" => "CLIPLINE_STEAMGRIDDB_API_KEY_FILE",
         "CLIPLINE_DATABASE_URL" => "CLIPLINE_DATABASE_URL_FILE",
         "CLIPLINE_S3_ACCESS_KEY_ID" => "CLIPLINE_S3_ACCESS_KEY_ID_FILE",
         "CLIPLINE_S3_SECRET_ACCESS_KEY" => "CLIPLINE_S3_SECRET_ACCESS_KEY_FILE",
@@ -1197,5 +1201,17 @@ mod tests {
             Some("from-file")
         );
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn steamgriddb_api_key_is_optional_and_loaded_as_a_secret() {
+        let env = valid_local_env();
+        let config = Config::from_source(&env).expect("config without SteamGridDB");
+        assert_eq!(config.steamgriddb_api_key, None);
+
+        let mut env = valid_local_env();
+        env.insert("CLIPLINE_STEAMGRIDDB_API_KEY", "test-key".to_string());
+        let config = Config::from_source(&env).expect("config with SteamGridDB");
+        assert_eq!(config.steamgriddb_api_key.as_deref(), Some("test-key"));
     }
 }

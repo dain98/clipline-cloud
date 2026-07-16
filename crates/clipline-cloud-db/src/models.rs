@@ -286,6 +286,99 @@ impl NewClip {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct GameCategory {
+    pub id: String,
+    pub display_name: String,
+    pub steamgriddb_game_id: Option<i64>,
+    pub artwork_kind: Option<String>,
+    pub artwork_id: Option<i64>,
+    pub artwork_url: Option<String>,
+    pub artwork_thumb_url: Option<String>,
+    pub video_artwork_id: Option<i64>,
+    pub video_artwork_url: Option<String>,
+    pub video_artwork_thumb_url: Option<String>,
+    pub icon_artwork_id: Option<i64>,
+    pub icon_artwork_url: Option<String>,
+    pub icon_artwork_thumb_url: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewGameCategory {
+    pub id: String,
+    pub display_name: String,
+    pub steamgriddb_game_id: Option<i64>,
+    pub artwork_kind: Option<String>,
+    pub artwork_id: Option<i64>,
+    pub artwork_url: Option<String>,
+    pub artwork_thumb_url: Option<String>,
+    pub video_artwork_id: Option<i64>,
+    pub video_artwork_url: Option<String>,
+    pub video_artwork_thumb_url: Option<String>,
+    pub icon_artwork_id: Option<i64>,
+    pub icon_artwork_url: Option<String>,
+    pub icon_artwork_thumb_url: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl NewGameCategory {
+    pub fn new(display_name: impl Into<String>) -> Self {
+        let now = now_utc();
+        let display_name = display_name.into().chars().take(200).collect();
+        Self {
+            id: new_ulid(),
+            display_name,
+            steamgriddb_game_id: None,
+            artwork_kind: None,
+            artwork_id: None,
+            artwork_url: None,
+            artwork_thumb_url: None,
+            video_artwork_id: None,
+            video_artwork_url: None,
+            video_artwork_thumb_url: None,
+            icon_artwork_id: None,
+            icon_artwork_url: None,
+            icon_artwork_thumb_url: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct GameCategoryName {
+    pub id: String,
+    pub category_id: String,
+    pub reported_name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewGameCategoryName {
+    pub id: String,
+    pub category_id: String,
+    pub reported_name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl NewGameCategoryName {
+    pub fn new(category_id: impl Into<String>, reported_name: impl Into<String>) -> Self {
+        let now = now_utc();
+        Self {
+            id: new_ulid(),
+            category_id: category_id.into(),
+            reported_name: reported_name.into(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
 pub struct ClipComment {
     pub id: String,

@@ -535,7 +535,8 @@ mod tests {
         let client = CloudClient::new(Url::parse("https://clips.example.com").expect("url"));
         let request = ListClipsRequest {
             sort: Some("uploaded_at_desc".to_string()),
-            game: Some("league".to_string()),
+            game: None,
+            game_category_id: Some("01K123CATEGORY".to_string()),
             source_type: Some("replay".to_string()),
             visibility: Some("private".to_string()),
             status: Some("ready".to_string()),
@@ -567,7 +568,7 @@ mod tests {
             query_pairs,
             vec![
                 ("sort".to_string(), "uploaded_at_desc".to_string()),
-                ("game".to_string(), "league".to_string()),
+                ("game_category_id".to_string(), "01K123CATEGORY".to_string(),),
                 ("source_type".to_string(), "replay".to_string()),
                 ("visibility".to_string(), "private".to_string()),
                 ("status".to_string(), "ready".to_string()),

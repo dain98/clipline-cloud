@@ -85,6 +85,16 @@ export function parseRoute(pathname, search) {
   if (path.startsWith("/clip/")) {
     return { name: "clip", clipId: safeDecodeURIComponent(path.slice(6)) };
   }
+  if (path === "/admin/game-categories") {
+    return { name: "admin", tab: "categories" };
+  }
+  if (path.startsWith("/admin/game-categories/")) {
+    return {
+      name: "admin",
+      tab: "categories",
+      categoryId: safeDecodeURIComponent(path.slice(23)),
+    };
+  }
   if (path === "/admin") {
     return {
       name: "admin",

@@ -8,7 +8,7 @@ globalThis.window = new EventTarget();
 window.location = { pathname: "/", hash: "", search: "" };
 window.history = { pushState() {} };
 
-const { feedGameChips, feedPath, gameLabel, publicFeedParams } = await import("../src/pages/feed.js");
+const { feedGameChips, feedPath, gameLabel, isGameCategoryId, publicFeedParams } = await import("../src/pages/feed.js");
 
 // Port of legacy publicLibraryPath (src/app.js:1063-1089): the default sort
 // is omitted from the URL, game/q/page are only appended when non-default,
@@ -61,15 +61,27 @@ test("publicFeedParams requests the legacy 60-clip page size by default", () => 
 });
 
 test("publicFeedParams keeps filters while preserving the fixed page size", () => {
-  const params = publicFeedParams({ sort: "title_asc", game: "VALORANT", q: "ace", page: 2 });
+  const params = publicFeedParams({ sort: "title_asc", game: "01K0ABCDEF1234567890GHJKMN", q: "ace", page: 2 });
   assert.equal(params.get("page_size"), "60");
   assert.equal(params.get("sort"), "title_asc");
-  assert.equal(params.get("game"), "VALORANT");
+  assert.equal(params.get("game_category_id"), "01K0ABCDEF1234567890GHJKMN");
   assert.equal(params.get("q"), "ace");
   assert.equal(params.get("page"), "2");
 });
 
+test("publicFeedParams preserves legacy raw game-name filters", () => {
+  const params = publicFeedParams({ sort: "uploaded_at_desc", game: "VALORANT", q: "", page: 1 });
+  assert.equal(params.get("game"), "VALORANT");
+  assert.equal(params.has("game_category_id"), false);
+});
+
+test("game category ids are recognized as ULIDs", () => {
+  assert.equal(isGameCategoryId("01K0ABCDEF1234567890GHJKMN"), true);
+  assert.equal(isGameCategoryId("Counter-Strike 2"), false);
+});
+
 test("gameLabel falls back when public clip summaries omit game_name", () => {
+  assert.equal(gameLabel({ game_name: "GTA5_Enhanced", game_display_name: "Grand Theft Auto V" }), "Grand Theft Auto V");
   assert.equal(gameLabel({ game_name: "VALORANT" }), "VALORANT");
   assert.equal(gameLabel({ game_name: null }), "No game");
   assert.equal(gameLabel({}), "No game");
@@ -77,22 +89,22 @@ test("gameLabel falls back when public clip summaries omit game_name", () => {
 
 test("feedGameChips includes the active off-list game as selected chip data", () => {
   const games = [
-    { game: "A", clip_count: 10 },
-    { game: "B", clip_count: 9 },
-    { game: "C", clip_count: 8 },
-    { game: "D", clip_count: 7 },
-    { game: "E", clip_count: 6 },
-    { game: "F", clip_count: 5 },
-    { game: "G", clip_count: 4 },
-    { game: "H", clip_count: 3 },
+    { category_id: "A", clip_count: 10 },
+    { category_id: "B", clip_count: 9 },
+    { category_id: "C", clip_count: 8 },
+    { category_id: "D", clip_count: 7 },
+    { category_id: "E", clip_count: 6 },
+    { category_id: "F", clip_count: 5 },
+    { category_id: "G", clip_count: 4 },
+    { category_id: "H", clip_count: 3 },
   ];
   const { chips, extraGameCount } = feedGameChips(games, "G", 6);
-  assert.deepEqual(chips.map((chip) => chip.game), ["G", "A", "B", "C", "D", "E", "F"]);
+  assert.deepEqual(chips.map((chip) => chip.category_id), ["G", "A", "B", "C", "D", "E", "F"]);
   assert.equal(extraGameCount, 1);
 });
 
 test("feedGameChips shows an active game even before the games API returns it", () => {
-  const { chips, extraGameCount } = feedGameChips([{ game: "A", clip_count: 1 }], "Missing", 6);
-  assert.deepEqual(chips.map((chip) => chip.game), ["Missing", "A"]);
+  const { chips, extraGameCount } = feedGameChips([{ category_id: "A", clip_count: 1 }], "Missing", 6);
+  assert.deepEqual(chips.map((chip) => chip.category_id), ["Missing", "A"]);
   assert.equal(extraGameCount, 0);
 });

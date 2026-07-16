@@ -32,7 +32,7 @@ POST   /api/v1/clips/{id}/visibility
 List example:
 
 ```
-GET /api/v1/clips?sort=recorded_at_desc&game=league-of-legends&visibility=private&page=1&page_size=50
+GET /api/v1/clips?sort=recorded_at_desc&game_category_id=01K...&visibility=private&page=1&page_size=50
 ```
 
 Every clip endpoint enforces: **authenticated caller owns the resource**; nothing becomes viewable
@@ -43,11 +43,17 @@ until finalized (doc 05/06).
 Query fields:
 
 - `sort`: `recorded_at_desc | recorded_at_asc | uploaded_at_desc | uploaded_at_asc | duration_desc | duration_asc | title_asc`
-- `game`: exact or normalized ID
+- `game_category_id`: canonical category ID; includes clips from every attached reported name
+- `game`: legacy exact raw-name/ID filter; cannot be combined with `game_category_id`
 - `visibility`
 - `status`
 - `from` / `to`: date bounds
-- `q`: simple title/game text search
+- `q`: simple title, raw game name, or canonical category display-name search
+
+Clip responses retain the raw `game_name` and add `game_category_id` plus
+`game_display_name`. Raw `game_name` is upload metadata and cannot be changed through clip PATCHes
+or direct database updates. New nonblank reported names automatically create categories; category
+merge and separation change mappings only.
 
 The §7 indexes back the common views (`clips_owner_recorded_at_idx`,
 `clips_owner_uploaded_at_idx`, `clips_owner_game_idx`, `clips_owner_visibility_idx`). Keep pagination
@@ -73,7 +79,7 @@ boundary here.
 
 ## Implementation checklist
 
-- [x] `GET /clips` with `sort`, `game`, `visibility`, `status`, `from`/`to`, `q`, `page`/`page_size`; owner-scoped
+- [x] `GET /clips` with `sort`, category/legacy game filters, `visibility`, `status`, `from`/`to`, `q`, `page`/`page_size`; owner-scoped
 - [x] Query plans use the §7 indexes; pagination + timestamp comparisons are dialect-clean
 - [x] `GET /clips/{id}` — owner-only; returns metadata + markers + visibility + public URL when public
 - [x] `PATCH /clips/{id}` — edit allowed metadata (e.g. title); owner-only
@@ -105,3 +111,5 @@ boundary here.
   `cargo build --workspace`, and a local HTTP smoke test covering all sort values, filtering,
   search, pagination, cross-owner 404, detail markers, metadata patch, public/private visibility,
   soft-delete persistence, audit logs, and expected clip indexes.
+- 2026-07-15: Added canonical game category IDs and display names to clip responses. Category-ID
+  filtering follows all attached reported names, while raw clip game names remain immutable.

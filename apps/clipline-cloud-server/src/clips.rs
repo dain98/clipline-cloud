@@ -13,10 +13,12 @@ use clipline_cloud_db::{BulkVisibilityUpdate, Clip, ClipListParams, ClipMarker, 
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use crate::{
     auth,
     error::ApiError,
+    game_category_id, game_display_name, game_display_name_map, game_icon_url, game_video_art_url,
     validation::{normalized_optional, validate_optional_char_count},
     AppState, ClientIp,
 };
@@ -51,6 +53,7 @@ pub fn routes() -> Router<AppState> {
 struct ListClipsQuery {
     sort: Option<String>,
     game: Option<String>,
+    game_category_id: Option<String>,
     source_type: Option<String>,
     visibility: Option<String>,
     status: Option<String>,
@@ -134,9 +137,17 @@ async fn list_clips(
         max_size_bytes,
         "min_size_bytes must be less than or equal to max_size_bytes",
     )?;
+    let game = normalized_optional(query.game);
+    let game_category_id = normalized_optional(query.game_category_id);
+    if game.is_some() && game_category_id.is_some() {
+        return Err(ApiError::bad_request(
+            "game and game_category_id cannot be combined",
+        ));
+    }
     let params = ClipListParams {
         owner_user_id: auth.user.id.clone(),
-        game: normalized_optional(query.game),
+        game,
+        game_category_id,
         source_type: normalized_optional(query.source_type),
         visibility: normalized_optional(query.visibility)
             .map(validate_visibility)
@@ -163,9 +174,10 @@ async fn list_clips(
     let has_more = clips.len() as i64 > page_size;
     clips.truncate(page_size as usize);
     let stats = state.repositories.clips.stats_for_owner(&params).await?;
+    let display_names = game_display_name_map(&state).await?;
     let clips = clips
         .into_iter()
-        .map(|clip| clip_summary_response(clip, &state))
+        .map(|clip| clip_summary_response(clip, &state, &display_names))
         .collect();
 
     Ok(Json(ClipListResponse {
@@ -205,6 +217,11 @@ async fn update_clip(
     let auth = auth::require_auth(&state, &headers).await?;
     auth::require_csrf_for_cookie(&state, &headers, &auth)?;
     validate_update_clip_request(&request)?;
+    if request.game_name.is_some() {
+        return Err(ApiError::bad_request(
+            "game_name cannot be changed after upload",
+        ));
+    }
     let Some(existing) = state
         .repositories
         .clips
@@ -235,7 +252,6 @@ async fn update_clip(
         }
         PatchValue::Missing => existing.description.clone(),
     };
-    let game_name = patch_optional_string(request.game_name, existing.game_name);
     let game_id = patch_optional_string(request.game_id, existing.game_id);
     let game_executable = patch_optional_string(request.game_executable, existing.game_executable);
     let source_type = patch_optional_string(request.source_type, existing.source_type);
@@ -254,7 +270,6 @@ async fn update_clip(
             &existing.id,
             &title,
             description.as_deref(),
-            game_name.as_deref(),
             game_id.as_deref(),
             game_executable.as_deref(),
             source_type.as_deref(),
@@ -474,16 +489,29 @@ async fn detail_response(state: &AppState, clip: Clip) -> Result<ClipDetailRespo
         .into_iter()
         .map(clip_marker_response)
         .collect();
-    Ok(clip_detail_response(clip, markers, state))
+    let display_names = game_display_name_map(state).await?;
+    Ok(clip_detail_response(clip, markers, state, &display_names))
 }
 
-fn clip_summary_response(clip: Clip, state: &AppState) -> ClipSummaryResponse {
+fn clip_summary_response(
+    clip: Clip,
+    state: &AppState,
+    display_names: &HashMap<String, crate::ResolvedGameCategory>,
+) -> ClipSummaryResponse {
+    let game_display_name = game_display_name(clip.game_name.as_deref(), display_names);
+    let game_category_id = game_category_id(clip.game_name.as_deref(), display_names);
+    let game_icon_url = game_icon_url(clip.game_name.as_deref(), display_names);
+    let game_video_art_url = game_video_art_url(clip.game_name.as_deref(), display_names);
     ClipSummaryResponse {
         id: clip.id,
         client_clip_id: clip.client_clip_id,
         title: clip.title,
         description: clip.description,
         game_name: clip.game_name,
+        game_category_id,
+        game_display_name,
+        game_icon_url,
+        game_video_art_url,
         game_id: clip.game_id,
         source_type: clip.source_type,
         recorded_at: clip.recorded_at,
@@ -509,17 +537,26 @@ fn clip_detail_response(
     clip: Clip,
     markers: Vec<ClipMarkerResponse>,
     state: &AppState,
+    display_names: &HashMap<String, crate::ResolvedGameCategory>,
 ) -> ClipDetailResponse {
     let public_url = clip
         .public_share_id
         .as_deref()
         .and_then(|share_id| public_url(state, share_id));
+    let game_display_name = game_display_name(clip.game_name.as_deref(), display_names);
+    let game_category_id = game_category_id(clip.game_name.as_deref(), display_names);
+    let game_icon_url = game_icon_url(clip.game_name.as_deref(), display_names);
+    let game_video_art_url = game_video_art_url(clip.game_name.as_deref(), display_names);
     ClipDetailResponse {
         id: clip.id,
         client_clip_id: clip.client_clip_id,
         title: clip.title,
         description: clip.description,
         game_name: clip.game_name,
+        game_category_id,
+        game_display_name,
+        game_icon_url,
+        game_video_art_url,
         game_id: clip.game_id,
         game_executable: clip.game_executable,
         source_type: clip.source_type,
@@ -840,6 +877,7 @@ mod tests {
                 Query(ListClipsQuery {
                     sort: Some("definitely-not-a-sort".to_string()),
                     game: None,
+                    game_category_id: None,
                     source_type: None,
                     visibility: None,
                     status: None,
@@ -975,6 +1013,7 @@ mod tests {
             repositories,
             storage,
             auth,
+            game_category_map_cache: Arc::default(),
             readiness: crate::health::ReadinessCache::default(),
         };
         TestApp {
